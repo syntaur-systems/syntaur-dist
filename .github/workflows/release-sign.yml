@@ -1,0 +1,464 @@
+name: Release — Build + Sign (from private source)
+
+# PUBLIC, AUDITABLE build+sign+publish workflow for Syntaur.
+#
+# The application source lives in the PRIVATE repo buddyholly007/syntaur.
+# This workflow (in the PUBLIC syntaur-dist repo) checks that source out
+# via a READ-ONLY deploy key, builds the release binaries, signs each
+# artifact with Sigstore cosign (keyless OIDC — the signing identity is
+# THIS public workflow, so anyone can audit exactly how a published
+# binary was produced), and publishes a GitHub Release here on
+# syntaur-dist where the assets are anonymously downloadable.
+#
+# Why this shape: the product is paid + closed-source, but the build and
+# signing pipeline is fully public so third parties can verify that a
+# shipped binary derives from a legitimate, unmodified build. Source
+# confidentiality and supply-chain transparency at the same time.
+#
+# Verify a downloaded artifact (note the identity points at syntaur-dist):
+#
+#   cosign verify-blob \
+#     --bundle syntaur-gateway-linux-x86_64.cosign.bundle \
+#     --certificate-identity "https://github.com/syntaur-systems/syntaur-dist/.github/workflows/release-sign.yml@refs/heads/main" \
+#     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+#     syntaur-gateway-linux-x86_64
+#
+#   sha256sum -c checksums.txt
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, no leading v (e.g. 0.7.44). Tag published here will be v<version>.'
+        required: true
+      source_ref:
+        description: 'Ref in the PRIVATE buddyholly007/syntaur to build (tag/branch/sha, e.g. v0.7.44).'
+        required: true
+  # Wired later: the private repo's deploy pipeline fires a
+  # repository_dispatch(event_type=release) carrying {version, source_ref}
+  # so a tagged release auto-builds here. Manual dispatch is the path for
+  # the migration cut.
+  repository_dispatch:
+    types: [release]
+
+permissions:
+  contents: write       # create release + upload assets + tag
+  id-token: write       # OIDC token for cosign keyless
+  attestations: write   # SLSA provenance
+
+env:
+  CARGO_TERM_COLOR: always
+  # Normalize the two trigger shapes into one set of values the jobs use.
+  REL_VERSION: ${{ github.event.inputs.version || github.event.client_payload.version }}
+  SRC_REF: ${{ github.event.inputs.source_ref || github.event.client_payload.source_ref }}
+
+jobs:
+  # Validate the (possibly attacker-supplied, via repository_dispatch
+  # client_payload) inputs against strict patterns BEFORE they reach
+  # `checkout ref:` or any shell. version must be semver-ish; source_ref
+  # must be a safe git ref (no shell metacharacters, no `..`). Everything
+  # downstream `needs: validate`, so a bad input never builds/signs.
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate inputs
+        env:
+          REL_VERSION_IN: ${{ env.REL_VERSION }}
+          SRC_REF_IN: ${{ env.SRC_REF }}
+        run: |
+          set -euo pipefail
+          # Reject multi-line inputs first: `grep -Eq '^...$'` matches
+          # PER LINE, so "1.0.0\n<payload>" would pass on its first line and
+          # leak the rest downstream. printf '%s' adds no trailing newline,
+          # so a clean single-line value has wc -l == 0.
+          if [ "$(printf '%s' "$REL_VERSION_IN" | wc -l)" -ne 0 ] \
+             || [ "$(printf '%s' "$SRC_REF_IN" | wc -l)" -ne 0 ]; then
+            echo "::error::inputs must be single-line"
+            exit 1
+          fi
+          if ! printf '%s' "$REL_VERSION_IN" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::version '$REL_VERSION_IN' is not X.Y.Z"
+            exit 1
+          fi
+          if ! printf '%s' "$SRC_REF_IN" | grep -Eq '^[A-Za-z0-9._/-]+$'; then
+            echo "::error::source_ref '$SRC_REF_IN' contains disallowed characters"
+            exit 1
+          fi
+          case "$SRC_REF_IN" in
+            *..*|/*|*/) echo "::error::source_ref '$SRC_REF_IN' has an unsafe shape"; exit 1 ;;
+          esac
+          echo "inputs OK: version=$REL_VERSION_IN source_ref=$SRC_REF_IN"
+
+  build:
+    name: Build ${{ matrix.target }} / ${{ matrix.package }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            package: syntaur-gateway
+            binary: syntaur-gateway
+            artifact_name: syntaur-gateway-linux-x86_64
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            package: syntaur-viewer
+            binary: syntaur-viewer
+            artifact_name: syntaur-viewer-linux-x86_64
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            package: syntaur-isolation-tests
+            binary: syntaur-isolation-tests
+            artifact_name: syntaur-isolation-tests-linux-x86_64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            package: syntaur-gateway
+            binary: syntaur-gateway
+            artifact_name: syntaur-gateway-macos-arm64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            package: syntaur-viewer
+            binary: syntaur-viewer
+            artifact_name: syntaur-viewer-macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            package: syntaur-gateway
+            binary: syntaur-gateway.exe
+            artifact_name: syntaur-gateway-windows-x86_64.exe
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            package: syntaur-viewer
+            binary: syntaur-viewer.exe
+            artifact_name: syntaur-viewer-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      # Check out the PRIVATE application source via the read-only deploy
+      # key. The key's private half is stored as the SYNTAUR_SOURCE_DEPLOY_KEY
+      # secret in this (syntaur-dist) repo; its public half is registered
+      # read-only on buddyholly007/syntaur.
+      - name: Checkout private source
+        uses: actions/checkout@v4
+        with:
+          repository: buddyholly007/syntaur
+          ref: ${{ env.SRC_REF }}
+          ssh-key: ${{ secrets.SYNTAUR_SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}-${{ matrix.package }}
+
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config
+          if [ "${{ matrix.package }}" = "syntaur-viewer" ]; then
+            sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev
+          fi
+
+      - name: Build release
+        run: cargo build --release --target ${{ matrix.target }} -p ${{ matrix.package }}
+
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.artifact_name }}"
+
+      - name: Smoke test (non-Windows)
+        if: runner.os != 'Windows' && matrix.package == 'syntaur-gateway'
+        shell: bash
+        run: |
+          set -e
+          ./dist/${{ matrix.artifact_name }} &
+          PID=$!
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:18789/health >/tmp/health.json 2>/dev/null; then
+              echo "health:"; cat /tmp/health.json
+              kill $PID 2>/dev/null || true
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "gateway failed to become healthy in 20s"
+          kill $PID 2>/dev/null || true
+          exit 1
+
+      - name: Smoke test (Windows)
+        if: runner.os == 'Windows' && matrix.package == 'syntaur-gateway'
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\${{ matrix.artifact_name }}" -PassThru -WindowStyle Hidden
+          for ($i = 0; $i -lt 20; $i++) {
+            try {
+              $r = Invoke-WebRequest -Uri http://127.0.0.1:18789/health -UseBasicParsing -TimeoutSec 2
+              if ($r.StatusCode -eq 200) {
+                Write-Host "health: $($r.Content)"
+                Stop-Process -Id $p.Id -Force
+                exit 0
+              }
+            } catch {}
+            Start-Sleep -Seconds 1
+          }
+          Write-Host "gateway failed to become healthy in 20s"
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          exit 1
+
+      - name: Upload built binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}
+          retention-days: 7
+
+      # Provenance + SBOM — produced HERE (the only job with the source
+      # checkout), on the Linux gateway matrix entry; sign-and-release pulls
+      # them in via download-artifact and signs them with the rest.
+      #
+      # syntaur-source-commit.txt records the RESOLVED commit SHA of the
+      # checked-out source. source_ref may be a tag or branch (mutable), so
+      # publishing the resolved, immutable SHA — signed — is what lets a
+      # third party prove exactly which source produced these binaries.
+      #
+      # The SBOM is generated from Cargo.lock: a binary-only scan of a Rust
+      # static binary yields ~1 package (no embedded dep metadata).
+      #
+      # Both steps are continue-on-error: they are supplementary
+      # transparency artifacts and must NOT fail the gateway build job and
+      # thereby skip sign-and-release (needs: build, if: !failure()), which
+      # would block the entire release over a non-critical asset.
+      # Files are written at the workspace ROOT and uploaded by EXPLICIT
+      # name (not via a directory path) so download-artifact merge-multiple
+      # lands them as dist/syntaur-source-commit.txt and
+      # dist/syntaur-sbom.spdx.json — matching the syntaur-* glob. A
+      # directory upload would risk landing them under dist/prov/, where the
+      # glob would miss them and they'd silently never be signed/published.
+      - name: Record resolved source commit (Linux gateway only)
+        if: matrix.artifact_name == 'syntaur-gateway-linux-x86_64'
+        continue-on-error: true
+        run: |
+          {
+            echo "source_ref: ${SRC_REF}"
+            echo "resolved_commit: $(git rev-parse HEAD)"
+          } > syntaur-source-commit.txt
+          cat syntaur-source-commit.txt
+
+      - name: Generate dependency SBOM (Linux gateway only)
+        if: matrix.artifact_name == 'syntaur-gateway-linux-x86_64'
+        continue-on-error: true
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: syntaur-sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Upload provenance + SBOM artifact (Linux gateway only)
+        if: matrix.artifact_name == 'syntaur-gateway-linux-x86_64'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: syntaur-prov
+          path: |
+            syntaur-source-commit.txt
+            syntaur-sbom.spdx.json
+          retention-days: 7
+
+  sign-and-release:
+    name: Sign + publish release
+    needs: build
+    if: ${{ !cancelled() && !failure() }}
+    runs-on: ubuntu-24.04
+    steps:
+      # Check out THIS repo (syntaur-dist) — provides install.sh +
+      # install.ps1 (the verifiable installers live here, not in the
+      # private source) and is the repo the Release is published to.
+      - uses: actions/checkout@v4
+
+      - name: Download all built binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Stage install scripts into dist
+        run: |
+          set -euo pipefail
+          cp install.sh   dist/install.sh
+          cp install.ps1  dist/install.ps1
+          chmod +x dist/install.sh
+          ls -la dist/install.sh dist/install.ps1
+
+      - name: List dist
+        run: ls -la dist/
+
+      - name: Assert core platforms present
+        working-directory: dist
+        run: |
+          required=(
+            syntaur-gateway-linux-x86_64
+            syntaur-viewer-linux-x86_64
+            syntaur-isolation-tests-linux-x86_64
+            syntaur-gateway-macos-arm64
+            syntaur-viewer-macos-arm64
+            syntaur-gateway-windows-x86_64.exe
+            syntaur-viewer-windows-x86_64.exe
+            install.sh
+            install.ps1
+          )
+          missing=()
+          for f in "${required[@]}"; do
+            [ -f "$f" ] || missing+=("$f")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required release artifacts: ${missing[*]}"
+            exit 1
+          fi
+          echo "All core artifacts present ($(ls syntaur-* install.sh install.ps1 | wc -l) total)."
+
+      # The provenance file (syntaur-source-commit.txt) and dependency SBOM
+      # (syntaur-sbom.spdx.json) were produced in the Linux gateway build job
+      # and arrive here via the download-artifact merge above (from the
+      # syntaur-prov artifact), landing in dist/. Both are named syntaur-*,
+      # so the checksum / cosign-sign / upload steps below glob them in
+      # automatically — hashed, keyless-signed, and published with no further
+      # wiring. (They are best-effort: continue-on-error in the build job
+      # means a tooling hiccup leaves them out rather than blocking release.)
+      - name: Compute checksums
+        working-directory: dist
+        run: |
+          sha256sum syntaur-* install.sh install.ps1 > checksums.txt
+          cat checksums.txt
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign each artifact
+        working-directory: dist
+        run: |
+          for f in syntaur-* install.sh install.ps1; do
+            case "$f" in
+              *.cosign.bundle|checksums.txt) continue ;;
+            esac
+            cosign sign-blob \
+              --yes \
+              --bundle "${f}.cosign.bundle" \
+              "${f}"
+          done
+          cosign sign-blob \
+            --yes \
+            --bundle checksums.txt.cosign.bundle \
+            checksums.txt
+
+      - name: Attest SLSA provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/syntaur-*
+            dist/install.sh
+            dist/install.ps1
+
+      - name: Create release + upload assets (with retry + verification)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: v${{ env.REL_VERSION }}
+        shell: bash
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          mapfile -t assets < <(printf '%s\n' syntaur-* checksums.txt install.sh install.ps1 *.cosign.bundle | sort -u)
+          expected=${#assets[@]}
+          if (( expected == 0 )); then
+            echo "::error::no assets found in dist/ — refusing to publish empty release"
+            exit 1
+          fi
+          echo "preparing to publish ${expected} assets for ${TAG}:"
+          printf '  %s\n' "${assets[@]}"
+
+          cat > /tmp/release-body.md <<EOF
+          ## Verified release
+
+          Built from the private \`buddyholly007/syntaur\` source at
+          \`${SRC_REF}\` by this repo's public
+          [\`release-sign.yml\`](https://github.com/syntaur-systems/syntaur-dist/blob/main/.github/workflows/release-sign.yml)
+          workflow. The exact immutable source commit is recorded in the
+          signed \`syntaur-source-commit.txt\`; a dependency SBOM is in the
+          signed \`syntaur-sbom.spdx.json\`. Every artifact is signed with
+          Sigstore cosign (keyless OIDC) and accompanied by a
+          \`.cosign.bundle\`. Verify before running:
+
+          \`\`\`bash
+          # SHA-256 verification (fast)
+          sha256sum -c checksums.txt
+
+          # Cosign signature verification (authoritative)
+          cosign verify-blob \\
+            --bundle syntaur-gateway-linux-x86_64.cosign.bundle \\
+            --certificate-identity "https://github.com/syntaur-systems/syntaur-dist/.github/workflows/release-sign.yml@refs/heads/main" \\
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \\
+            syntaur-gateway-linux-x86_64
+          \`\`\`
+
+          See \`SECURITY.md\` for the verification + disclosure policy.
+          EOF
+
+          # Create the release (and its tag on this repo's HEAD) if absent.
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "release ${TAG} already exists; will upload to it"
+          else
+            for attempt in 1 2 3; do
+              if gh release create "${TAG}" \
+                  --title "${TAG}" \
+                  --notes-file /tmp/release-body.md; then
+                echo "release ${TAG} created (attempt ${attempt})"
+                break
+              fi
+              if (( attempt == 3 )); then
+                echo "::error::failed to create release ${TAG} after 3 attempts"
+                exit 1
+              fi
+              sleep $(( attempt * 5 ))
+            done
+          fi
+
+          for asset in "${assets[@]}"; do
+            if [ ! -f "${asset}" ]; then
+              echo "::error::expected asset ${asset} not present in dist/"
+              exit 1
+            fi
+            uploaded=0
+            for attempt in 1 2 3 4 5; do
+              if gh release upload "${TAG}" "${asset}" --clobber; then
+                echo "  ✓ uploaded ${asset} (attempt ${attempt})"
+                uploaded=1
+                break
+              fi
+              echo "  ✗ upload ${asset} attempt ${attempt} failed; backing off"
+              sleep $(( attempt * 10 ))
+            done
+            if (( uploaded == 0 )); then
+              echo "::error::failed to upload ${asset} after 5 attempts"
+              exit 1
+            fi
+          done
+
+          actual=$(gh release view "${TAG}" --json assets --jq '.assets | length')
+          if (( actual < expected )); then
+            echo "::error::release ${TAG} has only ${actual}/${expected} assets after upload"
+            gh release view "${TAG}" --json assets --jq '.assets[].name' | sed 's/^/  present: /'
+            exit 1
+          fi
+          echo "✓ release ${TAG} published with ${actual} assets"
