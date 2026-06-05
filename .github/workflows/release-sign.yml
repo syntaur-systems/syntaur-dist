@@ -187,10 +187,10 @@ jobs:
       - name: Install Windows build deps (gstreamer for gateway)
         if: runner.os == 'Windows' && matrix.package == 'syntaur-gateway'
         shell: pwsh
-        # Backstop the per-attempt msiexec retries (3 tries x 180s x 2 MSIs
-        # + downloads). Bounds a pathological stall without the 90-min job
-        # timeout swallowing the log.
-        timeout-minutes: 25
+        # Backstop the per-attempt msiexec retries (3 tries x 240s x 2 MSIs
+        # + settles + downloads). Bounds a pathological stall without the
+        # 90-min job timeout swallowing the log.
+        timeout-minutes: 30
         run: |
           # Official GStreamer MSVC MSIs. choco's gstreamer packages hang
           # on the silent-install MSI prompt (verified 2026-06-05: 62 min
@@ -198,32 +198,49 @@ jobs:
           # devel; ADDLOCAL=ALL pulls in headers + lib + pkgconfig .pc.
           $ver  = '1.26.9'
           $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$ver/msvc"
-          foreach ($m in @("gstreamer-1.0-msvc-x86_64-$ver.msi","gstreamer-1.0-devel-msvc-x86_64-$ver.msi")) {
+          $rt   = "gstreamer-1.0-msvc-x86_64-$ver.msi"
+          $dev  = "gstreamer-1.0-devel-msvc-x86_64-$ver.msi"
+          foreach ($m in @($rt,$dev)) {
             Write-Host "Downloading $m"
             # curl.exe (not Invoke-WebRequest — its progress bar makes large
             # CI downloads pathologically slow); -f fails on HTTP errors.
             curl.exe -fL "$base/$m" -o "$env:TEMP\$m"
             if ($LASTEXITCODE -ne 0) { Write-Host "::error::download $m failed"; exit 1 }
-            # Windows Installer serializes on a global mutex; back-to-back
-            # MSI installs (or background runner MSI activity) intermittently
-            # block msiexec INDEFINITELY (observed: one run finished in 43s,
-            # the next hung >11min on the same MSI). Bound each attempt and
-            # kill-and-retry on hang instead of waiting out the job timeout.
-            $ok = $false
-            foreach ($try in 1..3) {
-              Write-Host "Installing $m (attempt $try)"
-              $p = Start-Process msiexec.exe -PassThru -ArgumentList "/i `"$env:TEMP\$m`" /qn /norestart ADDLOCAL=ALL"
-              if ($p.WaitForExit(180000)) {
-                if ($p.ExitCode -eq 0 -or $p.ExitCode -eq 3010) { $ok = $true; break }
-                Write-Host "msiexec exit $($p.ExitCode) — retrying"
-              } else {
-                Write-Host "msiexec hung >180s — killing and retrying"
-                try { $p.Kill() } catch {}
-              }
-              Start-Sleep -Seconds 15
-            }
-            if (-not $ok) { Write-Host "::error::msiexec $m failed after 3 attempts"; exit 1 }
           }
+          # Windows Installer serializes on a global mutex; back-to-back MSI
+          # installs (or background runner MSI activity) intermittently block
+          # msiexec INDEFINITELY (one run 43s, the next >11min on the same
+          # MSI). Bound each attempt with a RAW .NET Process (Start-Process
+          # -PassThru's WaitForExit(ms) does NOT reliably interrupt — proven
+          # by a run where the 180s branch never fired) and kill+retry.
+          function Install-Msi([string]$path) {
+            for ($try = 1; $try -le 3; $try++) {
+              Write-Host "Installing $(Split-Path $path -Leaf) (attempt $try)"
+              $psi = New-Object System.Diagnostics.ProcessStartInfo
+              $psi.FileName = 'msiexec.exe'
+              $psi.Arguments = "/i `"$path`" /qn /norestart ADDLOCAL=ALL"
+              $psi.UseShellExecute = $false
+              $proc = [System.Diagnostics.Process]::Start($psi)
+              if ($proc.WaitForExit(240000)) {
+                $code = $proc.ExitCode
+                # 0 ok, 3010/1641 = success-but-reboot.
+                if ($code -eq 0 -or $code -eq 3010 -or $code -eq 1641) { return }
+                Write-Host "msiexec exit $code — retrying"
+              } else {
+                Write-Host "msiexec hung >240s — killing msiexec and clearing the Installer lock"
+                try { $proc.Kill() } catch {}
+                Get-Process msiexec -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+                # A killed install leaves the global InProgress key behind,
+                # which makes every later msiexec fail fast with 1618.
+                Remove-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\InProgress' -Recurse -ErrorAction SilentlyContinue
+              }
+              Start-Sleep -Seconds 30
+            }
+            Write-Host "::error::msiexec failed after 3 attempts: $path"; exit 1
+          }
+          Install-Msi "$env:TEMP\$rt"
+          Start-Sleep -Seconds 30   # let the Installer service fully release before the 2nd MSI
+          Install-Msi "$env:TEMP\$dev"
           # Discover where the x86_64 glib-2.0.pc actually landed. Use a
           # BOUNDED depth — a full -Recurse over the ADDLOCAL=ALL tree
           # (thousands of files) is pathologically slow and was the real
