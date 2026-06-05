@@ -188,26 +188,36 @@ jobs:
         if: runner.os == 'Windows' && matrix.package == 'syntaur-gateway'
         shell: pwsh
         run: |
-          choco install -y --no-progress pkgconfiglite
-          choco install -y --no-progress gstreamer gstreamer-devel
-          # Don't assume the install path — choco's gstreamer layout has
-          # varied. Locate the *x86_64* glib-2.0.pc wherever it landed
-          # (gstreamer ships both msvc_x86 and msvc_x86_64; we must NOT
-          # pick the 32-bit one) and derive PKG_CONFIG_PATH + MSVC root.
-          $pc = Get-ChildItem -Path 'C:\gstreamer','C:\tools\gstreamer' -Recurse -Filter 'glib-2.0.pc' -ErrorAction SilentlyContinue |
-                  Where-Object { $_.FullName -like '*msvc_x86_64*' } | Select-Object -First 1
-          if (-not $pc) {
-            Write-Host '::error::x86_64 glib-2.0.pc not found after choco gstreamer/gstreamer-devel install'
+          # Official GStreamer MSVC MSIs. choco's gstreamer packages hang
+          # on the silent-install MSI prompt (verified 2026-06-05: 62 min
+          # with no progress). msiexec /qn is genuinely silent. Runtime +
+          # devel; ADDLOCAL=ALL pulls in headers + lib + pkgconfig .pc.
+          $ver  = '1.26.9'
+          $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$ver/msvc"
+          foreach ($m in @("gstreamer-1.0-msvc-x86_64-$ver.msi","gstreamer-1.0-devel-msvc-x86_64-$ver.msi")) {
+            Write-Host "Downloading $m"
+            # curl.exe (not Invoke-WebRequest — its progress bar makes large
+            # CI downloads pathologically slow); -f fails on HTTP errors.
+            curl.exe -fL "$base/$m" -o "$env:TEMP\$m"
+            if ($LASTEXITCODE -ne 0) { Write-Host "::error::download $m failed"; exit 1 }
+            Write-Host "Installing $m"
+            $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList "/i `"$env:TEMP\$m`" /qn /norestart ADDLOCAL=ALL"
+            if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
+              Write-Host "::error::msiexec $m failed (exit $($p.ExitCode))"; exit 1
+            }
+          }
+          $root = 'C:\gstreamer\1.0\msvc_x86_64'
+          if (-not (Test-Path "$root\lib\pkgconfig\glib-2.0.pc")) {
+            Write-Host '::error::glib-2.0.pc missing after MSI install'
             Get-ChildItem -Path 'C:\gstreamer' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 60 | ForEach-Object { $_.FullName }
             exit 1
           }
-          $pcdir = $pc.DirectoryName
-          $root  = Split-Path (Split-Path $pcdir)   # ...\lib\pkgconfig -> install root
-          Write-Host "Found glib-2.0.pc in $pcdir (root $root)"
+          # Official MSI ships .pc files but not pkg-config.exe — add it.
+          choco install -y --no-progress pkgconfiglite
           # GITHUB_ENV/PATH must be UTF-8 (no BOM) — force it explicitly.
-          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
-          "PKG_CONFIG_PATH=$pcdir"               | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
-          "$root\bin"                            | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root"  | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
+          "PKG_CONFIG_PATH=$root\lib\pkgconfig"   | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
+          "$root\bin"                             | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }} -p ${{ matrix.package }}
