@@ -187,10 +187,10 @@ jobs:
       - name: Install Windows build deps (gstreamer for gateway)
         if: runner.os == 'Windows' && matrix.package == 'syntaur-gateway'
         shell: pwsh
-        # Fail-fast instead of the 90-min job timeout — both choco and a
-        # plain msiexec /qn have stalled here; bound it so the step log is
-        # retrievable and shows download-vs-install + which MSI hung.
-        timeout-minutes: 12
+        # Backstop the per-attempt msiexec retries (3 tries x 180s x 2 MSIs
+        # + downloads). Bounds a pathological stall without the 90-min job
+        # timeout swallowing the log.
+        timeout-minutes: 25
         run: |
           # Official GStreamer MSVC MSIs. choco's gstreamer packages hang
           # on the silent-install MSI prompt (verified 2026-06-05: 62 min
@@ -204,11 +204,25 @@ jobs:
             # CI downloads pathologically slow); -f fails on HTTP errors.
             curl.exe -fL "$base/$m" -o "$env:TEMP\$m"
             if ($LASTEXITCODE -ne 0) { Write-Host "::error::download $m failed"; exit 1 }
-            Write-Host "Installing $m"
-            $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList "/i `"$env:TEMP\$m`" /qn /norestart ADDLOCAL=ALL"
-            if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
-              Write-Host "::error::msiexec $m failed (exit $($p.ExitCode))"; exit 1
+            # Windows Installer serializes on a global mutex; back-to-back
+            # MSI installs (or background runner MSI activity) intermittently
+            # block msiexec INDEFINITELY (observed: one run finished in 43s,
+            # the next hung >11min on the same MSI). Bound each attempt and
+            # kill-and-retry on hang instead of waiting out the job timeout.
+            $ok = $false
+            foreach ($try in 1..3) {
+              Write-Host "Installing $m (attempt $try)"
+              $p = Start-Process msiexec.exe -PassThru -ArgumentList "/i `"$env:TEMP\$m`" /qn /norestart ADDLOCAL=ALL"
+              if ($p.WaitForExit(180000)) {
+                if ($p.ExitCode -eq 0 -or $p.ExitCode -eq 3010) { $ok = $true; break }
+                Write-Host "msiexec exit $($p.ExitCode) — retrying"
+              } else {
+                Write-Host "msiexec hung >180s — killing and retrying"
+                try { $p.Kill() } catch {}
+              }
+              Start-Sleep -Seconds 15
             }
+            if (-not $ok) { Write-Host "::error::msiexec $m failed after 3 attempts"; exit 1 }
           }
           # Discover where the x86_64 glib-2.0.pc actually landed. Use a
           # BOUNDED depth — a full -Recurse over the ADDLOCAL=ALL tree
