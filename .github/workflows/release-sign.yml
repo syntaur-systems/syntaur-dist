@@ -168,7 +168,10 @@ jobs:
           # native glib-2.0 + gstreamer-1.0 (video transcode pipeline).
           # These provide glib-2.0.pc / gstreamer-1.0.pc for pkg-config.
           if [ "${{ matrix.package }}" = "syntaur-gateway" ]; then
-            sudo apt-get install -y libglib2.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+            # rtsp-server is its own package (libgstrtspserver-1.0-dev),
+            # NOT part of plugins-base — gstreamer-rtsp-server-sys needs it.
+            sudo apt-get install -y libglib2.0-dev libgstreamer1.0-dev \
+              libgstreamer-plugins-base1.0-dev libgstrtspserver-1.0-dev
           fi
 
       - name: Install macOS build deps (gstreamer for gateway)
@@ -187,10 +190,24 @@ jobs:
         run: |
           choco install -y --no-progress pkgconfiglite
           choco install -y --no-progress gstreamer gstreamer-devel
-          $root = "C:\gstreamer\1.0\msvc_x86_64"
-          echo "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" >> $env:GITHUB_ENV
-          echo "PKG_CONFIG_PATH=$root\lib\pkgconfig" >> $env:GITHUB_ENV
-          echo "$root\bin" >> $env:GITHUB_PATH
+          # Don't assume the install path — choco's gstreamer layout has
+          # varied. Locate the *x86_64* glib-2.0.pc wherever it landed
+          # (gstreamer ships both msvc_x86 and msvc_x86_64; we must NOT
+          # pick the 32-bit one) and derive PKG_CONFIG_PATH + MSVC root.
+          $pc = Get-ChildItem -Path 'C:\gstreamer','C:\tools\gstreamer' -Recurse -Filter 'glib-2.0.pc' -ErrorAction SilentlyContinue |
+                  Where-Object { $_.FullName -like '*msvc_x86_64*' } | Select-Object -First 1
+          if (-not $pc) {
+            Write-Host '::error::x86_64 glib-2.0.pc not found after choco gstreamer/gstreamer-devel install'
+            Get-ChildItem -Path 'C:\gstreamer' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 60 | ForEach-Object { $_.FullName }
+            exit 1
+          }
+          $pcdir = $pc.DirectoryName
+          $root  = Split-Path (Split-Path $pcdir)   # ...\lib\pkgconfig -> install root
+          Write-Host "Found glib-2.0.pc in $pcdir (root $root)"
+          # GITHUB_ENV/PATH must be UTF-8 (no BOM) — force it explicitly.
+          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
+          "PKG_CONFIG_PATH=$pcdir"               | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
+          "$root\bin"                            | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }} -p ${{ matrix.package }}
