@@ -187,6 +187,10 @@ jobs:
       - name: Install Windows build deps (gstreamer for gateway)
         if: runner.os == 'Windows' && matrix.package == 'syntaur-gateway'
         shell: pwsh
+        # Fail-fast instead of the 90-min job timeout — both choco and a
+        # plain msiexec /qn have stalled here; bound it so the step log is
+        # retrievable and shows download-vs-install + which MSI hung.
+        timeout-minutes: 12
         run: |
           # Official GStreamer MSVC MSIs. choco's gstreamer packages hang
           # on the silent-install MSI prompt (verified 2026-06-05: 62 min
