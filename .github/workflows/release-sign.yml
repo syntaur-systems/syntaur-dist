@@ -187,78 +187,61 @@ jobs:
       - name: Install Windows build deps (gstreamer for gateway)
         if: runner.os == 'Windows' && matrix.package == 'syntaur-gateway'
         shell: pwsh
-        # Backstop the per-attempt msiexec retries (3 tries x 240s x 2 MSIs
-        # + settles + downloads). Bounds a pathological stall without the
-        # 90-min job timeout swallowing the log.
-        timeout-minutes: 30
+        timeout-minutes: 20
         run: |
-          # Official GStreamer MSVC MSIs. choco's gstreamer packages hang
-          # on the silent-install MSI prompt (verified 2026-06-05: 62 min
-          # with no progress). msiexec /qn is genuinely silent. Runtime +
-          # devel; ADDLOCAL=ALL pulls in headers + lib + pkgconfig .pc.
+          # GStreamer MSVC deps WITHOUT the Windows Installer service.
+          # msiexec (and choco, which wraps it) intermittently deadlock on
+          # the global Windows Installer mutex on GitHub runners — a
+          # background runner process holds it and killing our own msiexec
+          # cannot release it (proven over many runs: one install 43s, the
+          # next hung >11min on the same MSI). lessmsi is a pure file
+          # EXTRACTOR — it never invokes msiserver, so the mutex hang is
+          # impossible. GStreamer's .pc files use a relocatable prefix
+          # (prefix=${pcfiledir}/../..) so they resolve from the extracted
+          # location, and pkgconfiglite supplies pkg-config.exe.
+          choco install -y --no-progress lessmsi pkgconfiglite
           $ver  = '1.26.9'
           $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$ver/msvc"
-          $rt   = "gstreamer-1.0-msvc-x86_64-$ver.msi"
-          $dev  = "gstreamer-1.0-devel-msvc-x86_64-$ver.msi"
-          foreach ($m in @($rt,$dev)) {
+          $tmp  = "$env:TEMP\gstx"
+          $dest = 'C:\gst'
+          New-Item -ItemType Directory -Force -Path $tmp,$dest | Out-Null
+          foreach ($m in @("gstreamer-1.0-msvc-x86_64-$ver.msi","gstreamer-1.0-devel-msvc-x86_64-$ver.msi")) {
             Write-Host "Downloading $m"
-            # curl.exe (not Invoke-WebRequest — its progress bar makes large
-            # CI downloads pathologically slow); -f fails on HTTP errors.
             curl.exe -fL "$base/$m" -o "$env:TEMP\$m"
             if ($LASTEXITCODE -ne 0) { Write-Host "::error::download $m failed"; exit 1 }
+            Write-Host "Extracting $m with lessmsi"
+            # No trailing backslash on the dest — `\"` is parsed as an escaped
+            # quote by CommandLineToArgvW and would mangle the path.
+            lessmsi x "$env:TEMP\$m" "$tmp"
+            if ($LASTEXITCODE -ne 0) { Write-Host "::error::lessmsi extract $m failed"; exit 1 }
           }
-          # Windows Installer serializes on a global mutex; back-to-back MSI
-          # installs (or background runner MSI activity) intermittently block
-          # msiexec INDEFINITELY (one run 43s, the next >11min on the same
-          # MSI). Bound each attempt with a RAW .NET Process (Start-Process
-          # -PassThru's WaitForExit(ms) does NOT reliably interrupt — proven
-          # by a run where the 180s branch never fired) and kill+retry.
-          function Install-Msi([string]$path) {
-            for ($try = 1; $try -le 3; $try++) {
-              Write-Host "Installing $(Split-Path $path -Leaf) (attempt $try)"
-              $psi = New-Object System.Diagnostics.ProcessStartInfo
-              $psi.FileName = 'msiexec.exe'
-              $psi.Arguments = "/i `"$path`" /qn /norestart ADDLOCAL=ALL"
-              $psi.UseShellExecute = $false
-              $proc = [System.Diagnostics.Process]::Start($psi)
-              if ($proc.WaitForExit(240000)) {
-                $code = $proc.ExitCode
-                # 0 ok, 3010/1641 = success-but-reboot.
-                if ($code -eq 0 -or $code -eq 3010 -or $code -eq 1641) { return }
-                Write-Host "msiexec exit $code — retrying"
-              } else {
-                Write-Host "msiexec hung >240s — killing msiexec and clearing the Installer lock"
-                try { $proc.Kill() } catch {}
-                Get-Process msiexec -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-                # A killed install leaves the global InProgress key behind,
-                # which makes every later msiexec fail fast with 1618.
-                Remove-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\InProgress' -Recurse -ErrorAction SilentlyContinue
-              }
-              Start-Sleep -Seconds 30
-            }
-            Write-Host "::error::msiexec failed after 3 attempts: $path"; exit 1
+          # lessmsi extracts each MSI to its OWN <name>\SourceDir tree, so
+          # runtime (bin\*.dll, plugins) and devel (lib/include/pkgconfig)
+          # land separately. Merge every SourceDir into one $dest so a single
+          # msvc_x86_64 root holds bin + lib + pkgconfig + plugins together —
+          # the build needs the devel files, the Windows smoke test that
+          # launches the gateway needs the runtime DLLs on PATH.
+          Get-ChildItem -Path $tmp -Recurse -Depth 3 -Directory -Filter 'SourceDir' -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "Merging $($_.FullName) -> $dest"
+            # robocopy returns 0-7 on success (1 = files copied), so do NOT
+            # gate on its exit code.
+            robocopy "$($_.FullName)" "$dest" /E /NFL /NDL /NJH /NJS /NP /R:1 /W:1 | Out-Null
           }
-          Install-Msi "$env:TEMP\$rt"
-          Start-Sleep -Seconds 30   # let the Installer service fully release before the 2nd MSI
-          Install-Msi "$env:TEMP\$dev"
-          # Discover where the x86_64 glib-2.0.pc actually landed. Use a
-          # BOUNDED depth — a full -Recurse over the ADDLOCAL=ALL tree
-          # (thousands of files) is pathologically slow and was the real
-          # cause of the earlier apparent "install hangs". .pc files sit
-          # at ~depth 4 (gstreamer\1.0\msvc_x86_64\lib\pkgconfig).
-          $pc = Get-ChildItem -Path 'C:\gstreamer' -Recurse -Depth 5 -Filter 'glib-2.0.pc' -ErrorAction SilentlyContinue |
+          # Locate the merged x86_64 glib-2.0.pc (bounded depth).
+          $pc = Get-ChildItem -Path $dest -Recurse -Depth 8 -Filter 'glib-2.0.pc' -ErrorAction SilentlyContinue |
                   Where-Object { $_.FullName -like '*msvc_x86_64*' } | Select-Object -First 1
           if (-not $pc) {
-            Write-Host '::error::glib-2.0.pc not found under C:\gstreamer after MSI install'
-            Write-Host '--- C:\gstreamer layout (depth 2) ---'
-            Get-ChildItem -Path 'C:\gstreamer' -Recurse -Depth 2 -ErrorAction SilentlyContinue | Select-Object -First 50 | ForEach-Object { $_.FullName }
+            Write-Host '::error::glib-2.0.pc not found after lessmsi extraction + merge'
+            Write-Host '--- C:\gst layout (depth 4 dirs) ---'
+            Get-ChildItem -Path $dest -Recurse -Depth 4 -Directory -ErrorAction SilentlyContinue | Select-Object -First 60 | ForEach-Object { $_.FullName }
             exit 1
           }
           $pcdir = $pc.DirectoryName
-          $root  = Split-Path (Split-Path $pcdir)   # ...\lib\pkgconfig -> root
+          $root  = Split-Path (Split-Path $pcdir)   # ...\lib\pkgconfig -> msvc_x86_64 root
           Write-Host "Found glib-2.0.pc in $pcdir (root $root)"
-          # Official MSI ships .pc files but not pkg-config.exe — add it.
-          choco install -y --no-progress pkgconfiglite
+          if (-not (Test-Path "$root\bin\gstreamer-1.0-0.dll")) {
+            Write-Host "::warning::gstreamer-1.0-0.dll not under $root\bin — Windows smoke test may fail to launch"
+          }
           # GITHUB_ENV/PATH must be UTF-8 (no BOM) — force it explicitly.
           "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root"  | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
           "PKG_CONFIG_PATH=$pcdir"                | Out-File -FilePath $env:GITHUB_ENV  -Encoding utf8 -Append
