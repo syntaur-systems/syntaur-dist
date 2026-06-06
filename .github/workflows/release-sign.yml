@@ -210,9 +210,12 @@ jobs:
             curl.exe -fL "$base/$m" -o "$env:TEMP\$m"
             if ($LASTEXITCODE -ne 0) { Write-Host "::error::download $m failed"; exit 1 }
             Write-Host "Extracting $m with lessmsi"
-            # No trailing backslash on the dest — `\"` is parsed as an escaped
-            # quote by CommandLineToArgvW and would mangle the path.
-            lessmsi x "$env:TEMP\$m" "$tmp"
+            # lessmsi REQUIRES a trailing backslash on the output dir — without
+            # one it treats the arg as a file FILTER (proven: "File ...gstx was
+            # not found in the msi", extraction fell back to CWD\<msiname>).
+            # Use a DOUBLE backslash so native CommandLineToArgvW collapses it
+            # to one literal trailing `\` (a lone `\"` would escape the quote).
+            lessmsi x "$env:TEMP\$m" "$tmp\\"
             if ($LASTEXITCODE -ne 0) { Write-Host "::error::lessmsi extract $m failed"; exit 1 }
           }
           # lessmsi extracts each MSI to its OWN <name>\SourceDir tree, so
