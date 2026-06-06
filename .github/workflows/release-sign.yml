@@ -230,6 +230,11 @@ jobs:
             # gate on its exit code.
             robocopy "$($_.FullName)" "$dest" /E /NFL /NDL /NJH /NJS /NP /R:1 /W:1 | Out-Null
           }
+          # robocopy returns 1 on success (files copied). GitHub's pwsh wrapper
+          # exits the STEP with $LASTEXITCODE, so a leftover non-zero from
+          # robocopy fails the step even though everything worked. Clear it;
+          # the glib-2.0.pc gate below still `exit 1`s on real failure.
+          $global:LASTEXITCODE = 0
           # Locate the merged x86_64 glib-2.0.pc (bounded depth).
           $pc = Get-ChildItem -Path $dest -Recurse -Depth 8 -Filter 'glib-2.0.pc' -ErrorAction SilentlyContinue |
                   Where-Object { $_.FullName -like '*msvc_x86_64*' } | Select-Object -First 1
