@@ -45,6 +45,5 @@ See [`SECURITY.md`](SECURITY.md) for the full verification, provenance, disclosu
 | `install.sh`, `install.ps1` | The verifiable installers customers run |
 | `.github/workflows/release-sign.yml` | The public build → sign → publish pipeline (checks out private source via a read-only deploy key) |
 | `cosign.pub` | Public key for the local-signed deploy-stamp path (see SECURITY.md) |
-| `landing/` | Marketing landing page (GitHub Pages) |
 | `SECURITY.md` | Verification + vulnerability disclosure + source-audit policy |
 | Releases | Signed binaries + `checksums.txt` + `*.cosign.bundle` |
