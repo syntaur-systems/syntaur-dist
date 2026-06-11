@@ -11,6 +11,7 @@
 # Flags:
 #   --server          install the gateway + service unit
 #   --connect         install only the viewer (points at an existing server)
+#   --accept-eula     accept the EULA non-interactively (required when no TTY is available)
 #   --skip-verify     bypass checksum + signature verification (developer use; WARNS)
 #   --no-sudo         skip the package-manager step that installs GStreamer plugins
 set -e
@@ -26,12 +27,16 @@ INSTALL_DIR="$HOME/.local/bin"
 MODE=""
 VERIFY="1"
 AUTOSUDO="1"
+ACCEPT_EULA="0"
+EULA_VERSION="1.0"
+EULA_URL="https://github.com/syntaur-systems/syntaur-dist/blob/main/EULA.md"
 
 # Parse flags
 for arg in "$@"; do
   case "$arg" in
     --server)       MODE="server" ;;
     --connect)      MODE="connect" ;;
+    --accept-eula)  ACCEPT_EULA="1" ;;
     --skip-verify)  VERIFY="0" ;;
     --no-sudo)      AUTOSUDO="0" ;;
   esac
@@ -139,6 +144,46 @@ download_verified() {
 echo ""
 echo "  ♞ $BRAND v$VERSION"
 echo "  Your personal AI platform"
+echo ""
+
+# ── EULA acceptance ─────────────────────────────────────────────────────────
+# Use of Syntaur is governed by the EULA. Acceptance is an affirmative
+# act (EULA §17): the --accept-eula flag, or typing "I AGREE" here.
+EULA_METHOD=""
+if [ "$ACCEPT_EULA" = "1" ]; then
+  EULA_METHOD="flag"
+else
+  echo "  Installing $BRAND requires accepting the End User License Agreement (v$EULA_VERSION):"
+  echo "    $EULA_URL"
+  echo ""
+  if [ -t 0 ]; then
+    printf '  Type "I AGREE" to accept (anything else aborts): '
+    read -r EULA_ANS || EULA_ANS=""
+  elif ( : < /dev/tty ) 2>/dev/null; then
+    printf '  Type "I AGREE" to accept (anything else aborts): ' > /dev/tty
+    read -r EULA_ANS < /dev/tty || EULA_ANS=""
+  else
+    echo "  No terminal available to accept interactively."
+    echo "  Re-run with --accept-eula after reading the EULA at the URL above."
+    exit 1
+  fi
+  EULA_ANS_UC=$(printf '%s' "$EULA_ANS" | tr '[:lower:]' '[:upper:]')
+  case "$EULA_ANS_UC" in
+    "I AGREE") EULA_METHOD="prompt" ;;
+    *) echo "  EULA not accepted — install aborted."; exit 1 ;;
+  esac
+fi
+# Local acceptance record (EULA §17). Best-effort: never fails the install.
+if mkdir -p "$HOME/.syntaur" 2>/dev/null; then
+  {
+    echo "eula_version=$EULA_VERSION"
+    echo "eula_url=$EULA_URL"
+    echo "accepted_at=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)"
+    echo "method=$EULA_METHOD"
+    echo "installer_version=$VERSION"
+  } > "$HOME/.syntaur/eula-accepted" 2>/dev/null || true
+fi
+echo "  EULA v$EULA_VERSION accepted (via $EULA_METHOD)."
 echo ""
 
 # If no mode specified, ask

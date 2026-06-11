@@ -1,8 +1,13 @@
 # Syntaur installer for Windows — https://syntaur.app
 # Usage:
-#   irm https://github.com/syntaur-systems/syntaur-dist/releases/latest/download/install.ps1 | iex               # interactive
-#   irm https://github.com/syntaur-systems/syntaur-dist/releases/latest/download/install.ps1 | iex -Args --server # server mode
-#   irm https://github.com/syntaur-systems/syntaur-dist/releases/latest/download/install.ps1 | iex -Args --connect # viewer only
+#   irm https://github.com/syntaur-systems/syntaur-dist/releases/latest/download/install.ps1 | iex   # interactive
+#
+# To pass flags (piped iex cannot receive them — it never populates $args):
+#   & ([scriptblock]::Create((irm https://github.com/syntaur-systems/syntaur-dist/releases/latest/download/install.ps1))) --server
+#   & ([scriptblock]::Create((irm https://github.com/syntaur-systems/syntaur-dist/releases/latest/download/install.ps1))) --connect
+#
+# Pass --accept-eula to accept the EULA non-interactively:
+#   https://github.com/syntaur-systems/syntaur-dist/blob/main/EULA.md
 #Requires -Version 5.1
 $ErrorActionPreference = "Stop"
 
@@ -18,6 +23,41 @@ $DashboardUrl = "http://localhost:18789"
 Write-Host ""
 Write-Host "  $([char]0x265E) $Brand v$Version"
 Write-Host "  Your personal AI platform"
+Write-Host ""
+
+# ── EULA acceptance ──────────────────────────────────────────────────
+# Use of Syntaur is governed by the EULA. Acceptance is an affirmative
+# act (EULA §17): the --accept-eula flag, or typing "I AGREE" here.
+$EulaVersion = "1.0"
+$EulaUrl = "https://github.com/syntaur-systems/syntaur-dist/blob/main/EULA.md"
+$EulaMethod = ""
+if ($args -contains "--accept-eula") {
+    $EulaMethod = "flag"
+} else {
+    Write-Host "  Installing $Brand requires accepting the End User License Agreement (v$EulaVersion):"
+    Write-Host "    $EulaUrl"
+    Write-Host ""
+    $EulaAns = Read-Host '  Type "I AGREE" to accept (anything else aborts)'
+    if ($EulaAns.Trim() -ieq "I AGREE") {
+        $EulaMethod = "prompt"
+    } else {
+        Write-Host "  EULA not accepted - install aborted."
+        exit 1
+    }
+}
+# Local acceptance record (EULA §17). Best-effort: never fails the install.
+try {
+    $SynDir = Join-Path $env:USERPROFILE ".syntaur"
+    New-Item -ItemType Directory -Force -Path $SynDir | Out-Null
+    @(
+        "eula_version=$EulaVersion"
+        "eula_url=$EulaUrl"
+        "accepted_at=$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
+        "method=$EulaMethod"
+        "installer_version=$Version"
+    ) | Set-Content -Path (Join-Path $SynDir "eula-accepted")
+} catch { }
+Write-Host "  EULA v$EulaVersion accepted (via $EulaMethod)."
 Write-Host ""
 
 # Parse mode

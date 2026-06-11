@@ -2,7 +2,7 @@
 
 This is the **public distribution repository** for [Syntaur](https://syntaur.app). It contains everything you need to **install** Syntaur and **independently verify** that the binaries you run were built from legitimate, unmodified source — without exposing the application source itself.
 
-Syntaur is a paid, closed-source product. The application source lives in a private repository. **The build and signing pipeline, however, is fully public** (see [`.github/workflows/release-sign.yml`](.github/workflows/release-sign.yml)) so that anyone can audit exactly how a published binary is produced and confirm its provenance. Source confidentiality and supply-chain transparency at the same time.
+Syntaur is a paid, closed-source product, licensed under the [End User License Agreement](EULA.md) (accepted at install). The application source lives in a private repository. **The build and signing pipeline, however, is fully public** (see [`.github/workflows/release-sign.yml`](.github/workflows/release-sign.yml)) so that anyone can audit exactly how a published binary is produced and confirm its provenance. Source confidentiality and supply-chain transparency at the same time.
 
 ## Install
 
@@ -10,12 +10,13 @@ Syntaur is a paid, closed-source product. The application source lives in a priv
 ```sh
 wget https://github.com/syntaur-systems/syntaur-dist/releases/latest/download/install.sh
 sh install.sh --server      # gateway + service unit  (--connect for viewer-only)
+# The installer asks you to accept the EULA; pass --accept-eula to pre-accept.
 ```
 The installer downloads `checksums.txt` + the cosign bundle from the release and **verifies the binary before installing it** (use `--skip-verify` to bypass — it warns loudly).
 
 **Windows (PowerShell):**
 ```powershell
-irm https://github.com/syntaur-systems/syntaur-dist/releases/latest/download/install.ps1 | iex -Args --server
+& ([scriptblock]::Create((irm https://github.com/syntaur-systems/syntaur-dist/releases/latest/download/install.ps1))) --server --accept-eula
 ```
 
 ## Verify a release yourself
@@ -43,6 +44,7 @@ See [`SECURITY.md`](SECURITY.md) for the full verification, provenance, disclosu
 | Path | Purpose |
 |---|---|
 | `install.sh`, `install.ps1` | The verifiable installers customers run |
+| `EULA.md` | The End User License Agreement (v1.0) accepted at install/purchase |
 | `.github/workflows/release-sign.yml` | The public build → sign → publish pipeline (checks out private source via a read-only deploy key) |
 | `cosign.pub` | Public key for the local-signed deploy-stamp path (see SECURITY.md) |
 | `SECURITY.md` | Verification + vulnerability disclosure + source-audit policy |
