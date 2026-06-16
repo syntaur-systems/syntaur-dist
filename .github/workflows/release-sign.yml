@@ -391,8 +391,8 @@ jobs:
           sed -i -E 's/^(\$Version = ")[0-9.]+(")/\1'"$REL_VERSION"'\2/' install.ps1
           # Fail loudly if the stamp did not apply (sed exits 0 on zero matches;
           # issue #27 must NEVER silently reintroduce a stale install-script version).
-          grep -qF "VERSION=\"${REL_VERSION}\"" install.sh || { echo "::error::install.sh VERSION not stamped to ${REL_VERSION} (sed matched nothing — check the VERSION= line format)"; exit 1; }
-          grep -qF "\$Version = \"${REL_VERSION}\"" install.ps1 || { echo "::error::install.ps1 \$Version not stamped to ${REL_VERSION} (sed matched nothing — check the \$Version line format)"; exit 1; }
+          grep -qE "^VERSION=\"${REL_VERSION}\"" install.sh || { echo "::error::install.sh VERSION not stamped to ${REL_VERSION} (sed matched nothing — check the VERSION= line format)"; exit 1; }
+          grep -qE "^\\\$Version = \"${REL_VERSION}\"" install.ps1 || { echo "::error::install.ps1 \$Version not stamped to ${REL_VERSION} (sed matched nothing — check the \$Version line format)"; exit 1; }
           cp install.sh   dist/install.sh
           cp install.ps1  dist/install.ps1
           chmod +x dist/install.sh
