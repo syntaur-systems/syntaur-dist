@@ -384,6 +384,11 @@ jobs:
       - name: Stage install scripts into dist
         run: |
           set -euo pipefail
+          # issue #27: stamp install scripts with the release version BEFORE
+          # staging+signing, so published installers never advertise a stale
+          # hardcoded VERSION (and the signed bundle matches the shipped file).
+          sed -i -E 's/^(VERSION=")[0-9.]+(")/\1'"$REL_VERSION"'\2/' install.sh
+          sed -i -E 's/^(\$Version = ")[0-9.]+(")/\1'"$REL_VERSION"'\2/' install.ps1
           cp install.sh   dist/install.sh
           cp install.ps1  dist/install.ps1
           chmod +x dist/install.sh
