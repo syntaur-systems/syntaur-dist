@@ -159,10 +159,11 @@ jobs:
       - name: Install Linux build deps
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libdbus-1-dev pkg-config
+          export DEBIAN_FRONTEND=noninteractive
+          timeout 10m sudo -E apt-get update
+          timeout 10m sudo -E apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
           if [ "${{ matrix.package }}" = "syntaur-viewer" ]; then
-            sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev
+            timeout 10m sudo -E apt-get install -y --no-install-recommends libgtk-4-dev libwebkitgtk-6.0-dev
           fi
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }} -p ${{ matrix.package }}
