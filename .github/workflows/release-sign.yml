@@ -159,11 +159,33 @@ jobs:
       - name: Install Linux build deps
         if: runner.os == 'Linux'
         run: |
+          set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
-          timeout 10m sudo -E apt-get update
-          timeout 10m sudo -E apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+
+          # GitHub's Ubuntu runners sometimes point apt at the Azure mirror,
+          # which can stall long enough to fail release jobs. Prefer the
+          # canonical Ubuntu mirrors, keep retries short, and retain a hard
+          # timeout so infrastructure drift stays bounded.
+          sudo sed -i \
+            -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+            -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list \
+            /etc/apt/sources.list.d/*.list \
+            /etc/apt/sources.list.d/*.sources \
+            2>/dev/null || true
+
+          apt_get() {
+            timeout 15m sudo -E apt-get \
+              -o Acquire::Retries=4 \
+              -o Acquire::http::Timeout=30 \
+              -o Acquire::https::Timeout=30 \
+              "$@"
+          }
+
+          apt_get update
+          apt_get install -y --no-install-recommends libdbus-1-dev pkg-config
           if [ "${{ matrix.package }}" = "syntaur-viewer" ]; then
-            timeout 10m sudo -E apt-get install -y --no-install-recommends libgtk-4-dev libwebkitgtk-6.0-dev
+            apt_get install -y --no-install-recommends libgtk-4-dev libwebkitgtk-6.0-dev
           fi
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }} -p ${{ matrix.package }}
