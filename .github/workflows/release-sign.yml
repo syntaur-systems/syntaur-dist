@@ -393,6 +393,7 @@ jobs:
           apt_get install -y --no-install-recommends \
             libasound2-dev \
             libdbus-1-dev \
+            libfontconfig1-dev \
             libudev-dev \
             libwayland-dev \
             libxkbcommon-dev \
