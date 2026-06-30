@@ -9,10 +9,10 @@ Syntaur is a paid, closed-source product, licensed under the [End User License A
 **Linux / macOS:**
 ```sh
 wget https://github.com/syntaur-systems/syntaur-dist/releases/latest/download/install.sh
-sh install.sh --server      # gateway + service unit  (--connect for viewer-only)
+sh install.sh --server      # gateway + service unit  (--connect for client-only)
 # The installer asks you to accept the EULA; pass --accept-eula to pre-accept.
 ```
-The installer downloads `checksums.txt` + the cosign bundle from the release and **verifies the binary before installing it** (use `--skip-verify` to bypass — it warns loudly).
+The Linux/macOS installer includes the native Syntaur browser engine when that asset is present, with `syntaur-viewer` and the system browser as fallbacks. It downloads `checksums.txt` + the cosign bundle from the release and **verifies every installed binary before installing it** (use `--skip-verify` to bypass — it warns loudly).
 
 **Windows (PowerShell):**
 ```powershell

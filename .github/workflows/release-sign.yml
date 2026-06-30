@@ -2,11 +2,11 @@ name: Release — Build + Sign (from private source)
 
 # PUBLIC, AUDITABLE build+sign+publish workflow for Syntaur.
 #
-# The application source lives in the PRIVATE repo buddyholly007/syntaur.
-# This workflow (in the PUBLIC syntaur-dist repo) checks that source out
-# via a READ-ONLY deploy key, builds the release binaries, signs each
-# artifact with Sigstore cosign (keyless OIDC — the signing identity is
-# THIS public workflow, so anyone can audit exactly how a published
+# The application source and native browser engine source live in private
+# repositories. This workflow (in the PUBLIC syntaur-dist repo) checks
+# them out via read-only deploy keys, builds the release binaries, signs
+# each artifact with Sigstore cosign (keyless OIDC — the signing identity
+# is THIS public workflow, so anyone can audit exactly how a published
 # binary was produced), and publishes a GitHub Release here on
 # syntaur-dist where the assets are anonymously downloadable.
 #
@@ -32,8 +32,12 @@ on:
         description: 'Release version, no leading v (e.g. 0.7.44). Tag published here will be v<version>.'
         required: true
       source_ref:
-        description: 'Ref in the PRIVATE buddyholly007/syntaur to build (tag/branch/sha, e.g. v0.7.44).'
+        description: 'Ref in the private Syntaur application source to build (tag/branch/sha, e.g. v0.7.44).'
         required: true
+      engine_ref:
+        description: 'Ref in the PRIVATE syntaur-engine repo to build (branch/sha, default: main).'
+        required: false
+        default: main
   # Wired later: the private repo's deploy pipeline fires a
   # repository_dispatch(event_type=release) carrying {version, source_ref}
   # so a tagged release auto-builds here. Manual dispatch is the path for
@@ -51,6 +55,7 @@ env:
   # Normalize the two trigger shapes into one set of values the jobs use.
   REL_VERSION: ${{ github.event.inputs.version || github.event.client_payload.version }}
   SRC_REF: ${{ github.event.inputs.source_ref || github.event.client_payload.source_ref }}
+  ENGINE_REF: ${{ github.event.inputs.engine_ref || github.event.client_payload.engine_ref || 'main' }}
 
 jobs:
   # Validate the (possibly attacker-supplied, via repository_dispatch
@@ -65,6 +70,7 @@ jobs:
         env:
           REL_VERSION_IN: ${{ env.REL_VERSION }}
           SRC_REF_IN: ${{ env.SRC_REF }}
+          ENGINE_REF_IN: ${{ env.ENGINE_REF }}
         run: |
           set -euo pipefail
           # Reject multi-line inputs first: `grep -Eq '^...$'` matches
@@ -72,7 +78,8 @@ jobs:
           # leak the rest downstream. printf '%s' adds no trailing newline,
           # so a clean single-line value has wc -l == 0.
           if [ "$(printf '%s' "$REL_VERSION_IN" | wc -l)" -ne 0 ] \
-             || [ "$(printf '%s' "$SRC_REF_IN" | wc -l)" -ne 0 ]; then
+             || [ "$(printf '%s' "$SRC_REF_IN" | wc -l)" -ne 0 ] \
+             || [ "$(printf '%s' "$ENGINE_REF_IN" | wc -l)" -ne 0 ]; then
             echo "::error::inputs must be single-line"
             exit 1
           fi
@@ -84,10 +91,17 @@ jobs:
             echo "::error::source_ref '$SRC_REF_IN' contains disallowed characters"
             exit 1
           fi
+          if ! printf '%s' "$ENGINE_REF_IN" | grep -Eq '^[A-Za-z0-9._/-]+$'; then
+            echo "::error::engine_ref '$ENGINE_REF_IN' contains disallowed characters"
+            exit 1
+          fi
           case "$SRC_REF_IN" in
             *..*|/*|*/) echo "::error::source_ref '$SRC_REF_IN' has an unsafe shape"; exit 1 ;;
           esac
-          echo "inputs OK: version=$REL_VERSION_IN source_ref=$SRC_REF_IN"
+          case "$ENGINE_REF_IN" in
+            *..*|/*|*/) echo "::error::engine_ref '$ENGINE_REF_IN' has an unsafe shape"; exit 1 ;;
+          esac
+          echo "inputs OK: version=$REL_VERSION_IN source_ref=$SRC_REF_IN engine_ref=$ENGINE_REF_IN"
 
   build:
     name: Build ${{ matrix.target }} / ${{ matrix.package }}
@@ -137,7 +151,7 @@ jobs:
       # Check out the PRIVATE application source via the read-only deploy
       # key. The key's private half is stored as the SYNTAUR_SOURCE_DEPLOY_KEY
       # secret in this (syntaur-dist) repo; its public half is registered
-      # read-only on buddyholly007/syntaur.
+      # read-only on the private application source repository.
       - name: Checkout private source
         uses: actions/checkout@v4
         with:
@@ -303,9 +317,170 @@ jobs:
             syntaur-sbom.spdx.json
           retention-days: 7
 
+  build-engine:
+    name: Build native browser engine ${{ matrix.target }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            platform: linux
+            arch: x86_64
+            features: gpu-paint
+            smoke_prefix: xvfb-run -a
+          - os: macos-14
+            target: aarch64-apple-darwin
+            platform: macos
+            arch: arm64
+            features: gpu-paint
+            smoke_prefix: ''
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - name: Checkout private application source dependency
+        uses: actions/checkout@v4
+        with:
+          repository: buddyholly007/syntaur
+          ref: ${{ env.SRC_REF }}
+          path: openclaw-workspace
+          ssh-key: ${{ secrets.SYNTAUR_SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - name: Checkout private engine source
+        uses: actions/checkout@v4
+        with:
+          repository: buddyholly007/syntaur-engine
+          ref: ${{ env.ENGINE_REF }}
+          path: syntaur-engine
+          ssh-key: ${{ secrets.SYNTAUR_ENGINE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            syntaur-engine
+            openclaw-workspace
+          key: release-engine-${{ matrix.target }}
+
+      - name: Install Linux engine build deps
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sudo sed -i \
+            -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+            -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list \
+            /etc/apt/sources.list.d/*.list \
+            /etc/apt/sources.list.d/*.sources \
+            2>/dev/null || true
+          apt_get() {
+            timeout 15m sudo -E apt-get \
+              -o Acquire::Retries=4 \
+              -o Acquire::http::Timeout=30 \
+              -o Acquire::https::Timeout=30 \
+              "$@"
+          }
+          apt_get update
+          apt_get install -y --no-install-recommends \
+            libasound2-dev \
+            libdbus-1-dev \
+            libudev-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            pkg-config \
+            xvfb
+
+      - name: Build engine + clipboard helper
+        working-directory: syntaur-engine
+        run: |
+          cargo build --release --target ${{ matrix.target }} \
+            -p engine-shell --bin syntaur_browser --features "${{ matrix.features }}"
+          cargo build --release --target ${{ matrix.target }} \
+            -p clipboard-helper --bin syntaur-clip-write
+
+      - name: Stage engine artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "syntaur-engine/target/${{ matrix.target }}/release/syntaur_browser" \
+            "dist/syntaur-engine-${{ matrix.platform }}-${{ matrix.arch }}"
+          cp "syntaur-engine/target/${{ matrix.target }}/release/syntaur-clip-write" \
+            "dist/syntaur-clip-write-${{ matrix.platform }}-${{ matrix.arch }}"
+
+      - name: Smoke native browser screenshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/syntaur-engine-smoke.html <<'HTML'
+          <!doctype html>
+          <html><head><meta charset="utf-8"><title>Syntaur engine smoke</title></head>
+          <body style="margin:0;background:#101417;color:#f4f1e8;font:24px system-ui">
+            <main style="height:100vh;display:grid;place-items:center">
+              <section style="padding:24px;border:1px solid #d8aa4c;border-radius:8px">
+                Syntaur native browser smoke
+              </section>
+            </main>
+          </body></html>
+          HTML
+          SHOT="/tmp/syntaur-engine-${{ matrix.platform }}-${{ matrix.arch }}.png"
+          ${{ matrix.smoke_prefix }} ./dist/syntaur-engine-${{ matrix.platform }}-${{ matrix.arch }} \
+            --input /tmp/syntaur-engine-smoke.html \
+            --width 800 \
+            --height 520 \
+            --screenshot "$SHOT" \
+            --screenshot-frames 8 \
+            --screenshot-min-ms 1200
+          python3 - "$SHOT" <<'PY'
+          import os
+          import sys
+          path = sys.argv[1]
+          with open(path, "rb") as f:
+              head = f.read(8)
+          if head != b"\x89PNG\r\n\x1a\n":
+              raise SystemExit("engine smoke did not produce a PNG")
+          if os.path.getsize(path) < 4096:
+              raise SystemExit("engine smoke PNG is unexpectedly small")
+          print(f"engine smoke PNG OK: {path} ({os.path.getsize(path)} bytes)")
+          PY
+
+      - name: Record resolved engine source commit (Linux engine only)
+        if: matrix.platform == 'linux' && matrix.arch == 'x86_64'
+        shell: bash
+        run: |
+          {
+            echo "engine_ref: ${ENGINE_REF}"
+            echo "resolved_commit: $(git -C syntaur-engine rev-parse HEAD)"
+          } > syntaur-engine-source-commit.txt
+          cat syntaur-engine-source-commit.txt
+
+      - name: Upload resolved engine source commit (Linux engine only)
+        if: matrix.platform == 'linux' && matrix.arch == 'x86_64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: syntaur-engine-prov
+          path: syntaur-engine-source-commit.txt
+          retention-days: 7
+
+      - name: Upload engine artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: syntaur-engine-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*
+          retention-days: 7
+
   sign-and-release:
     name: Sign + publish release
-    needs: build
+    needs: [build, build-engine]
     if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-24.04
     steps:
@@ -349,6 +524,10 @@ jobs:
             syntaur-isolation-tests-linux-x86_64
             syntaur-gateway-macos-arm64
             syntaur-viewer-macos-arm64
+            syntaur-engine-linux-x86_64
+            syntaur-engine-macos-arm64
+            syntaur-clip-write-linux-x86_64
+            syntaur-clip-write-macos-arm64
             syntaur-gateway-windows-x86_64.exe
             syntaur-viewer-windows-x86_64.exe
             install.sh
@@ -364,14 +543,14 @@ jobs:
           fi
           echo "All core artifacts present ($(ls syntaur-* install.sh install.ps1 | wc -l) total)."
 
-      # The provenance file (syntaur-source-commit.txt) and dependency SBOM
-      # (syntaur-sbom.spdx.json) were produced in the Linux gateway build job
-      # and arrive here via the download-artifact merge above (from the
-      # syntaur-prov artifact), landing in dist/. Both are named syntaur-*,
-      # so the checksum / cosign-sign / upload steps below glob them in
-      # automatically — hashed, keyless-signed, and published with no further
-      # wiring. (They are best-effort: continue-on-error in the build job
-      # means a tooling hiccup leaves them out rather than blocking release.)
+      # The application provenance file (syntaur-source-commit.txt),
+      # browser-engine provenance file (syntaur-engine-source-commit.txt),
+      # and dependency SBOM (syntaur-sbom.spdx.json) arrive here via
+      # download-artifact merge-multiple, landing in dist/. They are named
+      # syntaur-*, so the checksum / cosign-sign / upload steps below glob
+      # them in automatically — hashed, keyless-signed, and published with
+      # no further wiring. The app provenance + SBOM are best-effort; the
+      # engine provenance is required because the engine build job uploads it.
       - name: Compute checksums
         working-directory: dist
         run: |
@@ -429,11 +608,14 @@ jobs:
           cat > /tmp/release-body.md <<EOF
           ## Verified release
 
-          Built from the private \`buddyholly007/syntaur\` source at
-          \`${SRC_REF}\` by this repo's public
+          Built from the private Syntaur application source at
+          \`${SRC_REF}\` and the private Syntaur browser engine source at
+          \`${ENGINE_REF}\` by this repo's public
           [\`release-sign.yml\`](https://github.com/syntaur-systems/syntaur-dist/blob/main/.github/workflows/release-sign.yml)
-          workflow. The exact immutable source commit is recorded in the
-          signed \`syntaur-source-commit.txt\`; a dependency SBOM is in the
+          workflow. The exact immutable application source commit is recorded
+          in the signed \`syntaur-source-commit.txt\`; the exact native browser
+          engine commit is recorded in the signed
+          \`syntaur-engine-source-commit.txt\`; a dependency SBOM is in the
           signed \`syntaur-sbom.spdx.json\`. Every artifact is signed with
           Sigstore cosign (keyless OIDC) and accompanied by a
           \`.cosign.bundle\`. Verify before running:

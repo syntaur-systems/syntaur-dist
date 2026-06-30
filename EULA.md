@@ -10,7 +10,7 @@ This End User License Agreement ("Agreement") is a binding contract between you 
 
 ## 1. Definitions
 
-- **"Software"** — the Syntaur gateway binary, viewer, command-line tools, configuration, documentation, and updates we provide.
+- **"Software"** — the Syntaur gateway binary, browser engine, viewer, command-line tools, configuration, documentation, and updates we provide.
 - **"Free Components"** — the core experience provided at no charge: the main-screen chat interface and the primary agent, plus any other functionality we designate as free.
 - **"Paid Modules"** — module components and additional functionality unlocked by a valid one-time purchase (a "Module License"), as described in the applicable order record.
 - **"Module License"** — the right, obtained by a one-time purchase, to use a specified Paid Module for the **purchased major version** (Section 2(b)).

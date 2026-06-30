@@ -10,7 +10,7 @@
 #
 # Flags:
 #   --server          install the gateway + service unit
-#   --connect         install only the viewer (points at an existing server)
+#   --connect         install only the client/browser (points at an existing server)
 #   --accept-eula     accept the EULA non-interactively (required when no TTY is available)
 #   --skip-verify     bypass checksum + signature verification (developer use; WARNS)
 #   --no-sudo         skip the package-manager step that installs GStreamer plugins
@@ -86,7 +86,7 @@ download_verified() {
   trap "rm -rf '$TMP'" EXIT INT TERM
 
   echo "  → Downloading $BIN_NAME"
-  _fetch "$BIN_URL" "$TMP/$BIN_NAME" || return 1
+  _fetch "$BIN_URL" "$TMP/$BIN_NAME" || return 44
 
   if [ "$VERIFY" = "0" ]; then
     printf "  \033[1;31m!!!\033[0m \033[1m--skip-verify:\033[0m installing unverified binary. DO NOT use in production.\n"
@@ -139,6 +139,31 @@ download_verified() {
 
   mv "$TMP/$BIN_NAME" "$OUT"
   chmod +x "$OUT"
+}
+
+download_optional_verified() {
+  LABEL="$1"
+  BIN_URL="$2"
+  OUT="$3"
+
+  echo "  Installing $LABEL..."
+  set +e
+  download_verified "$BIN_URL" "$OUT"
+  CODE=$?
+  set -e
+
+  if [ "$CODE" -eq 0 ]; then
+    return 0
+  fi
+  if [ "$CODE" -eq 44 ]; then
+    echo "  ($LABEL download skipped — not yet published for this platform)"
+    return 1
+  fi
+
+  echo ""
+  echo "  ✗ Could not install a verified $LABEL."
+  echo "    Refusing to continue after a verification failure."
+  exit 1
 }
 
 echo ""
@@ -195,7 +220,7 @@ if [ -z "$MODE" ]; then
   echo "     (This computer needs to stay on.)"
   echo ""
   echo "  2) Connect to my Syntaur server"
-  echo "     Syntaur is already running elsewhere. Just install the viewer."
+  echo "     Syntaur is already running elsewhere. Just install the client."
   echo ""
   printf "  Choose [1/2]: "
   read -r CHOICE
@@ -217,9 +242,15 @@ case "$OS" in
 esac
 
 case "$ARCH" in
-  x86_64|amd64)  ARCH="x86_64" ;;
-  aarch64|arm64) ARCH="aarch64" ;;
-  *)             echo "Error: Unsupported architecture: $ARCH"; exit 1 ;;
+  x86_64|amd64) ARCH="x86_64" ;;
+  aarch64|arm64)
+    if [ "$PLATFORM" = "macos" ]; then
+      ARCH="arm64"
+    else
+      ARCH="aarch64"
+    fi
+    ;;
+  *) echo "Error: Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
 echo "  Platform: $PLATFORM-$ARCH"
@@ -227,6 +258,7 @@ echo ""
 
 # Create install directory
 mkdir -p "$INSTALL_DIR"
+DASHBOARD_URL="${SYNTAUR_URL:-http://localhost:18789}"
 
 # Download gateway binary (server mode only) — verified by default.
 if [ "$MODE" = "server" ]; then
@@ -242,13 +274,37 @@ if [ "$MODE" = "server" ]; then
   }
 fi
 
-# Download viewer — verified too when available.
+# Download native Rust browser engine and viewer — verified when available.
+ENGINE_BINARY="syntaur-engine"
+ENGINE_URL="${REPO_URL}/releases/download/v${VERSION}/syntaur-engine-${PLATFORM}-${ARCH}"
+download_optional_verified "native browser engine" "$ENGINE_URL" "$INSTALL_DIR/$ENGINE_BINARY" || true
+
+CLIP_BINARY="syntaur-clip-write"
+CLIP_URL="${REPO_URL}/releases/download/v${VERSION}/syntaur-clip-write-${PLATFORM}-${ARCH}"
+download_optional_verified "clipboard helper" "$CLIP_URL" "$INSTALL_DIR/$CLIP_BINARY" || true
+
 VIEWER_BINARY="syntaur-viewer"
 VIEWER_URL="${REPO_URL}/releases/download/v${VERSION}/syntaur-viewer-${PLATFORM}-${ARCH}"
-echo "  Installing dashboard viewer..."
-download_verified "$VIEWER_URL" "$INSTALL_DIR/$VIEWER_BINARY" 2>/dev/null || {
-  echo "  (viewer download skipped — not yet published for this platform)"
-}
+download_optional_verified "dashboard viewer" "$VIEWER_URL" "$INSTALL_DIR/$VIEWER_BINARY" || true
+
+APP_LAUNCHER="$INSTALL_DIR/syntaur-open"
+cat > "$APP_LAUNCHER" << LAUNCHER
+#!/bin/sh
+export PATH="$INSTALL_DIR:\$PATH"
+APP_URL="\${SYNTAUR_URL:-$DASHBOARD_URL}"
+if [ -x "$INSTALL_DIR/syntaur-engine" ]; then
+  exec "$INSTALL_DIR/syntaur-engine" --url "\$APP_URL" --width 1440 --height 950
+elif [ -x "$INSTALL_DIR/syntaur-viewer" ]; then
+  SYNTAUR_URL="\$APP_URL" exec "$INSTALL_DIR/syntaur-viewer"
+elif command -v xdg-open >/dev/null 2>&1; then
+  exec xdg-open "\$APP_URL"
+elif command -v open >/dev/null 2>&1; then
+  exec open "\$APP_URL"
+else
+  printf '%s\n' "\$APP_URL"
+fi
+LAUNCHER
+chmod +x "$APP_LAUNCHER"
 
 # Ensure the WebKitGTK viewer can actually decode audio. On many distros
 # the base `webkit2gtk` / `webkitgtk-6.0` package does NOT pull in
@@ -416,9 +472,6 @@ PLIST
   echo "  LaunchAgent installed (dev.syntaur.gateway)"
 fi
 
-# Install desktop shortcut
-DASHBOARD_URL="http://localhost:18789"
-
 if [ "$PLATFORM" = "linux" ]; then
   # Install SVG icon
   ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
@@ -472,13 +525,6 @@ for s in [48, 64, 128, 256]:
 " 2>/dev/null && echo "  PNG icons generated"
   fi
 
-  # Determine exec command: prefer syntaur-viewer, fall back to xdg-open
-  if [ -x "$INSTALL_DIR/syntaur-viewer" ]; then
-    SHORTCUT_EXEC="$INSTALL_DIR/syntaur-viewer"
-  else
-    SHORTCUT_EXEC="xdg-open $DASHBOARD_URL"
-  fi
-
   # Install .desktop file in app launcher
   APP_DIR="$HOME/.local/share/applications"
   mkdir -p "$APP_DIR"
@@ -486,7 +532,7 @@ for s in [48, 64, 128, 256]:
 [Desktop Entry]
 Name=Syntaur
 Comment=Your personal AI platform
-Exec=$SHORTCUT_EXEC
+Exec=$APP_LAUNCHER
 Icon=syntaur
 Type=Application
 Categories=Utility;Development;
@@ -500,7 +546,7 @@ DESKTOP
     chmod +x "$DESKTOP_DIR/syntaur.desktop"
 
     # GNOME trust
-    gio set "$DESKTOP_DIR/syntaur.desktop" metadata::trusted true 2>/dev/null
+    gio set "$DESKTOP_DIR/syntaur.desktop" metadata::trusted true 2>/dev/null || true
 
     # KDE Plasma trust
     if command -v kwriteconfig5 >/dev/null 2>&1; then
@@ -516,7 +562,8 @@ DESKTOP
 fi
 
 if [ "$PLATFORM" = "macos" ]; then
-  # Create a lightweight .app that opens the dashboard in the default browser
+  # Create a lightweight .app that launches the bundled Syntaur browser,
+  # falling back to the viewer or system browser through syntaur-open.
   APP_PATH="$HOME/Applications/Syntaur.app"
   mkdir -p "$APP_PATH/Contents/MacOS"
   mkdir -p "$APP_PATH/Contents/Resources"
@@ -540,11 +587,7 @@ PLIST
 
   cat > "$APP_PATH/Contents/MacOS/syntaur-open" << LAUNCHER
 #!/bin/sh
-if [ -x "$INSTALL_DIR/syntaur-viewer" ]; then
-  exec "$INSTALL_DIR/syntaur-viewer"
-else
-  open "http://localhost:18789"
-fi
+exec "$APP_LAUNCHER"
 LAUNCHER
   chmod +x "$APP_PATH/Contents/MacOS/syntaur-open"
 
@@ -654,7 +697,7 @@ if [ "$MODE" = "server" ]; then
   echo "    2. Open the Tailscale URL shown in the Syntaur dashboard"
   echo "    3. Or use the local network address shown after setup"
 else
-  echo "  ✓ $BRAND viewer installed"
+  echo "  ✓ $BRAND client installed"
   echo ""
   echo "  Open Syntaur from your app launcher to connect to your server."
   echo "  The setup wizard will ask for your server address."
