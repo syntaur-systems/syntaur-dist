@@ -135,6 +135,16 @@ jobs:
             package: syntaur-viewer
             binary: syntaur-viewer
             artifact_name: syntaur-viewer-macos-arm64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            package: syntaur-gateway
+            binary: syntaur-gateway
+            artifact_name: syntaur-gateway-macos-x86_64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            package: syntaur-viewer
+            binary: syntaur-viewer
+            artifact_name: syntaur-viewer-macos-x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             package: syntaur-gateway
@@ -336,6 +346,12 @@ jobs:
             arch: arm64
             features: gpu-paint
             smoke_prefix: ''
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: macos
+            arch: x86_64
+            features: gpu-paint
+            smoke_prefix: ''
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     steps:
@@ -529,10 +545,14 @@ jobs:
             syntaur-isolation-tests-linux-x86_64
             syntaur-gateway-macos-arm64
             syntaur-viewer-macos-arm64
+            syntaur-gateway-macos-x86_64
+            syntaur-viewer-macos-x86_64
             syntaur-engine-linux-x86_64
             syntaur-engine-macos-arm64
+            syntaur-engine-macos-x86_64
             syntaur-clip-write-linux-x86_64
             syntaur-clip-write-macos-arm64
+            syntaur-clip-write-macos-x86_64
             syntaur-icon.png
             syntaur-icon.icns
             syntaur-icon.ico
