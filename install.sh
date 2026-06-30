@@ -287,6 +287,13 @@ VIEWER_BINARY="syntaur-viewer"
 VIEWER_URL="${REPO_URL}/releases/download/v${VERSION}/syntaur-viewer-${PLATFORM}-${ARCH}"
 download_optional_verified "dashboard viewer" "$VIEWER_URL" "$INSTALL_DIR/$VIEWER_BINARY" || true
 
+ICON_PNG="$INSTALL_DIR/syntaur-icon.png"
+ICON_ICNS="$INSTALL_DIR/syntaur-icon.icns"
+download_optional_verified "launcher icon" "${REPO_URL}/releases/download/v${VERSION}/syntaur-icon.png" "$ICON_PNG" || true
+if [ "$PLATFORM" = "macos" ]; then
+  download_optional_verified "macOS launcher icon" "${REPO_URL}/releases/download/v${VERSION}/syntaur-icon.icns" "$ICON_ICNS" || true
+fi
+
 APP_LAUNCHER="$INSTALL_DIR/syntaur-open"
 cat > "$APP_LAUNCHER" << LAUNCHER
 #!/bin/sh
@@ -473,10 +480,18 @@ PLIST
 fi
 
 if [ "$PLATFORM" = "linux" ]; then
-  # Install SVG icon
-  ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
-  mkdir -p "$ICON_DIR"
-  cat > "$ICON_DIR/syntaur.svg" << 'ICON'
+  if [ -f "$ICON_PNG" ]; then
+    for size in 48 64 128 256 512 1024; do
+      ICON_DIR="$HOME/.local/share/icons/hicolor/${size}x${size}/apps"
+      mkdir -p "$ICON_DIR"
+      cp "$ICON_PNG" "$ICON_DIR/syntaur.png"
+    done
+    echo "  Branded launcher icon installed"
+  else
+    # Fallback icon for old releases that did not publish syntaur-icon.png.
+    ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
+    mkdir -p "$ICON_DIR"
+    cat > "$ICON_DIR/syntaur.svg" << 'ICON'
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
   <defs>
     <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
@@ -493,9 +508,9 @@ if [ "$PLATFORM" = "linux" ]; then
 </svg>
 ICON
 
-  # Generate PNG icons for KDE/XFCE (SVG alone is not enough)
-  if command -v python3 >/dev/null 2>&1; then
-    python3 -c "
+    # Generate PNG icons for KDE/XFCE (SVG alone is not enough)
+    if command -v python3 >/dev/null 2>&1; then
+      python3 -c "
 import struct, zlib, os
 def create_png(size, path):
     raw = b''
@@ -523,6 +538,7 @@ for s in [48, 64, 128, 256]:
     os.makedirs(d, exist_ok=True)
     create_png(s, d + '/syntaur.png')
 " 2>/dev/null && echo "  PNG icons generated"
+    fi
   fi
 
   # Install .desktop file in app launcher
@@ -579,7 +595,7 @@ if [ "$PLATFORM" = "macos" ]; then
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleExecutable</key><string>syntaur-open</string>
-  <key>CFBundleIconFile</key><string>icon</string>
+  <key>CFBundleIconFile</key><string>icon.icns</string>
   <key>LSUIElement</key><true/>
 </dict>
 </plist>
@@ -590,6 +606,26 @@ PLIST
 exec "$APP_LAUNCHER"
 LAUNCHER
   chmod +x "$APP_PATH/Contents/MacOS/syntaur-open"
+
+  if [ -f "$ICON_ICNS" ]; then
+    cp "$ICON_ICNS" "$APP_PATH/Contents/Resources/icon.icns"
+    echo "  Branded application icon installed"
+  elif [ -f "$ICON_PNG" ] && command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
+    ICONSET="$APP_PATH/Contents/Resources/icon.iconset"
+    mkdir -p "$ICONSET"
+    sips -z 16 16     "$ICON_PNG" --out "$ICONSET/icon_16x16.png" >/dev/null 2>&1 || true
+    sips -z 32 32     "$ICON_PNG" --out "$ICONSET/icon_16x16@2x.png" >/dev/null 2>&1 || true
+    sips -z 32 32     "$ICON_PNG" --out "$ICONSET/icon_32x32.png" >/dev/null 2>&1 || true
+    sips -z 64 64     "$ICON_PNG" --out "$ICONSET/icon_32x32@2x.png" >/dev/null 2>&1 || true
+    sips -z 128 128   "$ICON_PNG" --out "$ICONSET/icon_128x128.png" >/dev/null 2>&1 || true
+    sips -z 256 256   "$ICON_PNG" --out "$ICONSET/icon_128x128@2x.png" >/dev/null 2>&1 || true
+    sips -z 256 256   "$ICON_PNG" --out "$ICONSET/icon_256x256.png" >/dev/null 2>&1 || true
+    sips -z 512 512   "$ICON_PNG" --out "$ICONSET/icon_256x256@2x.png" >/dev/null 2>&1 || true
+    sips -z 512 512   "$ICON_PNG" --out "$ICONSET/icon_512x512.png" >/dev/null 2>&1 || true
+    sips -z 1024 1024 "$ICON_PNG" --out "$ICONSET/icon_512x512@2x.png" >/dev/null 2>&1 || true
+    iconutil -c icns "$ICONSET" -o "$APP_PATH/Contents/Resources/icon.icns" >/dev/null 2>&1 || true
+    rm -rf "$ICONSET"
+  fi
 
   # Copy SVG as a resource (macOS Spotlight can index it; for a proper icon
   # you'd convert to .icns, but the .app still works without one)

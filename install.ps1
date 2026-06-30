@@ -126,6 +126,16 @@ try {
     Write-Host "  Viewer download not available — shortcuts will open in browser" -ForegroundColor Yellow
 }
 
+$IconPath = Join-Path $InstallDir "syntaur-icon.ico"
+$IconUrl = "https://github.com/syntaur-systems/syntaur-dist/releases/download/v$Version/syntaur-icon.ico"
+Write-Host "  Downloading launcher icon..."
+try {
+    Invoke-WebRequest -Uri $IconUrl -OutFile $IconPath -UseBasicParsing
+    Write-Host "  Launcher icon installed"
+} catch {
+    Write-Host "  Launcher icon not available — shortcut will use the app default" -ForegroundColor Yellow
+}
+
 # Determine shortcut target: use viewer if available, otherwise URL
 if (Test-Path $ViewerPath) {
     $ShortcutTarget = $ViewerPath
@@ -133,6 +143,16 @@ if (Test-Path $ViewerPath) {
 } else {
     $ShortcutTarget = $DashboardUrl
     $ShortcutWorkDir = ""
+}
+
+if (Test-Path $IconPath) {
+    $ShortcutIcon = $IconPath
+} elseif (Test-Path $BinaryPath) {
+    $ShortcutIcon = "$BinaryPath,0"
+} elseif (Test-Path $ViewerPath) {
+    $ShortcutIcon = "$ViewerPath,0"
+} else {
+    $ShortcutIcon = ""
 }
 
 # Add to PATH if not already there
@@ -152,7 +172,7 @@ $WshShell = New-Object -ComObject WScript.Shell
 $Shortcut = $WshShell.CreateShortcut($StartMenuShortcut)
 $Shortcut.TargetPath = $ShortcutTarget
 if ($ShortcutWorkDir) { $Shortcut.WorkingDirectory = $ShortcutWorkDir }
-$Shortcut.IconLocation = "$BinaryPath,0"
+if ($ShortcutIcon) { $Shortcut.IconLocation = $ShortcutIcon }
 $Shortcut.Description = "Syntaur - Your personal AI platform"
 $Shortcut.Save()
 
@@ -164,7 +184,7 @@ $DesktopShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "Syntaur.
 $Shortcut = $WshShell.CreateShortcut($DesktopShortcut)
 $Shortcut.TargetPath = $ShortcutTarget
 if ($ShortcutWorkDir) { $Shortcut.WorkingDirectory = $ShortcutWorkDir }
-$Shortcut.IconLocation = "$BinaryPath,0"
+if ($ShortcutIcon) { $Shortcut.IconLocation = $ShortcutIcon }
 $Shortcut.Description = "Syntaur - Your personal AI platform"
 $Shortcut.Save()
 

@@ -509,8 +509,11 @@ jobs:
           grep -qE "^\\\$Version[[:space:]]*=[[:space:]]*\"${REL_VERSION}\"" install.ps1 || { echo "::error::install.ps1 \$Version not stamped to ${REL_VERSION} (sed matched nothing — check the \$Version line format)"; exit 1; }
           cp install.sh   dist/install.sh
           cp install.ps1  dist/install.ps1
+          cp assets/syntaur-icon.png  dist/syntaur-icon.png
+          cp assets/syntaur-icon.icns dist/syntaur-icon.icns
+          cp assets/syntaur-icon.ico  dist/syntaur-icon.ico
           chmod +x dist/install.sh
-          ls -la dist/install.sh dist/install.ps1
+          ls -la dist/install.sh dist/install.ps1 dist/syntaur-icon.png dist/syntaur-icon.icns dist/syntaur-icon.ico
 
       - name: List dist
         run: ls -la dist/
@@ -528,6 +531,9 @@ jobs:
             syntaur-engine-macos-arm64
             syntaur-clip-write-linux-x86_64
             syntaur-clip-write-macos-arm64
+            syntaur-icon.png
+            syntaur-icon.icns
+            syntaur-icon.ico
             syntaur-gateway-windows-x86_64.exe
             syntaur-viewer-windows-x86_64.exe
             install.sh
