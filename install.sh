@@ -327,7 +327,7 @@ chmod +x "$APP_LAUNCHER"
 #
 # All three are in the standard repos of the distros Syntaur supports.
 if [ "$PLATFORM" = "linux" ]; then
-  echo "  Checking GStreamer audio plugins…"
+  echo "  Checking Linux media/input runtime packages…"
   NEED_INSTALL=""
   NEED_PKGS=""
   MGR=""
@@ -335,7 +335,7 @@ if [ "$PLATFORM" = "linux" ]; then
   if command -v pacman >/dev/null 2>&1; then
     # Arch / CachyOS / Manjaro / EndeavourOS
     MGR="pacman"
-    for pkg in gst-plugins-good gst-plugins-bad gst-libav bubblewrap; do
+    for pkg in gst-plugins-good gst-plugins-bad gst-libav bubblewrap libxkbcommon; do
       if ! pacman -Q "$pkg" >/dev/null 2>&1; then
         NEED_PKGS="$NEED_PKGS $pkg"
       fi
@@ -343,7 +343,7 @@ if [ "$PLATFORM" = "linux" ]; then
   elif command -v apt-get >/dev/null 2>&1; then
     # Debian / Ubuntu / Linux Mint
     MGR="apt"
-    for pkg in gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav bubblewrap; do
+    for pkg in gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav bubblewrap libxkbcommon-x11-0; do
       if ! dpkg -s "$pkg" >/dev/null 2>&1; then
         NEED_PKGS="$NEED_PKGS $pkg"
       fi
@@ -351,7 +351,7 @@ if [ "$PLATFORM" = "linux" ]; then
   elif command -v dnf >/dev/null 2>&1; then
     # Fedora / RHEL / Rocky / Alma
     MGR="dnf"
-    for pkg in gstreamer1-plugins-good gstreamer1-plugins-bad-free gstreamer1-libav bubblewrap; do
+    for pkg in gstreamer1-plugins-good gstreamer1-plugins-bad-free gstreamer1-libav bubblewrap libxkbcommon-x11; do
       if ! rpm -q "$pkg" >/dev/null 2>&1; then
         NEED_PKGS="$NEED_PKGS $pkg"
       fi
@@ -359,7 +359,7 @@ if [ "$PLATFORM" = "linux" ]; then
   elif command -v zypper >/dev/null 2>&1; then
     # openSUSE
     MGR="zypper"
-    for pkg in gstreamer-plugins-good gstreamer-plugins-bad gstreamer-plugins-libav bubblewrap; do
+    for pkg in gstreamer-plugins-good gstreamer-plugins-bad gstreamer-plugins-libav bubblewrap libxkbcommon-x11-0; do
       if ! rpm -q "$pkg" >/dev/null 2>&1; then
         NEED_PKGS="$NEED_PKGS $pkg"
       fi
@@ -367,7 +367,7 @@ if [ "$PLATFORM" = "linux" ]; then
   fi
 
   if [ -n "$NEED_PKGS" ] && [ -n "$MGR" ]; then
-    echo "  Missing audio plugins:$NEED_PKGS"
+    echo "  Missing runtime packages:$NEED_PKGS"
     if [ "$AUTOSUDO" = "0" ]; then
       echo "  --no-sudo was passed; skipping installation. Run this manually:"
       case "$MGR" in
@@ -382,11 +382,11 @@ if [ "$PLATFORM" = "linux" ]; then
       read -r CONFIRM
       case "$CONFIRM" in
         n|N|no|No)
-          echo "  Skipped. Install manually if music playback crashes the viewer."
+          echo "  Skipped. Install manually if music playback crashes the viewer or the native browser cannot start."
           INSTALL_FAILED=1
           ;;
         *)
-          echo "  Installing so music playback works out of the box…"
+          echo "  Installing so media playback and the native browser work out of the box…"
           case "$MGR" in
             pacman) sudo pacman -S --needed --noconfirm $NEED_PKGS 2>&1 | tail -3 || INSTALL_FAILED=1 ;;
             apt)    sudo apt-get install -y $NEED_PKGS 2>&1 | tail -3 || INSTALL_FAILED=1 ;;
@@ -398,8 +398,8 @@ if [ "$PLATFORM" = "linux" ]; then
     fi
     if [ -n "$INSTALL_FAILED" ]; then
       echo ""
-      echo "  Couldn't install audio plugins automatically."
-      echo "  Music playback will crash the viewer until these are installed:"
+      echo "  Couldn't install runtime packages automatically."
+      echo "  Music playback or native browser startup may fail until these are installed:"
       case "$MGR" in
         pacman) echo "    sudo pacman -S $NEED_PKGS" ;;
         apt)    echo "    sudo apt-get install $NEED_PKGS" ;;
@@ -408,13 +408,13 @@ if [ "$PLATFORM" = "linux" ]; then
       esac
       echo ""
     else
-      echo "  ✓ Audio plugins ready"
+      echo "  ✓ Linux runtime packages ready"
     fi
   elif [ -z "$MGR" ]; then
-    echo "  (unfamiliar package manager — if audio playback crashes, install"
-    echo "   gst-plugins-good / gst-plugins-bad / gst-libav via your distro)"
+    echo "  (unfamiliar package manager — if media playback or native browser startup fails,"
+    echo "   install gst-plugins-good / gst-plugins-bad / gst-libav / libxkbcommon-x11 via your distro)"
   else
-    echo "  ✓ Audio plugins already installed"
+    echo "  ✓ Linux runtime packages already installed"
   fi
 fi
 
