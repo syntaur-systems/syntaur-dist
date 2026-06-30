@@ -637,7 +637,10 @@ jobs:
 
           # Create the release (and its tag on this repo's HEAD) if absent.
           if gh release view "${TAG}" >/dev/null 2>&1; then
-            echo "release ${TAG} already exists; will upload to it"
+            echo "release ${TAG} already exists; refreshing notes and uploading to it"
+            gh release edit "${TAG}" \
+              --title "${TAG}" \
+              --notes-file /tmp/release-body.md
           else
             for attempt in 1 2 3; do
               if gh release create "${TAG}" \
