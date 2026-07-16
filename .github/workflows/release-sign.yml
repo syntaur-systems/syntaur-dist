@@ -225,7 +225,7 @@ jobs:
       # secret in this (syntaur-dist) repo; its public half is registered
       # read-only on the private application source repository.
       - name: Checkout private source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           repository: buddyholly007/syntaur
           ref: ${{ env.SRC_COMMIT }}
@@ -245,7 +245,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: release-${{ matrix.target }}-${{ matrix.artifact_name }}
 
@@ -346,7 +346,7 @@ jobs:
           exit 1
 
       - name: Upload built binary
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.artifact_name }}
           path: dist/${{ matrix.artifact_name }}
@@ -394,7 +394,7 @@ jobs:
 
       - name: Upload source provenance artifact (Linux gateway only)
         if: matrix.artifact_name == 'syntaur-gateway-linux-x86_64'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: syntaur-source-prov
           path: syntaur-source-commit.txt
@@ -403,7 +403,7 @@ jobs:
       - name: Upload optional SBOM artifact (Linux gateway only)
         if: matrix.artifact_name == 'syntaur-gateway-linux-x86_64'
         continue-on-error: true
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: syntaur-sbom
           path: syntaur-sbom.spdx.json
@@ -438,7 +438,7 @@ jobs:
     timeout-minutes: 120
     steps:
       - name: Checkout private application source dependency
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           repository: buddyholly007/syntaur
           ref: ${{ env.SRC_COMMIT }}
@@ -447,7 +447,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout private engine source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           repository: buddyholly007/syntaur-engine
           ref: ${{ env.ENGINE_COMMIT }}
@@ -469,7 +469,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: |
             syntaur-engine
@@ -573,14 +573,14 @@ jobs:
 
       - name: Upload resolved engine source commit (Linux engine only)
         if: matrix.platform == 'linux' && matrix.arch == 'x86_64'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: syntaur-engine-prov
           path: syntaur-engine-source-commit.txt
           retention-days: 7
 
       - name: Upload engine artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: syntaur-engine-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/*
@@ -595,7 +595,7 @@ jobs:
       # Check out THIS repo (syntaur-dist) — provides install.sh +
       # install.ps1 (the verifiable installers live here, not in the
       # private source) and is the repo the Release is published to.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           ref: ${{ env.DIST_COMMIT }}
           persist-credentials: false
@@ -607,7 +607,7 @@ jobs:
           test "$GITHUB_SHA" = "$DIST_COMMIT"
 
       - name: Download all built binaries
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           path: dist
           merge-multiple: true
@@ -989,7 +989,7 @@ jobs:
       # no further wiring. The app provenance + SBOM are best-effort; the
       # engine provenance is required because the engine build job uploads it.
       - name: Install cosign
-        uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
         with:
           cosign-release: v2.5.2
 
@@ -1136,7 +1136,7 @@ jobs:
           fi
 
       - name: Attest SLSA provenance
-        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-path: |
             dist/syntaur-*

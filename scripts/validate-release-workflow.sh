@@ -51,7 +51,7 @@ for toolchain in "${toolchains[@]}"; do
 done
 
 mapfile -t cosign_releases < <(
-  yq -r '.jobs[].steps[]? | select(.uses == "sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9") | .with["cosign-release"]' "$workflow"
+  yq -r '.jobs[].steps[]? | select(.uses == "sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac") | .with["cosign-release"]' "$workflow"
 )
 [ "${#cosign_releases[@]}" -eq 1 ] && [ "${cosign_releases[0]}" = v2.5.2 ] || {
   echo "release workflow must pin exactly one Cosign v2.5.2 installer" >&2
