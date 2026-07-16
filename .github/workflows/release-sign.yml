@@ -1,4 +1,5 @@
 name: Release — Build + Sign (from private source)
+run-name: syntaur-release-${{ github.event.inputs.correlation || github.event.client_payload.correlation || 'invalid' }}
 
 # PUBLIC, AUDITABLE build+sign+publish workflow for Syntaur.
 #
@@ -13,7 +14,9 @@ name: Release — Build + Sign (from private source)
 # Why this shape: the product is paid + closed-source, but the build and
 # signing pipeline is fully public so third parties can verify that a
 # shipped binary derives from a legitimate, unmodified build. Source
-# confidentiality and supply-chain transparency at the same time.
+# confidentiality and supply-chain transparency at the same time. The CI job
+# stages a DRAFT release; syntaur-ship adds and verifies the separately signed
+# managed-runtime catalog before making that release public.
 #
 # Verify a downloaded artifact (note the identity points at syntaur-dist):
 #
@@ -21,6 +24,7 @@ name: Release — Build + Sign (from private source)
 #     --bundle syntaur-gateway-linux-x86_64.cosign.bundle \
 #     --certificate-identity "https://github.com/syntaur-systems/syntaur-dist/.github/workflows/release-sign.yml@refs/heads/main" \
 #     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+#     --certificate-github-workflow-sha "<published syntaur-dist commit>" \
 #     syntaur-gateway-linux-x86_64
 #
 #   sha256sum -c checksums.txt
@@ -32,12 +36,20 @@ on:
         description: 'Release version, no leading v (e.g. 0.7.44). Tag published here will be v<version>.'
         required: true
       source_ref:
-        description: 'Ref in the private Syntaur application source to build (tag/branch/sha, e.g. v0.7.44).'
+        description: 'Human-readable immutable release tag (for provenance only).'
         required: true
-      engine_ref:
-        description: 'Ref in the PRIVATE syntaur-engine repo to build (branch/sha, default: main).'
-        required: false
-        default: main
+      source_commit:
+        description: 'Exact 40-character application source commit.'
+        required: true
+      engine_commit:
+        description: 'Exact 40-character private Engine source commit.'
+        required: true
+      dist_commit:
+        description: 'Exact 40-character public workflow commit.'
+        required: true
+      correlation:
+        description: 'Exact 64-character release operation correlation.'
+        required: true
   # Wired later: the private repo's deploy pipeline fires a
   # repository_dispatch(event_type=release) carrying {version, source_ref}
   # so a tagged release auto-builds here. Manual dispatch is the path for
@@ -50,12 +62,19 @@ permissions:
   id-token: write       # OIDC token for cosign keyless
   attestations: write   # SLSA provenance
 
+concurrency:
+  group: syntaur-dist-release-${{ github.event.inputs.correlation || github.event.client_payload.correlation || github.run_id }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
   # Normalize the two trigger shapes into one set of values the jobs use.
   REL_VERSION: ${{ github.event.inputs.version || github.event.client_payload.version }}
   SRC_REF: ${{ github.event.inputs.source_ref || github.event.client_payload.source_ref }}
-  ENGINE_REF: ${{ github.event.inputs.engine_ref || github.event.client_payload.engine_ref || 'main' }}
+  SRC_COMMIT: ${{ github.event.inputs.source_commit || github.event.client_payload.source_commit }}
+  ENGINE_COMMIT: ${{ github.event.inputs.engine_commit || github.event.client_payload.engine_commit }}
+  DIST_COMMIT: ${{ github.event.inputs.dist_commit || github.event.client_payload.dist_commit }}
+  RELEASE_CORRELATION: ${{ github.event.inputs.correlation || github.event.client_payload.correlation }}
 
 jobs:
   # Validate the (possibly attacker-supplied, via repository_dispatch
@@ -70,7 +89,10 @@ jobs:
         env:
           REL_VERSION_IN: ${{ env.REL_VERSION }}
           SRC_REF_IN: ${{ env.SRC_REF }}
-          ENGINE_REF_IN: ${{ env.ENGINE_REF }}
+          SRC_COMMIT_IN: ${{ env.SRC_COMMIT }}
+          ENGINE_COMMIT_IN: ${{ env.ENGINE_COMMIT }}
+          DIST_COMMIT_IN: ${{ env.DIST_COMMIT }}
+          RELEASE_CORRELATION_IN: ${{ env.RELEASE_CORRELATION }}
         run: |
           set -euo pipefail
           # Reject multi-line inputs first: `grep -Eq '^...$'` matches
@@ -79,7 +101,10 @@ jobs:
           # so a clean single-line value has wc -l == 0.
           if [ "$(printf '%s' "$REL_VERSION_IN" | wc -l)" -ne 0 ] \
              || [ "$(printf '%s' "$SRC_REF_IN" | wc -l)" -ne 0 ] \
-             || [ "$(printf '%s' "$ENGINE_REF_IN" | wc -l)" -ne 0 ]; then
+             || [ "$(printf '%s' "$SRC_COMMIT_IN" | wc -l)" -ne 0 ] \
+             || [ "$(printf '%s' "$ENGINE_COMMIT_IN" | wc -l)" -ne 0 ] \
+             || [ "$(printf '%s' "$DIST_COMMIT_IN" | wc -l)" -ne 0 ] \
+             || [ "$(printf '%s' "$RELEASE_CORRELATION_IN" | wc -l)" -ne 0 ]; then
             echo "::error::inputs must be single-line"
             exit 1
           fi
@@ -91,17 +116,42 @@ jobs:
             echo "::error::source_ref '$SRC_REF_IN' contains disallowed characters"
             exit 1
           fi
-          if ! printf '%s' "$ENGINE_REF_IN" | grep -Eq '^[A-Za-z0-9._/-]+$'; then
-            echo "::error::engine_ref '$ENGINE_REF_IN' contains disallowed characters"
-            exit 1
-          fi
           case "$SRC_REF_IN" in
             *..*|/*|*/) echo "::error::source_ref '$SRC_REF_IN' has an unsafe shape"; exit 1 ;;
           esac
-          case "$ENGINE_REF_IN" in
-            *..*|/*|*/) echo "::error::engine_ref '$ENGINE_REF_IN' has an unsafe shape"; exit 1 ;;
-          esac
-          echo "inputs OK: version=$REL_VERSION_IN source_ref=$SRC_REF_IN engine_ref=$ENGINE_REF_IN"
+          for pair in \
+            "source_commit:$SRC_COMMIT_IN" \
+            "engine_commit:$ENGINE_COMMIT_IN" \
+            "dist_commit:$DIST_COMMIT_IN"; do
+            label=${pair%%:*}
+            value=${pair#*:}
+            if ! printf '%s' "$value" | grep -Eq '^[0-9a-f]{40}$'; then
+              echo "::error::${label} must be a lowercase full commit ID"
+              exit 1
+            fi
+          done
+          if ! printf '%s' "$RELEASE_CORRELATION_IN" | grep -Eq '^[0-9a-f]{64}$'; then
+            echo "::error::correlation must be a lowercase SHA-256"
+            exit 1
+          fi
+          if [ "$SRC_REF_IN" != "v${REL_VERSION_IN}" ]; then
+            echo "::error::source_ref must be the exact release tag v${REL_VERSION_IN}"
+            exit 1
+          fi
+          expected_correlation=$(
+            printf 'syntaur-release-operation-v2\0%s\0%s\0%s\0%s\0%s\0' \
+              "$REL_VERSION_IN" "$SRC_REF_IN" "$SRC_COMMIT_IN" "$ENGINE_COMMIT_IN" "$DIST_COMMIT_IN" \
+              | sha256sum | awk '{print $1}'
+          )
+          if [ "$RELEASE_CORRELATION_IN" != "$expected_correlation" ]; then
+            echo "::error::correlation does not close the exact release authority tuple"
+            exit 1
+          fi
+          if [ "$DIST_COMMIT_IN" != "$GITHUB_SHA" ]; then
+            echo "::error::workflow commit $GITHUB_SHA differs from pinned $DIST_COMMIT_IN"
+            exit 1
+          fi
+          echo "inputs OK: version=$REL_VERSION_IN source=$SRC_COMMIT_IN engine=$ENGINE_COMMIT_IN dist=$DIST_COMMIT_IN correlation=$RELEASE_CORRELATION_IN"
 
   build:
     name: Build ${{ matrix.target }} / ${{ matrix.package }}
@@ -117,9 +167,21 @@ jobs:
             artifact_name: syntaur-gateway-linux-x86_64
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            package: syntaur-gateway
+            binary: syntaur-gateway
+            artifact_name: syntaur-gateway-managed-linux-x86_64
+            features: managed-runtime
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
             package: syntaur-viewer
             binary: syntaur-viewer
             artifact_name: syntaur-viewer-linux-x86_64
+            features: managed-runtime
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            package: syntaur-runtime
+            binary: syntaur-runtime
+            artifact_name: syntaur-runtime-linux-x86_64
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             package: syntaur-isolation-tests
@@ -163,22 +225,29 @@ jobs:
       # secret in this (syntaur-dist) repo; its public half is registered
       # read-only on the private application source repository.
       - name: Checkout private source
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: buddyholly007/syntaur
-          ref: ${{ env.SRC_REF }}
+          ref: ${{ env.SRC_COMMIT }}
           ssh-key: ${{ secrets.SYNTAUR_SOURCE_DEPLOY_KEY }}
           persist-credentials: false
 
+      - name: Verify exact application source checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SRC_COMMIT"
+
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
         with:
+          toolchain: 1.94.1
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
-          key: release-${{ matrix.target }}-${{ matrix.package }}
+          key: release-${{ matrix.target }}-${{ matrix.artifact_name }}
 
       - name: Install Linux build deps
         if: runner.os == 'Linux'
@@ -212,7 +281,17 @@ jobs:
             apt_get install -y --no-install-recommends libgtk-4-dev libwebkitgtk-6.0-dev
           fi
       - name: Build release
-        run: cargo build --release --target ${{ matrix.target }} -p ${{ matrix.package }}
+        shell: bash
+        env:
+          CARGO_FEATURES: ${{ matrix.features || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "$CARGO_FEATURES" ]; then
+            cargo build --release --target ${{ matrix.target }} -p ${{ matrix.package }} \
+              --features "$CARGO_FEATURES"
+          else
+            cargo build --release --target ${{ matrix.target }} -p ${{ matrix.package }}
+          fi
 
       - name: Stage artifact
         shell: bash
@@ -221,7 +300,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.artifact_name }}"
 
       - name: Smoke test (non-Windows)
-        if: runner.os != 'Windows' && matrix.package == 'syntaur-gateway'
+        if: runner.os != 'Windows' && matrix.package == 'syntaur-gateway' && matrix.artifact_name != 'syntaur-gateway-managed-linux-x86_64'
         shell: bash
         run: |
           set -e
@@ -231,7 +310,7 @@ jobs:
           # release-blocking crash loop while still exercising boot + /health.
           SYNTAUR_MAINTENANCE=1 ./dist/${{ matrix.artifact_name }} &
           PID=$!
-          for i in $(seq 1 20); do
+          for _ in {1..20}; do
             if curl -fsS http://127.0.0.1:18789/health >/tmp/health.json 2>/dev/null; then
               echo "health:"; cat /tmp/health.json
               kill $PID 2>/dev/null || true
@@ -244,7 +323,7 @@ jobs:
           exit 1
 
       - name: Smoke test (Windows)
-        if: runner.os == 'Windows' && matrix.package == 'syntaur-gateway'
+        if: runner.os == 'Windows' && matrix.package == 'syntaur-gateway' && matrix.artifact_name != 'syntaur-gateway-managed-linux-x86_64'
         shell: pwsh
         run: |
           # See the non-Windows smoke test: CI intentionally has no production
@@ -267,7 +346,7 @@ jobs:
           exit 1
 
       - name: Upload built binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact_name }}
           path: dist/${{ matrix.artifact_name }}
@@ -285,10 +364,8 @@ jobs:
       # The SBOM is generated from Cargo.lock: a binary-only scan of a Rust
       # static binary yields ~1 package (no embedded dep metadata).
       #
-      # Both steps are continue-on-error: they are supplementary
-      # transparency artifacts and must NOT fail the gateway build job and
-      # thereby skip sign-and-release (needs: build, if: !failure()), which
-      # would block the entire release over a non-critical asset.
+      # Resolved source provenance is release authority and therefore required.
+      # SBOM generation remains supplementary and continue-on-error.
       # Files are written at the workspace ROOT and uploaded by EXPLICIT
       # name (not via a directory path) so download-artifact merge-multiple
       # lands them as dist/syntaur-source-commit.txt and
@@ -297,7 +374,6 @@ jobs:
       # glob would miss them and they'd silently never be signed/published.
       - name: Record resolved source commit (Linux gateway only)
         if: matrix.artifact_name == 'syntaur-gateway-linux-x86_64'
-        continue-on-error: true
         run: |
           {
             echo "source_ref: ${SRC_REF}"
@@ -308,7 +384,7 @@ jobs:
       - name: Generate dependency SBOM (Linux gateway only)
         if: matrix.artifact_name == 'syntaur-gateway-linux-x86_64'
         continue-on-error: true
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           path: .
           format: spdx-json
@@ -316,15 +392,21 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
-      - name: Upload provenance + SBOM artifact (Linux gateway only)
+      - name: Upload source provenance artifact (Linux gateway only)
+        if: matrix.artifact_name == 'syntaur-gateway-linux-x86_64'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: syntaur-source-prov
+          path: syntaur-source-commit.txt
+          retention-days: 7
+
+      - name: Upload optional SBOM artifact (Linux gateway only)
         if: matrix.artifact_name == 'syntaur-gateway-linux-x86_64'
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: syntaur-prov
-          path: |
-            syntaur-source-commit.txt
-            syntaur-sbom.spdx.json
+          name: syntaur-sbom
+          path: syntaur-sbom.spdx.json
           retention-days: 7
 
   build-engine:
@@ -356,30 +438,38 @@ jobs:
     timeout-minutes: 120
     steps:
       - name: Checkout private application source dependency
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: buddyholly007/syntaur
-          ref: ${{ env.SRC_REF }}
+          ref: ${{ env.SRC_COMMIT }}
           path: openclaw-workspace
           ssh-key: ${{ secrets.SYNTAUR_SOURCE_DEPLOY_KEY }}
           persist-credentials: false
 
       - name: Checkout private engine source
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: buddyholly007/syntaur-engine
-          ref: ${{ env.ENGINE_REF }}
+          ref: ${{ env.ENGINE_COMMIT }}
           path: syntaur-engine
           ssh-key: ${{ secrets.SYNTAUR_ENGINE_DEPLOY_KEY }}
           persist-credentials: false
 
+      - name: Verify exact application and Engine checkouts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C openclaw-workspace rev-parse HEAD)" = "$SRC_COMMIT"
+          test "$(git -C syntaur-engine rev-parse HEAD)" = "$ENGINE_COMMIT"
+
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
         with:
+          toolchain: 1.94.1
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: |
             syntaur-engine
@@ -476,28 +566,28 @@ jobs:
         shell: bash
         run: |
           {
-            echo "engine_ref: ${ENGINE_REF}"
+            echo "engine_ref: ${ENGINE_COMMIT}"
             echo "resolved_commit: $(git -C syntaur-engine rev-parse HEAD)"
           } > syntaur-engine-source-commit.txt
           cat syntaur-engine-source-commit.txt
 
       - name: Upload resolved engine source commit (Linux engine only)
         if: matrix.platform == 'linux' && matrix.arch == 'x86_64'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: syntaur-engine-prov
           path: syntaur-engine-source-commit.txt
           retention-days: 7
 
       - name: Upload engine artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: syntaur-engine-${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/*
           retention-days: 7
 
   sign-and-release:
-    name: Sign + publish release
+    name: Sign + stage draft release
     needs: [build, build-engine]
     if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-24.04
@@ -505,10 +595,19 @@ jobs:
       # Check out THIS repo (syntaur-dist) — provides install.sh +
       # install.ps1 (the verifiable installers live here, not in the
       # private source) and is the repo the Release is published to.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ env.DIST_COMMIT }}
+          persist-credentials: false
+
+      - name: Verify exact public workflow checkout
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$DIST_COMMIT"
+          test "$GITHUB_SHA" = "$DIST_COMMIT"
 
       - name: Download all built binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true
@@ -519,12 +618,17 @@ jobs:
           # issue #27: stamp install scripts with the release version BEFORE
           # staging+signing, so published installers never advertise a stale
           # hardcoded VERSION (and the signed bundle matches the shipped file).
-          sed -i -E 's/^(VERSION=")[^"]+(")/\1'"$REL_VERSION"'\2/' install.sh
-          sed -i -E 's/^(\$Version[[:space:]]*=[[:space:]]*")[^"]+(")/\1'"$REL_VERSION"'\2/' install.ps1
+          sed -i -E "s/^(VERSION=\")[^\"]+(\")/\1${REL_VERSION}\2/" install.sh
+          sed -i -E "s/^(\\\$Version[[:space:]]*=[[:space:]]*\")[^\"]+(\")/\1${REL_VERSION}\2/" install.ps1
+          runtime_sha256=$(sha256sum dist/syntaur-runtime-linux-x86_64 | awk '{print $1}')
+          sed -i -E "s/^(RUNTIME_BOOTSTRAP_SHA256=\")[^\"]*(\")/\1${runtime_sha256}\2/" install.sh
+          sed -i -E "s/^(DIST_WORKFLOW_COMMIT=\")[^\"]*(\")/\1${DIST_COMMIT}\2/" install.sh
           # Fail loudly if the stamp did not apply (sed exits 0 on zero matches;
           # issue #27 must NEVER silently reintroduce a stale install-script version).
           grep -qE "^VERSION=\"${REL_VERSION}\"" install.sh || { echo "::error::install.sh VERSION not stamped to ${REL_VERSION} (sed matched nothing — check the VERSION= line format)"; exit 1; }
           grep -qE "^\\\$Version[[:space:]]*=[[:space:]]*\"${REL_VERSION}\"" install.ps1 || { echo "::error::install.ps1 \$Version not stamped to ${REL_VERSION} (sed matched nothing — check the \$Version line format)"; exit 1; }
+          grep -qE "^RUNTIME_BOOTSTRAP_SHA256=\"[0-9a-f]{64}\"$" install.sh || { echo "::error::install.sh runtime bootstrap hash was not stamped"; exit 1; }
+          grep -qE "^DIST_WORKFLOW_COMMIT=\"${DIST_COMMIT}\"$" install.sh || { echo "::error::install.sh workflow commit was not stamped"; exit 1; }
           cp install.sh   dist/install.sh
           cp install.ps1  dist/install.ps1
           cp assets/syntaur-icon.png  dist/syntaur-icon.png
@@ -539,9 +643,12 @@ jobs:
       - name: Assert core platforms present
         working-directory: dist
         run: |
+          set -euo pipefail
           required=(
             syntaur-gateway-linux-x86_64
+            syntaur-gateway-managed-linux-x86_64
             syntaur-viewer-linux-x86_64
+            syntaur-runtime-linux-x86_64
             syntaur-isolation-tests-linux-x86_64
             syntaur-gateway-macos-arm64
             syntaur-viewer-macos-arm64
@@ -553,6 +660,8 @@ jobs:
             syntaur-clip-write-linux-x86_64
             syntaur-clip-write-macos-arm64
             syntaur-clip-write-macos-x86_64
+            syntaur-source-commit.txt
+            syntaur-engine-source-commit.txt
             syntaur-icon.png
             syntaur-icon.icns
             syntaur-icon.ico
@@ -569,7 +678,307 @@ jobs:
             echo "::error::Missing required release artifacts: ${missing[*]}"
             exit 1
           fi
-          echo "All core artifacts present ($(ls syntaur-* install.sh install.ps1 | wc -l) total)."
+          count=$(find . -maxdepth 1 -type f \( -name 'syntaur-*' -o -name 'install.sh' -o -name 'install.ps1' \) -printf '.\n' | wc -l)
+          echo "All core artifacts present (${count} total)."
+
+      - name: Prepare canonical release operation metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: v${{ env.REL_VERSION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          operation=dist/syntaur-release-operation.json
+          resume_dir=dist/.resume-assets
+          mkdir -p "$resume_dir"
+          release_json=/tmp/syntaur-release.json
+          release_error=/tmp/syntaur-release.error
+          marker="<!-- syntaur-release-correlation:${RELEASE_CORRELATION} -->"
+          found=0
+
+          printf '%s\n' \
+            install.ps1 \
+            install.sh \
+            syntaur-clip-write-linux-x86_64 \
+            syntaur-clip-write-macos-arm64 \
+            syntaur-clip-write-macos-x86_64 \
+            syntaur-engine-linux-x86_64 \
+            syntaur-engine-macos-arm64 \
+            syntaur-engine-macos-x86_64 \
+            syntaur-engine-source-commit.txt \
+            syntaur-gateway-linux-x86_64 \
+            syntaur-gateway-macos-arm64 \
+            syntaur-gateway-macos-x86_64 \
+            syntaur-gateway-managed-linux-x86_64 \
+            syntaur-gateway-windows-x86_64.exe \
+            syntaur-icon.icns \
+            syntaur-icon.ico \
+            syntaur-icon.png \
+            syntaur-isolation-tests-linux-x86_64 \
+            syntaur-release-operation.json \
+            syntaur-runtime-linux-x86_64 \
+            syntaur-sbom.spdx.json \
+            syntaur-source-commit.txt \
+            syntaur-viewer-linux-x86_64 \
+            syntaur-viewer-macos-arm64 \
+            syntaur-viewer-macos-x86_64 \
+            syntaur-viewer-windows-x86_64.exe \
+            | sort -u >/tmp/allowed-recovery-primary-assets
+
+          require_bounded_json_file() {
+            local path=$1
+            local label=$2
+            local size
+            size=$(stat -c '%s' "$path")
+            if (( size == 0 || size > 2097152 )); then
+              echo "::error::${label} is empty or exceeds 2 MiB" >&2
+              exit 1
+            fi
+          }
+
+          gh_api_to_file_bounded() {
+            local maximum=$1
+            local destination=$2
+            local error_path=$3
+            local block_limit actual status
+            shift 3
+            case "$maximum" in
+              ''|0|*[!0-9]*) echo "::error::invalid GitHub response limit" >&2; return 1 ;;
+            esac
+            (( maximum <= 1073741824 )) || {
+              echo "::error::GitHub response limit exceeds 1 GiB" >&2
+              return 1
+            }
+            block_limit=$(( (maximum / 1024) + 1 ))
+            rm -f "$destination" "$error_path"
+            if (
+              ulimit -f "$block_limit"
+              gh api "$@" >"$destination"
+            ) 2>"$error_path"; then
+              actual=$(stat -c '%s' "$destination")
+              if (( actual == 0 || actual > maximum )); then
+                echo "::error::GitHub response is empty or exceeds its transfer limit" >&2
+                rm -f "$destination"
+                return 1
+              fi
+              return 0
+            else
+              status=$?
+              rm -f "$destination"
+              return "$status"
+            fi
+          }
+
+          resolve_tag_commit() {
+            local object_json=/tmp/syntaur-dist-tag-object.json
+            local object_error=/tmp/syntaur-dist-tag-object.error
+            local kind sha
+            gh_api_to_file_bounded 2097152 "$object_json" "$object_error" \
+              "repos/${GH_REPO}/git/ref/tags/${TAG}"
+            for _ in 1 2 3 4; do
+              require_bounded_json_file "$object_json" "tag object metadata"
+              kind=$(jq -er '.object.type' "$object_json")
+              sha=$(jq -er '.object.sha' "$object_json")
+              printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || {
+                echo "::error::release tag resolves to a malformed object ID" >&2
+                exit 1
+              }
+              if [ "$kind" = commit ]; then
+                printf '%s\n' "$sha"
+                return 0
+              fi
+              [ "$kind" = tag ] || {
+                echo "::error::release tag resolves to unsupported object type $kind" >&2
+                exit 1
+              }
+              gh_api_to_file_bounded 2097152 "$object_json" "$object_error" \
+                "repos/${GH_REPO}/git/tags/${sha}"
+            done
+            echo "::error::release tag indirection exceeds the supported bound" >&2
+            exit 1
+          }
+
+          validate_existing_asset_metadata() {
+            local count asset_id asset_name reported state primary maximum
+            require_bounded_json_file "$release_json" "release metadata"
+            jq -e '.assets | type == "array"' "$release_json" >/dev/null
+            count=$(jq '.assets | length' "$release_json")
+            (( count <= 64 )) || { echo "::error::existing release has too many assets"; exit 1; }
+            duplicates=$(jq -r '.assets[].name' "$release_json" | sort | uniq -d)
+            [ -z "$duplicates" ] || {
+              echo "::error::existing release contains duplicate asset names: $duplicates"
+              exit 1
+            }
+            while IFS=$'\t' read -r asset_id asset_name reported state; do
+              [ -n "$asset_id" ] || continue
+              printf '%s' "$asset_id" | grep -Eq '^[1-9][0-9]*$' || {
+                echo "::error::existing release has an invalid asset ID"
+                exit 1
+              }
+              printf '%s' "$reported" | grep -Eq '^[1-9][0-9]*$' || {
+                echo "::error::existing release asset $asset_name has an invalid size"
+                exit 1
+              }
+              [ "$state" = uploaded ] || {
+                echo "::error::existing release asset $asset_name is not fully uploaded"
+                exit 1
+              }
+              printf '%s' "$asset_name" | grep -Eq '^[A-Za-z0-9._-]+$' || {
+                echo "::error::existing release has an unsafe asset name"
+                exit 1
+              }
+              primary=$asset_name
+              case "$asset_name" in
+                checksums.txt|checksums.txt.cosign.bundle|syntaur-runtime-catalog-v1.json|syntaur-runtime-catalog-v1.json.sig) ;;
+                *.cosign.bundle)
+                  primary=${asset_name%.cosign.bundle}
+                  grep -Fxq "$primary" /tmp/allowed-recovery-primary-assets || {
+                    echo "::error::existing release has an unexpected signature bundle $asset_name"
+                    exit 1
+                  }
+                  ;;
+                *)
+                  grep -Fxq "$primary" /tmp/allowed-recovery-primary-assets || {
+                    echo "::error::existing release has an unexpected primary asset $asset_name"
+                    exit 1
+                  }
+                  ;;
+              esac
+              case "$asset_name" in
+                syntaur-sbom.spdx.json) maximum=16777216 ;;
+                *.png|*.ico|*.icns) maximum=4194304 ;;
+                *.txt|*.json|*.sig|*.bundle|*.sh|*.ps1) maximum=2097152 ;;
+                *) maximum=1073741824 ;;
+              esac
+              (( reported <= maximum )) || {
+                echo "::error::existing release asset $asset_name exceeds its size limit"
+                exit 1
+              }
+            done < <(jq -r '.assets[] | [.id, .name, .size, .state] | @tsv' "$release_json")
+          }
+
+          set +e
+          gh_api_to_file_bounded 2097152 "$release_json" "$release_error" \
+            "repos/${GH_REPO}/releases/tags/${TAG}"
+          lookup_status=$?
+          set -e
+          if (( lookup_status == 0 )); then
+            found=1
+            validate_existing_asset_metadata
+            test "$(jq -r '.tag_name' "$release_json")" = "$TAG"
+            test "$(jq -r '.target_commitish' "$release_json")" = "$DIST_COMMIT"
+            test "$(jq -r '.prerelease' "$release_json")" = false
+            case "$(jq -r '.draft' "$release_json")" in true|false) ;; *) exit 1 ;; esac
+            test "$(resolve_tag_commit)" = "$DIST_COMMIT"
+            body=$(jq -r '.body // ""' "$release_json")
+            if [[ "$body" != *"$marker"* ]]; then
+              echo "::error::existing release is not owned by correlation ${RELEASE_CORRELATION}"
+              exit 1
+            fi
+            while IFS=$'\t' read -r asset_id asset_name reported; do
+              [ -n "$asset_id" ] || continue
+              gh_api_to_file_bounded "$reported" "${resume_dir}/${asset_name}" \
+                "/tmp/syntaur-recovery-asset-${asset_id}.error" \
+                -H 'Accept: application/octet-stream' \
+                "repos/${GH_REPO}/releases/assets/${asset_id}"
+              actual=$(stat -c '%s' "${resume_dir}/${asset_name}")
+              [ "$actual" = "$reported" ] || {
+                echo "::error::downloaded recovery asset $asset_name differs from reported size"
+                exit 1
+              }
+            done < <(jq -r '.assets[] | [.id, .name, .size] | @tsv' "$release_json")
+            mapfile -t operation_ids < <(jq -r --arg name "$(basename "$operation")" '.assets[] | select(.name == $name) | .id' "$release_json")
+            if (( ${#operation_ids[@]} > 1 )); then
+              echo "::error::existing release contains duplicate operation metadata"
+              exit 1
+            fi
+            if (( ${#operation_ids[@]} == 1 )); then
+              cp "${resume_dir}/$(basename "$operation")" "$operation"
+            elif (( $(jq '.assets | length' "$release_json") != 0 )); then
+              echo "::error::partial release has assets but no operation authority"
+              exit 1
+            fi
+          elif ! grep -Fq '(HTTP 404)' "$release_error"; then
+            cat "$release_error" >&2
+            echo "::error::could not distinguish an absent release from a GitHub API failure"
+            exit 1
+          fi
+
+          if [ ! -f "$operation" ]; then
+            jq -S -n \
+              --argjson schema 1 \
+              --arg version "$REL_VERSION" \
+              --arg tag "$TAG" \
+              --arg source_commit "$SRC_COMMIT" \
+              --arg engine_commit "$ENGINE_COMMIT" \
+              --arg dist_commit "$DIST_COMMIT" \
+              --arg correlation "$RELEASE_CORRELATION" \
+              --argjson run_id "$GITHUB_RUN_ID" \
+              --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
+              '{schema:$schema,version:$version,tag:$tag,source_commit:$source_commit,engine_commit:$engine_commit,dist_commit:$dist_commit,correlation:$correlation,run_id:$run_id,run_attempt:$run_attempt}' \
+              >"$operation"
+          fi
+
+          operation_run_id=$(jq -er '.run_id | select(type == "number")' "$operation")
+          operation_run_attempt=$(jq -er '.run_attempt | select(type == "number")' "$operation")
+          if [ "$operation_run_id" != "$GITHUB_RUN_ID" ] \
+            || [ "$operation_run_attempt" != "$GITHUB_RUN_ATTEMPT" ]; then
+            echo "::error::signed operation authority belongs to workflow run ${operation_run_id} attempt ${operation_run_attempt}; this version is consumed and must be retried under a successor version" >&2
+            exit 1
+          fi
+
+          jq -e \
+            --arg version "$REL_VERSION" \
+            --arg tag "$TAG" \
+            --arg source_commit "$SRC_COMMIT" \
+            --arg engine_commit "$ENGINE_COMMIT" \
+              --arg dist_commit "$DIST_COMMIT" \
+              --arg correlation "$RELEASE_CORRELATION" \
+              --argjson run_id "$GITHUB_RUN_ID" \
+              --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
+              '.schema == 1 and .version == $version and .tag == $tag and .source_commit == $source_commit and .engine_commit == $engine_commit and .dist_commit == $dist_commit and .correlation == $correlation and .run_id == $run_id and .run_attempt == $run_attempt' \
+              "$operation" >/dev/null
+          echo "release operation metadata ready (existing_release=${found})"
+
+      - name: Assert exact primary asset set
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          expected=(
+            install.ps1
+            install.sh
+            syntaur-clip-write-linux-x86_64
+            syntaur-clip-write-macos-arm64
+            syntaur-clip-write-macos-x86_64
+            syntaur-engine-linux-x86_64
+            syntaur-engine-macos-arm64
+            syntaur-engine-macos-x86_64
+            syntaur-engine-source-commit.txt
+            syntaur-gateway-linux-x86_64
+            syntaur-gateway-macos-arm64
+            syntaur-gateway-macos-x86_64
+            syntaur-gateway-managed-linux-x86_64
+            syntaur-gateway-windows-x86_64.exe
+            syntaur-icon.icns
+            syntaur-icon.ico
+            syntaur-icon.png
+            syntaur-isolation-tests-linux-x86_64
+            syntaur-release-operation.json
+            syntaur-runtime-linux-x86_64
+            syntaur-source-commit.txt
+            syntaur-viewer-linux-x86_64
+            syntaur-viewer-macos-arm64
+            syntaur-viewer-macos-x86_64
+            syntaur-viewer-windows-x86_64.exe
+          )
+          if [ -f syntaur-sbom.spdx.json ]; then
+            expected+=(syntaur-sbom.spdx.json)
+          fi
+          printf '%s\n' "${expected[@]}" | sort -u >/tmp/expected-primary-assets
+          { printf '%s\n' "${expected[@]}"; echo syntaur-sbom.spdx.json; } | sort -u >/tmp/allowed-primary-assets
+          find . -maxdepth 1 -type f -printf '%f\n' | sort -u >/tmp/actual-primary-assets
+          diff -u /tmp/expected-primary-assets /tmp/actual-primary-assets
 
       # The application provenance file (syntaur-source-commit.txt),
       # browser-engine provenance file (syntaur-engine-source-commit.txt),
@@ -579,41 +988,162 @@ jobs:
       # them in automatically — hashed, keyless-signed, and published with
       # no further wiring. The app provenance + SBOM are best-effort; the
       # engine provenance is required because the engine build job uploads it.
-      - name: Compute checksums
+      - name: Install cosign
+        uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
+        with:
+          cosign-release: v2.5.2
+
+      - name: Authenticate recovery assets and compute checksums
         working-directory: dist
         run: |
-          sha256sum syntaur-* install.sh install.ps1 > checksums.txt
-          cat checksums.txt
+          set -euo pipefail
+          shopt -s nullglob
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+          identity='https://github.com/syntaur-systems/syntaur-dist/.github/workflows/release-sign.yml@refs/heads/main'
+          issuer='https://token.actions.githubusercontent.com'
+          mapfile -t fresh_primary < <(printf '%s\n' syntaur-* install.sh install.ps1 | sort -u)
+          sha256sum "${fresh_primary[@]}" >/tmp/fresh-checksums.txt
+          has_manifest=0
+          has_manifest_bundle=0
+          [ -f .resume-assets/checksums.txt ] && has_manifest=1
+          [ -f .resume-assets/checksums.txt.cosign.bundle ] && has_manifest_bundle=1
+
+          validate_manifest() {
+            local manifest=$1
+            local line name
+            [ -s "$manifest" ] || { echo "::error::checksum manifest is empty"; exit 1; }
+            while IFS= read -r line; do
+              printf '%s\n' "$line" | grep -Eq '^[0-9a-f]{64}  [A-Za-z0-9._-]+$' || {
+                echo "::error::checksum manifest has an invalid row"
+                exit 1
+              }
+              name=${line#*  }
+              grep -Fxq "$name" /tmp/allowed-primary-assets || {
+                echo "::error::checksum manifest contains unexpected primary asset $name"
+                exit 1
+              }
+            done <"$manifest"
+            mapfile -t manifest_names < <(awk '{print $2}' "$manifest")
+            [ -z "$(printf '%s\n' "${manifest_names[@]}" | sort | uniq -d)" ] || {
+              echo "::error::checksum manifest has duplicate asset names"
+              exit 1
+            }
+            printf '%s\n' "${manifest_names[@]}" | grep -Fxq syntaur-release-operation.json || {
+              echo "::error::checksum manifest omits release operation metadata"
+              exit 1
+            }
+          }
+
+          if (( has_manifest == 1 && has_manifest_bundle == 1 )); then
+            cosign verify-blob \
+              --bundle .resume-assets/checksums.txt.cosign.bundle \
+              --certificate-identity "$identity" \
+              --certificate-oidc-issuer "$issuer" \
+              --certificate-github-workflow-sha "$DIST_COMMIT" \
+              .resume-assets/checksums.txt
+            cp .resume-assets/checksums.txt checksums.txt
+            validate_manifest checksums.txt
+            for name in "${manifest_names[@]}"; do
+              if [ -f ".resume-assets/$name" ]; then
+                cp ".resume-assets/$name" "$name"
+              fi
+            done
+            for existing in .resume-assets/*; do
+              [ -f "$existing" ] || continue
+              name=$(basename "$existing")
+              case "$name" in
+                checksums.txt|*.cosign.bundle|syntaur-runtime-catalog-v1.json|syntaur-runtime-catalog-v1.json.sig) continue ;;
+              esac
+              printf '%s\n' "${manifest_names[@]}" | grep -Fxq "$name" || {
+                echo "::error::existing signed release contains unmanifested primary asset $name"
+                exit 1
+              }
+            done
+          else
+            for existing in .resume-assets/*; do
+              [ -f "$existing" ] || continue
+              name=$(basename "$existing")
+              case "$name" in
+                checksums.txt|*.cosign.bundle|syntaur-runtime-catalog-v1.json|syntaur-runtime-catalog-v1.json.sig) continue ;;
+              esac
+              if [ ! -f "$name" ] || ! cmp --silent "$existing" "$name"; then
+                echo "::error::unsigned partial release asset $name differs from the fresh build"
+                exit 1
+              fi
+            done
+            if (( has_manifest == 1 )); then
+              cmp --silent .resume-assets/checksums.txt /tmp/fresh-checksums.txt || {
+                echo "::error::unsigned partial checksum manifest differs from the fresh build"
+                exit 1
+              }
+            fi
+            if (( has_manifest_bundle == 1 )); then
+              cosign verify-blob \
+                --bundle .resume-assets/checksums.txt.cosign.bundle \
+                --certificate-identity "$identity" \
+                --certificate-oidc-issuer "$issuer" \
+                --certificate-github-workflow-sha "$DIST_COMMIT" \
+                /tmp/fresh-checksums.txt
+            fi
+            cp /tmp/fresh-checksums.txt checksums.txt
+          fi
+
+          validate_manifest checksums.txt
+          mapfile -t primary < <(printf '%s\n' syntaur-* install.sh install.ps1 | sort -u)
+          printf '%s\n' "${manifest_names[@]}" | sort -u >/tmp/manifest-names
+          printf '%s\n' "${primary[@]}" | sort -u >/tmp/current-names
+          diff -u /tmp/manifest-names /tmp/current-names
+          sha256sum --strict -c checksums.txt
+          cat checksums.txt
 
       - name: Sign each artifact
         working-directory: dist
         run: |
+          set -euo pipefail
+          shopt -s nullglob
           for f in syntaur-* install.sh install.ps1; do
             case "$f" in
               *.cosign.bundle|checksums.txt) continue ;;
             esac
+            if [ -f ".resume-assets/${f}.cosign.bundle" ]; then
+              cosign verify-blob \
+                --bundle ".resume-assets/${f}.cosign.bundle" \
+                --certificate-identity "https://github.com/syntaur-systems/syntaur-dist/.github/workflows/release-sign.yml@refs/heads/main" \
+                --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+                --certificate-github-workflow-sha "$DIST_COMMIT" \
+                "$f"
+              cp ".resume-assets/${f}.cosign.bundle" "${f}.cosign.bundle"
+            else
+              cosign sign-blob \
+                --yes \
+                --bundle "${f}.cosign.bundle" \
+                "$f"
+            fi
+          done
+          if [ -f .resume-assets/checksums.txt.cosign.bundle ]; then
+            cosign verify-blob \
+              --bundle .resume-assets/checksums.txt.cosign.bundle \
+              --certificate-identity "https://github.com/syntaur-systems/syntaur-dist/.github/workflows/release-sign.yml@refs/heads/main" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              --certificate-github-workflow-sha "$DIST_COMMIT" \
+              checksums.txt
+            cp .resume-assets/checksums.txt.cosign.bundle checksums.txt.cosign.bundle
+          else
             cosign sign-blob \
               --yes \
-              --bundle "${f}.cosign.bundle" \
-              "${f}"
-          done
-          cosign sign-blob \
-            --yes \
-            --bundle checksums.txt.cosign.bundle \
-            checksums.txt
+              --bundle checksums.txt.cosign.bundle \
+              checksums.txt
+          fi
 
       - name: Attest SLSA provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
         with:
           subject-path: |
             dist/syntaur-*
             dist/install.sh
             dist/install.ps1
 
-      - name: Create release + upload assets (with retry + verification)
+      - name: Create draft release + upload assets (with retry + verification)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -624,13 +1154,25 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
 
-          mapfile -t assets < <(printf '%s\n' syntaur-* checksums.txt install.sh install.ps1 *.cosign.bundle | sort -u)
-          expected=${#assets[@]}
-          if (( expected == 0 )); then
-            echo "::error::no assets found in dist/ — refusing to publish empty release"
+          operation=syntaur-release-operation.json
+          mapfile -t primary < <(awk '{print $2}' checksums.txt | sort -u)
+          if ! printf '%s\n' "${primary[@]}" | grep -Fxq "$operation"; then
+            echo "::error::signed checksum manifest omits release operation metadata"
             exit 1
           fi
-          echo "preparing to publish ${expected} assets for ${TAG}:"
+          assets=("$operation")
+          remainder=()
+          for asset in "${primary[@]}"; do
+            [ -f "$asset" ] || { echo "::error::manifest asset $asset is absent"; exit 1; }
+            [ "$asset" = "$operation" ] || remainder+=("$asset")
+            bundle="${asset}.cosign.bundle"
+            [ -f "$bundle" ] || { echo "::error::signature bundle $bundle is absent"; exit 1; }
+            remainder+=("$bundle")
+          done
+          remainder+=(checksums.txt checksums.txt.cosign.bundle)
+          mapfile -t sorted_remainder < <(printf '%s\n' "${remainder[@]}" | sort -u)
+          assets+=("${sorted_remainder[@]}")
+          echo "reconciling ${#assets[@]} base assets for ${TAG}:"
           printf '  %s\n' "${assets[@]}"
 
           cat > /tmp/release-body.md <<EOF
@@ -638,7 +1180,7 @@ jobs:
 
           Built from the private Syntaur application source at
           \`${SRC_REF}\` and the private Syntaur browser engine source at
-          \`${ENGINE_REF}\` by this repo's public
+          \`${ENGINE_COMMIT}\` by this repo's public
           [\`release-sign.yml\`](https://github.com/syntaur-systems/syntaur-dist/blob/main/.github/workflows/release-sign.yml)
           workflow. The exact immutable application source commit is recorded
           in the signed \`syntaur-source-commit.txt\`; the exact native browser
@@ -647,6 +1189,11 @@ jobs:
           signed \`syntaur-sbom.spdx.json\`. Every artifact is signed with
           Sigstore cosign (keyless OIDC) and accompanied by a
           \`.cosign.bundle\`. Verify before running:
+
+          Linux x86_64 installs are admitted by a separately signed runtime
+          catalog. The release remains a draft until the release host adds
+          that catalog and signature, verifies the complete draft, and
+          publishes it atomically.
 
           \`\`\`bash
           # SHA-256 verification (fast)
@@ -657,59 +1204,277 @@ jobs:
             --bundle syntaur-gateway-linux-x86_64.cosign.bundle \\
             --certificate-identity "https://github.com/syntaur-systems/syntaur-dist/.github/workflows/release-sign.yml@refs/heads/main" \\
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \\
+            --certificate-github-workflow-sha "${DIST_COMMIT}" \\
             syntaur-gateway-linux-x86_64
           \`\`\`
 
           See \`SECURITY.md\` for the verification + disclosure policy.
+
+          <!-- syntaur-release-correlation:${RELEASE_CORRELATION} -->
+          <!-- syntaur-source-commit:${SRC_COMMIT} -->
+          <!-- syntaur-engine-commit:${ENGINE_COMMIT} -->
+          <!-- syntaur-dist-commit:${DIST_COMMIT} -->
           EOF
 
-          # Create the release (and its tag on this repo's HEAD) if absent.
-          if gh release view "${TAG}" >/dev/null 2>&1; then
-            echo "release ${TAG} already exists; refreshing notes and uploading to it"
-            gh release edit "${TAG}" \
-              --title "${TAG}" \
-              --notes-file /tmp/release-body.md
-          else
-            for attempt in 1 2 3; do
-              if gh release create "${TAG}" \
-                  --title "${TAG}" \
-                  --notes-file /tmp/release-body.md; then
-                echo "release ${TAG} created (attempt ${attempt})"
-                break
+          release_json=/tmp/syntaur-publish-release.json
+          release_error=/tmp/syntaur-publish-release.error
+          marker="<!-- syntaur-release-correlation:${RELEASE_CORRELATION} -->"
+          {
+            printf '%s\n' "${assets[@]}"
+            printf '%s\n' syntaur-runtime-catalog-v1.json syntaur-runtime-catalog-v1.json.sig
+          } | sort -u >/tmp/allowed-release-assets
+
+          require_bounded_json_file() {
+            local path=$1
+            local label=$2
+            local size
+            size=$(stat -c '%s' "$path")
+            if (( size == 0 || size > 2097152 )); then
+              echo "::error::${label} is empty or exceeds 2 MiB" >&2
+              exit 1
+            fi
+          }
+
+          gh_api_to_file_bounded() {
+            local maximum=$1
+            local destination=$2
+            local error_path=$3
+            local block_limit actual status
+            shift 3
+            case "$maximum" in
+              ''|0|*[!0-9]*) echo "::error::invalid GitHub response limit" >&2; return 1 ;;
+            esac
+            (( maximum <= 1073741824 )) || {
+              echo "::error::GitHub response limit exceeds 1 GiB" >&2
+              return 1
+            }
+            block_limit=$(( (maximum / 1024) + 1 ))
+            rm -f "$destination" "$error_path"
+            if (
+              ulimit -f "$block_limit"
+              gh api "$@" >"$destination"
+            ) 2>"$error_path"; then
+              actual=$(stat -c '%s' "$destination")
+              if (( actual == 0 || actual > maximum )); then
+                echo "::error::GitHub response is empty or exceeds its transfer limit" >&2
+                rm -f "$destination"
+                return 1
               fi
-              if (( attempt == 3 )); then
-                echo "::error::failed to create release ${TAG} after 3 attempts"
+              return 0
+            else
+              status=$?
+              rm -f "$destination"
+              return "$status"
+            fi
+          }
+
+          resolve_tag_object() {
+            local object_json=$1
+            local object_error=$2
+            local kind sha
+            for _ in 1 2 3 4; do
+              require_bounded_json_file "$object_json" "tag object metadata"
+              kind=$(jq -er '.object.type' "$object_json")
+              sha=$(jq -er '.object.sha' "$object_json")
+              printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$' || {
+                echo "::error::release tag resolves to a malformed object ID" >&2
+                exit 1
+              }
+              if [ "$kind" = commit ]; then
+                printf '%s\n' "$sha"
+                return 0
+              fi
+              [ "$kind" = tag ] || {
+                echo "::error::release tag resolves to unsupported object type $kind" >&2
+                exit 1
+              }
+              gh_api_to_file_bounded 2097152 "$object_json" "$object_error" \
+                "repos/${GH_REPO}/git/tags/${sha}"
+            done
+            echo "::error::release tag indirection exceeds the supported bound" >&2
+            exit 1
+          }
+
+          resolve_tag_commit() {
+            local object_json=/tmp/syntaur-publish-tag-object.json
+            local object_error=/tmp/syntaur-publish-tag-object.error
+            gh_api_to_file_bounded 2097152 "$object_json" "$object_error" \
+              "repos/${GH_REPO}/git/ref/tags/${TAG}"
+            resolve_tag_object "$object_json" "$object_error"
+          }
+
+          preflight_tag_ownership() {
+            local object_json=/tmp/syntaur-precreate-tag-object.json
+            local object_error=/tmp/syntaur-precreate-tag-object.error
+            local commit status
+            if gh_api_to_file_bounded 2097152 "$object_json" "$object_error" \
+              "repos/${GH_REPO}/git/ref/tags/${TAG}"; then
+              commit=$(resolve_tag_object "$object_json" "$object_error")
+              if [ "$commit" != "$DIST_COMMIT" ]; then
+                echo "::error::refusing to create a release for pre-existing tag $TAG at $commit" >&2
                 exit 1
               fi
-              sleep $(( attempt * 5 ))
-            done
-          fi
-
-          for asset in "${assets[@]}"; do
-            if [ ! -f "${asset}" ]; then
-              echo "::error::expected asset ${asset} not present in dist/"
-              exit 1
+              return 0
+            else
+              status=$?
             fi
-            uploaded=0
-            for attempt in 1 2 3 4 5; do
-              if gh release upload "${TAG}" "${asset}" --clobber; then
-                echo "  ✓ uploaded ${asset} (attempt ${attempt})"
-                uploaded=1
+            if grep -Fq '(HTTP 404)' "$object_error"; then
+              return 0
+            fi
+            cat "$object_error" >&2
+            echo "::error::could not distinguish an absent tag from a GitHub API failure" >&2
+            return "$status"
+          }
+
+          load_release() {
+            gh_api_to_file_bounded 2097152 "$release_json" "$release_error" \
+              "repos/${GH_REPO}/releases/tags/${TAG}"
+          }
+
+          validate_release() {
+            local count asset_id asset_name reported state maximum
+            require_bounded_json_file "$release_json" "release metadata"
+            jq -e '.assets | type == "array"' "$release_json" >/dev/null
+            count=$(jq '.assets | length' "$release_json")
+            (( count <= 64 )) || { echo "::error::release has too many assets"; exit 1; }
+            test "$(jq -r '.tag_name' "$release_json")" = "$TAG"
+            test "$(jq -r '.target_commitish' "$release_json")" = "$DIST_COMMIT"
+            test "$(jq -r '.prerelease' "$release_json")" = false
+            case "$(jq -r '.draft' "$release_json")" in true|false) ;; *) exit 1 ;; esac
+            test "$(resolve_tag_commit)" = "$DIST_COMMIT"
+            body=$(jq -r '.body // ""' "$release_json")
+            [[ "$body" == *"$marker"* ]]
+            duplicates=$(jq -r '.assets[].name' "$release_json" | sort | uniq -d)
+            [ -z "$duplicates" ] || { echo "::error::duplicate release assets: $duplicates"; exit 1; }
+            while IFS=$'\t' read -r asset_id asset_name reported state; do
+              [ -n "$asset_id" ] || continue
+              printf '%s' "$asset_id" | grep -Eq '^[1-9][0-9]*$' || {
+                echo "::error::release has an invalid asset ID"
+                exit 1
+              }
+              printf '%s' "$reported" | grep -Eq '^[1-9][0-9]*$' || {
+                echo "::error::release asset $asset_name has an invalid size"
+                exit 1
+              }
+              [ "$state" = uploaded ] || {
+                echo "::error::release asset $asset_name is not fully uploaded"
+                exit 1
+              }
+              printf '%s' "$asset_name" | grep -Eq '^[A-Za-z0-9._-]+$' || {
+                echo "::error::release has an unsafe asset name"
+                exit 1
+              }
+              grep -Fxq "$asset_name" /tmp/allowed-release-assets || {
+                echo "::error::release has unexpected asset $asset_name"
+                exit 1
+              }
+              case "$asset_name" in
+                syntaur-sbom.spdx.json) maximum=16777216 ;;
+                *.png|*.ico|*.icns) maximum=4194304 ;;
+                *.txt|*.json|*.sig|*.bundle|*.sh|*.ps1) maximum=2097152 ;;
+                *) maximum=1073741824 ;;
+              esac
+              (( reported <= maximum )) || {
+                echo "::error::release asset $asset_name exceeds its size limit"
+                exit 1
+              }
+            done < <(jq -r '.assets[] | [.id, .name, .size, .state] | @tsv' "$release_json")
+          }
+
+          if load_release; then
+            validate_release
+          elif grep -Fq '(HTTP 404)' "$release_error"; then
+            preflight_tag_ownership
+            created=0
+            for attempt in 1 2 3; do
+              set +e
+              gh release create "$TAG" \
+                --draft \
+                --target "$DIST_COMMIT" \
+                --title "$TAG" \
+                --notes-file /tmp/release-body.md
+              create_status=$?
+              set -e
+              if load_release; then
+                validate_release
+                created=1
                 break
               fi
-              echo "  ✗ upload ${asset} attempt ${attempt} failed; backing off"
-              sleep $(( attempt * 10 ))
+              if ! grep -Fq '(HTTP 404)' "$release_error"; then
+                cat "$release_error" >&2
+                exit 1
+              fi
+              echo "release create attempt ${attempt} returned ${create_status}; no exact release visible yet"
+              sleep $(( attempt * 5 ))
             done
-            if (( uploaded == 0 )); then
-              echo "::error::failed to upload ${asset} after 5 attempts"
-              exit 1
-            fi
-          done
-
-          actual=$(gh release view "${TAG}" --json assets --jq '.assets | length')
-          if (( actual < expected )); then
-            echo "::error::release ${TAG} has only ${actual}/${expected} assets after upload"
-            gh release view "${TAG}" --json assets --jq '.assets[].name' | sed 's/^/  present: /'
+            (( created == 1 )) || { echo "::error::could not create or reconcile $TAG"; exit 1; }
+          else
+            cat "$release_error" >&2
             exit 1
           fi
-          echo "✓ release ${TAG} published with ${actual} assets"
+
+          is_draft=$(jq -r '.draft' "$release_json")
+          verify_remote_asset() {
+            local asset=$1
+            mapfile -t ids < <(jq -r --arg name "$asset" '.assets[] | select(.name == $name) | .id' "$release_json")
+            if (( ${#ids[@]} == 0 )); then
+              return 1
+            fi
+            (( ${#ids[@]} == 1 )) || { echo "::error::duplicate remote asset $asset"; exit 1; }
+            reported=$(jq -r --arg name "$asset" '.assets[] | select(.name == $name) | .size' "$release_json")
+            actual=$(stat -c '%s' "$asset")
+            [ "$reported" = "$actual" ] || { echo "::error::remote size mismatch for $asset"; exit 1; }
+            scratch="/tmp/syntaur-release-asset-${ids[0]}"
+            gh_api_to_file_bounded "$reported" "$scratch" \
+              "/tmp/syntaur-release-asset-${ids[0]}.error" \
+              -H 'Accept: application/octet-stream' \
+              "repos/${GH_REPO}/releases/assets/${ids[0]}"
+            cmp --silent "$asset" "$scratch" || { echo "::error::remote bytes differ for $asset"; exit 1; }
+            rm -f "$scratch"
+            return 0
+          }
+
+          for asset in "${assets[@]}"; do
+            if verify_remote_asset "$asset"; then
+              echo "  exact: $asset"
+              continue
+            fi
+            [ "$is_draft" = "true" ] || { echo "::error::public release is missing $asset"; exit 1; }
+            uploaded=0
+            for attempt in 1 2 3 4 5; do
+              set +e
+              gh release upload "$TAG" "$asset"
+              upload_status=$?
+              set -e
+              if load_release; then
+                validate_release
+                if verify_remote_asset "$asset"; then
+                  echo "  uploaded/reconciled: $asset (attempt=$attempt status=$upload_status)"
+                  uploaded=1
+                  break
+                fi
+              else
+                cat "$release_error" >&2
+              fi
+              sleep $(( attempt * 10 ))
+            done
+            (( uploaded == 1 )) || { echo "::error::could not upload or reconcile $asset"; exit 1; }
+          done
+
+          load_release
+          validate_release
+          printf '%s\n' "${assets[@]}" | sort -u >/tmp/expected-base-assets
+          jq -r '.assets[].name' "$release_json" | sort -u >/tmp/remote-assets
+          grep -vE '^syntaur-runtime-catalog-v1\.json(\.sig)?$' /tmp/remote-assets >/tmp/remote-base-assets || true
+          diff -u /tmp/expected-base-assets /tmp/remote-base-assets
+          trust_count=$(grep -Ec '^syntaur-runtime-catalog-v1\.json(\.sig)?$' /tmp/remote-assets || true)
+          if [ "$trust_count" != 0 ] && [ "$trust_count" != 2 ]; then
+            echo "::error::runtime catalog trust pair is partial"
+            exit 1
+          fi
+          is_draft=$(jq -r '.draft' "$release_json")
+          if [ "$is_draft" = "false" ] && [ "$trust_count" != 2 ]; then
+            echo "::error::public release lacks the complete runtime catalog trust pair"
+            exit 1
+          fi
+          echo "release ${TAG} is exact (draft=${is_draft}, runtime_trust_assets=${trust_count})"

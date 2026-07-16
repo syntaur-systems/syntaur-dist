@@ -22,6 +22,12 @@ BRAND="Syntaur"
 # the workspace version in Cargo.toml. install.sh ships standalone (users
 # curl|sh it), so it can't read the VERSION file at runtime.
 VERSION="0.7.111"
+# Stamped from the built runtime artifact by release-sign.yml before this
+# installer is signed. Managed installs enforce it regardless of --skip-verify.
+RUNTIME_BOOTSTRAP_SHA256=""
+# Stamped from the exact public workflow checkout before this installer is
+# signed. Cosign verification binds the manifest to this immutable commit.
+DIST_WORKFLOW_COMMIT=""
 BINARY="syntaur"
 INSTALL_DIR="$HOME/.local/bin"
 MODE=""
@@ -49,7 +55,7 @@ done
 #   `checksums.txt.cosign.bundle` from the same release directory.
 #   Verifies:
 #     1. sha256 against checksums.txt
-#     2. cosign signature of checksums.txt (if cosign is installed)
+#     2. cosign signature of checksums.txt against the pinned workflow commit
 #   Aborts with a loud error on any mismatch. `--skip-verify` bypasses
 #   everything and prints a RED WARNING so it can't happen silently.
 #
@@ -77,16 +83,42 @@ _fetch() {
   fi
 }
 
-download_verified() {
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    echo "Error: need sha256sum or shasum" >&2
+    return 1
+  fi
+}
+
+checksum_manifest_digest() {
+  MANIFEST="$1"
+  ASSET="$2"
+  DIGEST=$(awk -v asset="$ASSET" '
+    $2 == asset { count += 1; digest = $1; if (NF != 2) invalid = 1 }
+    END {
+      if (count != 1 || invalid) exit 1
+      print digest
+    }
+  ' "$MANIFEST") || return 1
+  case "$DIGEST" in ''|*[!0-9a-f]*) return 1 ;; esac
+  [ "${#DIGEST}" -eq 64 ] || return 1
+  printf '%s\n' "$DIGEST"
+}
+
+download_verified() (
   BIN_URL="$1"
   OUT="$2"
   BASE_URL=$(dirname "$BIN_URL")
   BIN_NAME=$(basename "$BIN_URL")
   TMP=$(mktemp -d)
-  trap "rm -rf '$TMP'" EXIT INT TERM
+  trap 'rm -rf "$TMP"' EXIT INT TERM
 
   echo "  → Downloading $BIN_NAME"
-  _fetch "$BIN_URL" "$TMP/$BIN_NAME" || return 44
+  download_bounded "$BIN_URL" "$TMP/$BIN_NAME" 1073741824 || return $?
 
   if [ "$VERIFY" = "0" ]; then
     printf "  \033[1;31m!!!\033[0m \033[1m--skip-verify:\033[0m installing unverified binary. DO NOT use in production.\n"
@@ -96,50 +128,74 @@ download_verified() {
   fi
 
   # Fetch checksums.txt + its cosign bundle.
-  if ! _fetch "$BASE_URL/checksums.txt" "$TMP/checksums.txt" 2>/dev/null; then
+  if ! download_bounded "$BASE_URL/checksums.txt" "$TMP/checksums.txt" 2097152 2>/dev/null; then
     echo ""
     echo "  ✗ checksums.txt missing on this release — cannot verify."
     echo "    Re-run with --skip-verify only if you accept the risk."
     return 1
   fi
-  _fetch "$BASE_URL/checksums.txt.cosign.bundle" "$TMP/checksums.txt.cosign.bundle" 2>/dev/null || true
+  if ! download_bounded "$BASE_URL/checksums.txt.cosign.bundle" "$TMP/checksums.txt.cosign.bundle" 2097152 2>/dev/null; then
+    echo ""
+    echo "  ✗ checksums.txt cosign bundle missing on this release — cannot verify."
+    echo "    Re-run with --skip-verify only if you accept the risk."
+    return 1
+  fi
 
   # Step 1: SHA-256 match.
-  (cd "$TMP" && grep " $BIN_NAME\$" checksums.txt | sha256sum -c --quiet) || {
+  EXPECTED_SHA256=$(checksum_manifest_digest "$TMP/checksums.txt" "$BIN_NAME") || {
+    echo ""
+    echo "  ✗ checksums.txt has no unique canonical entry for $BIN_NAME — ABORT."
+    return 1
+  }
+  ACTUAL_SHA256=$(sha256_file "$TMP/$BIN_NAME") || return 1
+  if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
     echo ""
     echo "  ✗ SHA-256 mismatch for $BIN_NAME — ABORT."
     echo "    Expected hash in checksums.txt did not match the downloaded binary."
     echo "    This could mean: a corrupted download, a malicious proxy, OR a"
     echo "    compromised release asset. Report to security@syntaur.app."
     return 1
-  }
+  fi
   echo "  ✓ SHA-256 verified"
 
-  # Step 2: cosign signature (best-effort — install cosign if missing).
+  # Step 2: fail closed unless the manifest is tied to the exact workflow commit.
+  case "$DIST_WORKFLOW_COMMIT" in
+    ''|*[!0-9a-f]*)
+      echo ""
+      echo "  ✗ installer has no valid pinned workflow commit — ABORT."
+      return 1
+      ;;
+  esac
+  if [ "${#DIST_WORKFLOW_COMMIT}" -ne 40 ]; then
+    echo ""
+    echo "  ✗ installer has no valid pinned workflow commit — ABORT."
+    return 1
+  fi
   if ! command -v cosign >/dev/null 2>&1; then
-    echo "  ⚠ cosign not installed — signature not verified (hash OK)."
-    echo "    For strongest verification: https://docs.sigstore.dev/system_config/installation/"
+    echo ""
+    echo "  ✗ cosign is required for verified installation — ABORT."
+    echo "    Install it from https://docs.sigstore.dev/system_config/installation/"
+    echo "    Re-run with --skip-verify only if you accept the risk."
+    return 1
+  fi
+  if cosign verify-blob \
+      --bundle "$TMP/checksums.txt.cosign.bundle" \
+      --certificate-identity "$COSIGN_IDENT" \
+      --certificate-oidc-issuer "$COSIGN_ISSUER" \
+      --certificate-github-workflow-sha "$DIST_WORKFLOW_COMMIT" \
+      "$TMP/checksums.txt" >/dev/null 2>&1; then
+    echo "  ✓ cosign signature verified"
   else
-    if [ -f "$TMP/checksums.txt.cosign.bundle" ]; then
-      cosign verify-blob \
-        --bundle "$TMP/checksums.txt.cosign.bundle" \
-        --certificate-identity "$COSIGN_IDENT" \
-        --certificate-oidc-issuer "$COSIGN_ISSUER" \
-        "$TMP/checksums.txt" >/dev/null 2>&1 && echo "  ✓ cosign signature verified" || {
-        echo ""
-        echo "  ✗ cosign signature verification FAILED — ABORT."
-        echo "    The release artifact could not be cryptographically tied to the"
-        echo "    Syntaur GitHub Actions signing identity. DO NOT run this binary."
-        return 1
-      }
-    else
-      echo "  ⚠ No cosign bundle on this release — signature not verified."
-    fi
+    echo ""
+    echo "  ✗ cosign signature verification FAILED — ABORT."
+    echo "    The release artifact could not be cryptographically tied to the"
+    echo "    Syntaur GitHub Actions signing identity. DO NOT run this binary."
+    return 1
   fi
 
   mv "$TMP/$BIN_NAME" "$OUT"
   chmod +x "$OUT"
-}
+)
 
 download_optional_verified() {
   LABEL="$1"
@@ -165,6 +221,116 @@ download_optional_verified() {
   echo "    Refusing to continue after a verification failure."
   exit 1
 }
+
+# Bounded release download used by the managed-runtime bootstrap. The file
+# size limit is applied in a subshell before curl/wget starts, then checked
+# again before the private temporary file is published.
+download_bounded() (
+  URL="$1"
+  OUT="$2"
+  MAX_SIZE="$3"
+
+  case "$MAX_SIZE" in
+    ''|0|*[!0-9]*) echo "  Error: invalid download size limit"; return 1 ;;
+  esac
+  if [ "$MAX_SIZE" -gt 1073741824 ]; then
+    echo "  Error: download size limit exceeds the runtime ceiling"
+    return 1
+  fi
+
+  TMP_FILE=$(mktemp "${OUT}.part.XXXXXX") || return 1
+  trap 'rm -f "$TMP_FILE"' EXIT HUP INT TERM
+  FILE_BLOCKS=$(( (MAX_SIZE + 511) / 512 ))
+  ulimit -f "$FILE_BLOCKS" || return 1
+  _fetch "$URL" "$TMP_FILE" || return 44
+  ACTUAL_SIZE=$(wc -c < "$TMP_FILE" | tr -d '[:space:]')
+  if [ "$ACTUAL_SIZE" -gt "$MAX_SIZE" ]; then
+    echo "  Error: downloaded file exceeds its size limit"
+    return 1
+  fi
+  chmod 600 "$TMP_FILE"
+  mv "$TMP_FILE" "$OUT"
+)
+
+download_bounded_exact() (
+  URL="$1"
+  OUT="$2"
+  EXPECTED_SIZE="$3"
+  MAX_SIZE="$4"
+  EXPECTED_SHA256="$5"
+
+  download_bounded "$URL" "$OUT" "$MAX_SIZE" || return $?
+  ACTUAL_SIZE=$(wc -c < "$OUT" | tr -d '[:space:]')
+  if [ "$ACTUAL_SIZE" != "$EXPECTED_SIZE" ]; then
+    echo "  Error: $URL has size $ACTUAL_SIZE, expected $EXPECTED_SIZE"
+    rm -f "$OUT"
+    return 1
+  fi
+  ACTUAL_SHA256=$(sha256_file "$OUT") || return 1
+  if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+    echo "  Error: $URL does not match the signed runtime catalog"
+    rm -f "$OUT"
+    return 1
+  fi
+  chmod 700 "$OUT"
+)
+
+download_managed_bootstrap() (
+  RELEASE_BASE="$1"
+  ASSET="$2"
+  OUT="$3"
+  EXPECTED_SHA256="$RUNTIME_BOOTSTRAP_SHA256"
+  case "$EXPECTED_SHA256" in ''|*[!0-9a-f]*) return 1 ;; esac
+  [ "${#EXPECTED_SHA256}" -eq 64 ] || return 1
+  download_bounded "$RELEASE_BASE/$ASSET" "$OUT" 1073741824 || return $?
+  ACTUAL_SHA256=$(sha256_file "$OUT") || return 1
+  if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+    echo "  Error: managed runtime bootstrap checksum mismatch"
+    rm -f "$OUT"
+    return 1
+  fi
+  chmod 700 "$OUT"
+)
+
+safe_release_component() {
+  VALUE="$1"
+  case "$VALUE" in
+    ''|.*|*..*|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  [ "${#VALUE}" -le 160 ]
+}
+
+valid_release_size() {
+  VALUE="$1"
+  case "$VALUE" in
+    ''|0|0[0-9]*|*[!0-9]*) return 1 ;;
+  esac
+  [ "$VALUE" -le 1073741824 ]
+}
+
+validate_stage_requirement() {
+  REQ_TAG="$1"
+  REQ_ASSET="$2"
+  REQ_STAGED="$3"
+  REQ_SHA256="$4"
+  REQ_SIZE="$5"
+  REQ_MAX_SIZE="$6"
+
+  safe_release_component "$REQ_TAG" || return 1
+  case "$REQ_TAG" in v[0-9]*.[0-9]*.[0-9]*) ;; *) return 1 ;; esac
+  safe_release_component "$REQ_ASSET" || return 1
+  safe_release_component "$REQ_STAGED" || return 1
+  case "$REQ_SHA256" in ''|*[!0-9a-f]*) return 1 ;; esac
+  [ "${#REQ_SHA256}" -eq 64 ] || return 1
+  valid_release_size "$REQ_SIZE" || return 1
+  valid_release_size "$REQ_MAX_SIZE" || return 1
+  [ "$REQ_SIZE" -le "$REQ_MAX_SIZE" ]
+}
+
+if [ "${SYNTAUR_INSTALL_TEST_LIBRARY_ONLY:-0}" = "1" ]; then
+  # shellcheck disable=SC2317 # direct execution uses exit; tests source and return.
+  return 0 2>/dev/null || exit 0
+fi
 
 echo ""
 echo "  ♞ $BRAND v$VERSION"
@@ -260,42 +426,128 @@ echo ""
 mkdir -p "$INSTALL_DIR"
 DASHBOARD_URL="${SYNTAUR_URL:-http://localhost:18789}"
 
-# Download gateway binary (server mode only) — verified by default.
-if [ "$MODE" = "server" ]; then
-  DOWNLOAD_URL="${REPO_URL}/releases/download/v${VERSION}/syntaur-${PLATFORM}-${ARCH}"
-  echo "  Installing $BRAND server..."
-
-  download_verified "$DOWNLOAD_URL" "$INSTALL_DIR/$BINARY" || {
-    echo ""
-    echo "  ✗ Could not install a verified server binary."
-    echo "    If the release doesn't carry signed checksums yet, re-run with"
-    echo "    --skip-verify to proceed at your own risk."
-    exit 1
-  }
-fi
-
-# Download native Rust browser engine and viewer — verified when available.
-ENGINE_BINARY="syntaur-engine"
-ENGINE_URL="${REPO_URL}/releases/download/v${VERSION}/syntaur-engine-${PLATFORM}-${ARCH}"
-download_optional_verified "native browser engine" "$ENGINE_URL" "$INSTALL_DIR/$ENGINE_BINARY" || true
-
-CLIP_BINARY="syntaur-clip-write"
-CLIP_URL="${REPO_URL}/releases/download/v${VERSION}/syntaur-clip-write-${PLATFORM}-${ARCH}"
-download_optional_verified "clipboard helper" "$CLIP_URL" "$INSTALL_DIR/$CLIP_BINARY" || true
-
-VIEWER_BINARY="syntaur-viewer"
-VIEWER_URL="${REPO_URL}/releases/download/v${VERSION}/syntaur-viewer-${PLATFORM}-${ARCH}"
-download_optional_verified "dashboard viewer" "$VIEWER_URL" "$INSTALL_DIR/$VIEWER_BINARY" || true
-
-ICON_PNG="$INSTALL_DIR/syntaur-icon.png"
-ICON_ICNS="$INSTALL_DIR/syntaur-icon.icns"
-download_optional_verified "launcher icon" "${REPO_URL}/releases/download/v${VERSION}/syntaur-icon.png" "$ICON_PNG" || true
-if [ "$PLATFORM" = "macos" ]; then
-  download_optional_verified "macOS launcher icon" "${REPO_URL}/releases/download/v${VERSION}/syntaur-icon.icns" "$ICON_ICNS" || true
+MANAGED_RUNTIME="0"
+if [ "$PLATFORM" = "linux" ] && [ "$ARCH" = "x86_64" ]; then
+  MANAGED_RUNTIME="1"
 fi
 
 APP_LAUNCHER="$INSTALL_DIR/syntaur-open"
-cat > "$APP_LAUNCHER" << LAUNCHER
+if [ "$MANAGED_RUNTIME" = "1" ]; then
+  echo "  Installing the signed managed runtime..."
+  RUNTIME_STAGE=$(mktemp -d "/tmp/syntaur-install-${VERSION}.XXXXXX")
+  chmod 700 "$RUNTIME_STAGE"
+  cleanup_runtime_stage() {
+    rm -rf "$RUNTIME_STAGE"
+  }
+  trap cleanup_runtime_stage EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  CATALOG_NAME="syntaur-runtime-catalog-v1.json"
+  CATALOG_SIGNATURE_NAME="syntaur-runtime-catalog-v1.json.sig"
+  RELEASE_BASE="${REPO_URL}/releases/download/v${VERSION}"
+  download_bounded "$RELEASE_BASE/$CATALOG_NAME" "$RUNTIME_STAGE/$CATALOG_NAME" 262144 || {
+    echo "  Error: the signed runtime catalog is unavailable"
+    exit 1
+  }
+  download_bounded "$RELEASE_BASE/$CATALOG_SIGNATURE_NAME" "$RUNTIME_STAGE/$CATALOG_SIGNATURE_NAME" 129 || {
+    echo "  Error: the runtime catalog signature is unavailable"
+    exit 1
+  }
+
+  # The bootstrap hash is release-stamped into this signed installer and is
+  # always enforced, even when --skip-verify was requested for direct assets.
+  # It then enforces the independent Ed25519 catalog signature with its key.
+  RUNTIME_ASSET="syntaur-runtime-linux-x86_64"
+  if ! download_managed_bootstrap "$RELEASE_BASE" "$RUNTIME_ASSET" "$RUNTIME_STAGE/$RUNTIME_ASSET"; then
+    echo "  Error: could not install a verified runtime bootstrap"
+    exit 1
+  fi
+
+  # The release asset name is transport-facing. The CLI accepts only a
+  # canonical supervisor invocation name, and then verifies its own mapped
+  # executable against the signed catalog before emitting any requirements.
+  RUNTIME_BOOTSTRAP="$RUNTIME_STAGE/syntaur-runtime-$VERSION"
+  cp "$RUNTIME_STAGE/$RUNTIME_ASSET" "$RUNTIME_BOOTSTRAP"
+  chmod 700 "$RUNTIME_BOOTSTRAP"
+  REQUIREMENTS="$RUNTIME_STAGE/stage-requirements.tsv"
+  if ! "$RUNTIME_BOOTSTRAP" stage-requirements "$RUNTIME_STAGE" "$MODE" > "$REQUIREMENTS"; then
+    echo "  Error: the runtime rejected the signed release catalog"
+    exit 1
+  fi
+  if ! awk -F '\t' '
+      NF != 7 || $1 != "syntaur-stage-v1" { exit 1 }
+      END { if (NR == 0) exit 1 }
+    ' "$REQUIREMENTS"; then
+    echo "  Error: invalid runtime stage-requirements protocol"
+    exit 1
+  fi
+
+  TAB=$(printf '\t')
+  SEEN_STAGE_NAMES="|"
+  while IFS="$TAB" read -r PROTOCOL REQ_TAG REQ_ASSET REQ_STAGED REQ_SHA256 REQ_SIZE REQ_MAX_SIZE; do
+    if [ "$PROTOCOL" != "syntaur-stage-v1" ] \
+       || ! validate_stage_requirement "$REQ_TAG" "$REQ_ASSET" "$REQ_STAGED" "$REQ_SHA256" "$REQ_SIZE" "$REQ_MAX_SIZE"; then
+      echo "  Error: unsafe runtime stage requirement"
+      exit 1
+    fi
+    case "$SEEN_STAGE_NAMES" in
+      *"|$REQ_STAGED|"*) echo "  Error: duplicate runtime stage name"; exit 1 ;;
+    esac
+    SEEN_STAGE_NAMES="${SEEN_STAGE_NAMES}${REQ_STAGED}|"
+    echo "  → Downloading $REQ_ASSET from $REQ_TAG"
+    download_bounded_exact \
+      "${REPO_URL}/releases/download/${REQ_TAG}/${REQ_ASSET}" \
+      "$RUNTIME_STAGE/$REQ_STAGED" \
+      "$REQ_SIZE" \
+      "$REQ_MAX_SIZE" \
+      "$REQ_SHA256" || {
+        echo "  Error: a release payload did not match the signed catalog"
+        exit 1
+      }
+  done < "$REQUIREMENTS"
+
+  if [ "$MODE" = "server" ]; then
+    "$RUNTIME_BOOTSTRAP" install-release "$RUNTIME_STAGE" "$MODE" "$DASHBOARD_URL"
+  elif [ -n "${SYNTAUR_URL:-}" ]; then
+    "$RUNTIME_BOOTSTRAP" install-release "$RUNTIME_STAGE" "$MODE" "$SYNTAUR_URL"
+  else
+    "$RUNTIME_BOOTSTRAP" install-release "$RUNTIME_STAGE" "$MODE"
+  fi
+  if [ ! -x "$APP_LAUNCHER" ]; then
+    echo "  Error: managed runtime installation did not publish syntaur-open"
+    exit 1
+  fi
+else
+  # Direct installation remains available for macOS and Linux architectures
+  # that do not yet have a catalog-backed managed-runtime target.
+  if [ "$MODE" = "server" ]; then
+    DOWNLOAD_URL="${REPO_URL}/releases/download/v${VERSION}/syntaur-gateway-${PLATFORM}-${ARCH}"
+    echo "  Installing $BRAND server..."
+
+    download_verified "$DOWNLOAD_URL" "$INSTALL_DIR/$BINARY" || {
+      echo ""
+      echo "  ✗ Could not install a verified server binary."
+      echo "    If the release doesn't carry signed checksums yet, re-run with"
+      echo "    --skip-verify to proceed at your own risk."
+      exit 1
+    }
+  fi
+
+  ENGINE_BINARY="syntaur-engine"
+  ENGINE_URL="${REPO_URL}/releases/download/v${VERSION}/syntaur-engine-${PLATFORM}-${ARCH}"
+  download_optional_verified "native browser engine" "$ENGINE_URL" "$INSTALL_DIR/$ENGINE_BINARY" || true
+
+  CLIP_BINARY="syntaur-clip-write"
+  CLIP_URL="${REPO_URL}/releases/download/v${VERSION}/syntaur-clip-write-${PLATFORM}-${ARCH}"
+  download_optional_verified "clipboard helper" "$CLIP_URL" "$INSTALL_DIR/$CLIP_BINARY" || true
+
+  VIEWER_BINARY="syntaur-viewer"
+  VIEWER_URL="${REPO_URL}/releases/download/v${VERSION}/syntaur-viewer-${PLATFORM}-${ARCH}"
+  download_optional_verified "dashboard viewer" "$VIEWER_URL" "$INSTALL_DIR/$VIEWER_BINARY" || true
+
+  cat > "$APP_LAUNCHER" << LAUNCHER
 #!/bin/sh
 export PATH="$INSTALL_DIR:\$PATH"
 APP_URL="\${SYNTAUR_URL:-$DASHBOARD_URL}"
@@ -311,7 +563,15 @@ else
   printf '%s\n' "\$APP_URL"
 fi
 LAUNCHER
-chmod +x "$APP_LAUNCHER"
+  chmod +x "$APP_LAUNCHER"
+fi
+
+ICON_PNG="$INSTALL_DIR/syntaur-icon.png"
+ICON_ICNS="$INSTALL_DIR/syntaur-icon.icns"
+download_optional_verified "launcher icon" "${REPO_URL}/releases/download/v${VERSION}/syntaur-icon.png" "$ICON_PNG" || true
+if [ "$PLATFORM" = "macos" ]; then
+  download_optional_verified "macOS launcher icon" "${REPO_URL}/releases/download/v${VERSION}/syntaur-icon.icns" "$ICON_ICNS" || true
+fi
 
 # Ensure the WebKitGTK viewer can actually decode audio. On many distros
 # the base `webkit2gtk` / `webkitgtk-6.0` package does NOT pull in
@@ -328,7 +588,6 @@ chmod +x "$APP_LAUNCHER"
 # All three are in the standard repos of the distros Syntaur supports.
 if [ "$PLATFORM" = "linux" ]; then
   echo "  Checking Linux media/input runtime packages…"
-  NEED_INSTALL=""
   NEED_PKGS=""
   MGR=""
 
@@ -387,11 +646,12 @@ if [ "$PLATFORM" = "linux" ]; then
           ;;
         *)
           echo "  Installing so media playback and the native browser work out of the box…"
+          # shellcheck disable=SC2086 # values are fixed package names collected above
           case "$MGR" in
-            pacman) sudo pacman -S --needed --noconfirm $NEED_PKGS 2>&1 | tail -3 || INSTALL_FAILED=1 ;;
-            apt)    sudo apt-get install -y $NEED_PKGS 2>&1 | tail -3 || INSTALL_FAILED=1 ;;
-            dnf)    sudo dnf install -y $NEED_PKGS 2>&1 | tail -3 || INSTALL_FAILED=1 ;;
-            zypper) sudo zypper install -y $NEED_PKGS 2>&1 | tail -3 || INSTALL_FAILED=1 ;;
+            pacman) sudo pacman -S --needed --noconfirm $NEED_PKGS || INSTALL_FAILED=1 ;;
+            apt)    sudo apt-get install -y $NEED_PKGS || INSTALL_FAILED=1 ;;
+            dnf)    sudo dnf install -y $NEED_PKGS || INSTALL_FAILED=1 ;;
+            zypper) sudo zypper install -y $NEED_PKGS || INSTALL_FAILED=1 ;;
           esac
           ;;
       esac
@@ -434,7 +694,7 @@ case ":$PATH:" in
 esac
 
 # Install systemd service (server mode, Linux only)
-if [ "$MODE" = "server" ] && [ "$PLATFORM" = "linux" ] && command -v systemctl >/dev/null 2>&1; then
+if [ "$MODE" = "server" ] && [ "$PLATFORM" = "linux" ] && [ "$MANAGED_RUNTIME" != "1" ] && command -v systemctl >/dev/null 2>&1; then
   UNIT_DIR="$HOME/.config/systemd/user"
   mkdir -p "$UNIT_DIR"
 
@@ -704,11 +964,12 @@ if [ -n "${SYNTAUR_TS_AUTHKEY:-}" ]; then
   fi
 
   if command -v tailscale >/dev/null 2>&1; then
-    TS_UP="tailscale up --authkey=${SYNTAUR_TS_AUTHKEY} --accept-routes"
     if [ "$PLATFORM" = "linux" ] && [ "$(id -u)" != "0" ]; then
-      sudo $TS_UP || echo "  ! tailscale up failed — retry with: sudo $TS_UP"
+      sudo tailscale up --authkey="$SYNTAUR_TS_AUTHKEY" --accept-routes \
+        || echo "  ! tailscale up failed — retry after checking the supplied auth key."
     else
-      $TS_UP || echo "  ! tailscale up failed — you can retry with the command above."
+      tailscale up --authkey="$SYNTAUR_TS_AUTHKEY" --accept-routes \
+        || echo "  ! tailscale up failed — retry after checking the supplied auth key."
     fi
     echo "  ✓ Tailscale connected to your household tailnet"
   fi

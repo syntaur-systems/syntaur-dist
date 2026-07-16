@@ -14,16 +14,47 @@ issuer: https://token.actions.githubusercontent.com
 To verify (example for the Linux gateway):
 
 ```bash
+set -euo pipefail
+
+TAG=v0.7.112
+VERIFY_REPO=$(mktemp -d)
+git -C "$VERIFY_REPO" init -q
+git -C "$VERIFY_REPO" fetch -q --depth=1 \
+  https://github.com/syntaur-systems/syntaur-dist.git "refs/tags/$TAG"
+DIST_COMMIT=$(git -C "$VERIFY_REPO" rev-parse 'FETCH_HEAD^{commit}')
+printf '%s' "$DIST_COMMIT" | grep -Eq '^[0-9a-f]{40}$'
+
+# Do not derive the trust anchor from the operation being authenticated.
+test "$(jq -er '.dist_commit | select(type == "string" and test("^[0-9a-f]{40}$"))' \
+  syntaur-release-operation.json)" = "$DIST_COMMIT"
+
+cosign verify-blob \
+  --bundle syntaur-release-operation.json.cosign.bundle \
+  --certificate-identity "https://github.com/syntaur-systems/syntaur-dist/.github/workflows/release-sign.yml@refs/heads/main" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  --certificate-github-workflow-sha "$DIST_COMMIT" \
+  syntaur-release-operation.json
+
+cosign verify-blob \
+  --bundle checksums.txt.cosign.bundle \
+  --certificate-identity "https://github.com/syntaur-systems/syntaur-dist/.github/workflows/release-sign.yml@refs/heads/main" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  --certificate-github-workflow-sha "$DIST_COMMIT" \
+  checksums.txt
+
 sha256sum -c checksums.txt
 
 cosign verify-blob \
   --bundle syntaur-gateway-linux-x86_64.cosign.bundle \
   --certificate-identity "https://github.com/syntaur-systems/syntaur-dist/.github/workflows/release-sign.yml@refs/heads/main" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  --certificate-github-workflow-sha "$DIST_COMMIT" \
   syntaur-gateway-linux-x86_64
 ```
 
-A passing verification proves the artifact was produced by a run of the public workflow in this repo and has not been altered since. The check consults the public Sigstore Rekor transparency log and Fulcio CA only — **no access to private source is needed to verify.**
+A passing verification proves the artifact was produced by the independently accepted public workflow commit and has not been altered since. For higher-assurance deployments, compare `DIST_COMMIT` with an out-of-band release approval before verification. The check consults the public Sigstore Rekor transparency log and Fulcio CA only — **no access to private source is needed to verify.**
+
+Signed release operation assets are never replaced. Once dispatch is durably recorded, failure to bind the original repository-dispatch attempt permanently consumes that version. Once the exact run and attempt are recorded, a missing or failed attempt, or any manual/rerun substitute, requires a successor version. Only the same recorded attempt while it remains nonterminal may be resumed; recovery never weakens or rewrites release authority.
 
 ## Build provenance
 
