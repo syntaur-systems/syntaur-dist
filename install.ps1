@@ -145,6 +145,7 @@ function Save-EulaAcceptance {
     $SyntaurDirectory = Join-Path $env:USERPROFILE ".syntaur"
     $Record = Join-Path $SyntaurDirectory "eula-accepted"
     $Temporary = $null
+    $Backup = $null
     try {
         if (Test-Path -LiteralPath $SyntaurDirectory) {
             if (-not (Test-SafeEulaEntry -LiteralPath $SyntaurDirectory -Container $true)) {
@@ -174,7 +175,10 @@ function Save-EulaAcceptance {
         $Encoding = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
         [IO.File]::WriteAllLines($Temporary, $Lines, $Encoding)
         if (Test-Path -LiteralPath $Record) {
-            [IO.File]::Replace($Temporary, $Record, $null, $true)
+            $Backup = Join-Path $SyntaurDirectory (".eula-accepted.backup." + [Guid]::NewGuid().ToString("N"))
+            [IO.File]::Replace($Temporary, $Record, $Backup, $true)
+            Remove-Item -LiteralPath $Backup -Force
+            $Backup = $null
         } else {
             [IO.File]::Move($Temporary, $Record)
         }
@@ -182,6 +186,9 @@ function Save-EulaAcceptance {
     } catch {
         if ($Temporary -and (Test-Path -LiteralPath $Temporary)) {
             Remove-Item -LiteralPath $Temporary -Force -ErrorAction SilentlyContinue
+        }
+        if ($Backup -and (Test-Path -LiteralPath $Backup)) {
+            Remove-Item -LiteralPath $Backup -Force -ErrorAction SilentlyContinue
         }
         if ($env:SYNTAUR_INSTALL_TEST_LIBRARY_ONLY -eq "1") {
             throw

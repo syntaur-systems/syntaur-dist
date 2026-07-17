@@ -98,6 +98,8 @@ try {
     Assert-True ($BeforeCurrentReuse -eq $AfterCurrentReuse) "current reuse rewrote its evidence"
     $Residue = @(Get-ChildItem -LiteralPath (Split-Path -Parent $Current) -Filter ".eula-accepted.tmp.*")
     Assert-True ($Residue.Count -eq 0) "atomic record write left temporary files"
+    $Residue = @(Get-ChildItem -LiteralPath (Split-Path -Parent $Current) -Filter ".eula-accepted.backup.*")
+    Assert-True ($Residue.Count -eq 0) "atomic record replacement left backup files"
 
     $BadLines = [IO.File]::ReadAllLines($Current)
     $BadLines[2] = "eula_sha256=" + ("a" * 64)
