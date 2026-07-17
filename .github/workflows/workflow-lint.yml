@@ -5,14 +5,28 @@ on:
     paths:
       - '.github/workflows/**'
       - '.github/actionlint.yaml'
+      - 'EULA.md'
+      - 'install.sh'
+      - 'install.ps1'
       - 'scripts/validate-release-workflow.sh'
       - 'scripts/test-release-workflow-recovery.sh'
+      - 'scripts/test-eula-acceptance.sh'
+      - 'scripts/test-eula-acceptance.ps1'
+      - 'scripts/test-process-inspector-install.sh'
+      - 'scripts/fixtures/process_inspector_protocol.c'
   pull_request:
     paths:
       - '.github/workflows/**'
       - '.github/actionlint.yaml'
+      - 'EULA.md'
+      - 'install.sh'
+      - 'install.ps1'
       - 'scripts/validate-release-workflow.sh'
       - 'scripts/test-release-workflow-recovery.sh'
+      - 'scripts/test-eula-acceptance.sh'
+      - 'scripts/test-eula-acceptance.ps1'
+      - 'scripts/test-process-inspector-install.sh'
+      - 'scripts/fixtures/process_inspector_protocol.c'
 
 permissions:
   contents: read
@@ -38,3 +52,25 @@ jobs:
 
       - name: Validate release workflow and embedded Bash
         run: bash scripts/validate-release-workflow.sh
+
+      - name: Verify POSIX EULA acceptance reuse
+        run: bash scripts/test-eula-acceptance.sh
+
+      - name: Install process inspector test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends acl libcap2-bin
+
+      - name: Verify privileged process inspector installation
+        run: bash scripts/test-process-inspector-install.sh
+
+  windows-eula:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+
+      - name: Verify Windows EULA acceptance reuse
+        shell: powershell
+        run: .\scripts\test-eula-acceptance.ps1

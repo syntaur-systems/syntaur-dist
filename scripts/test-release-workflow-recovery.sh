@@ -81,17 +81,22 @@ cp "$repository/assets/syntaur-icon.png" \
   "$repository/assets/syntaur-icon.ico" \
   "$stage_case/assets/"
 printf 'runtime payload\n' >"$stage_case/dist/syntaur-runtime-linux-x86_64"
+printf 'process inspector payload\n' >"$stage_case/dist/syntaur-process-inspector-linux-x86_64"
 (
   cd "$stage_case"
   env REL_VERSION="$version" DIST_COMMIT="$dist_commit" bash "$stage_installers_step" >/dev/null
 )
 grep -Fxq "DIST_WORKFLOW_COMMIT=\"$dist_commit\"" "$stage_case/dist/install.sh"
 grep -Eq '^RUNTIME_BOOTSTRAP_SHA256="[0-9a-f]{64}"$' "$stage_case/dist/install.sh"
+grep -Fxq \
+  "PROCESS_INSPECTOR_SHA256=\"$(sha256sum "$stage_case/dist/syntaur-process-inspector-linux-x86_64" | awk '{print $1}')\"" \
+  "$stage_case/dist/install.sh"
 sh -n "$stage_case/dist/install.sh"
 
 installer_case="$temporary/installer-verification"
 mkdir -p "$installer_case/release" "$installer_case/out"
 printf 'installer payload\n' >"$installer_case/release/syntaur-gateway-linux-x86_64"
+printf 'process inspector payload\n' >"$installer_case/release/syntaur-process-inspector-linux-x86_64"
 (
   cd "$installer_case/release"
   sha256sum syntaur-gateway-linux-x86_64 >checksums.txt
@@ -132,6 +137,28 @@ printf 'manifest bundle\n' >"$installer_case/release/checksums.txt.cosign.bundle
   cosign() { return 0; }
   download_verified "$release_url" "$output" >/dev/null
   cmp --silent "$installer_case/release/syntaur-gateway-linux-x86_64" "$output"
+
+  inspector_asset=syntaur-process-inspector-linux-x86_64
+  inspector_sha256=$(sha256sum "$installer_case/release/$inspector_asset" | awk '{print $1}')
+  inspector_output="$installer_case/out/$inspector_asset"
+  VERIFY=0
+  download_pinned_release_asset \
+    "file://$installer_case/release" \
+    "$inspector_asset" \
+    "$inspector_output" \
+    "$inspector_sha256" \
+    "process inspector" >/dev/null
+  cmp --silent "$installer_case/release/$inspector_asset" "$inspector_output"
+  printf 'wrong process inspector payload\n' >"$installer_case/release/$inspector_asset"
+  if download_pinned_release_asset \
+      "file://$installer_case/release" \
+      "$inspector_asset" \
+      "$inspector_output" \
+      "$inspector_sha256" \
+      "process inspector" >/dev/null 2>&1; then
+    echo 'pinned process inspector accepted wrong bytes under VERIFY=0' >&2
+    exit 1
+  fi
 )
 
 prepare_case="$temporary/prepare"
@@ -258,8 +285,10 @@ publish_state="$publish_case/state"
 mkdir -p "$publish_dist" "$publish_state/assets" "$publish_case/bin"
 cp "$operation_fixture" "$publish_dist/syntaur-release-operation.json"
 printf 'signed payload\n' >"$publish_dist/syntaur-source-commit.txt"
+printf 'process inspector payload\n' >"$publish_dist/syntaur-process-inspector-linux-x86_64"
 printf 'operation bundle\n' >"$publish_dist/syntaur-release-operation.json.cosign.bundle"
 printf 'payload bundle\n' >"$publish_dist/syntaur-source-commit.txt.cosign.bundle"
+printf 'process inspector bundle\n' >"$publish_dist/syntaur-process-inspector-linux-x86_64.cosign.bundle"
 cp "$repository/assets/syntaur-icon.icns" "$publish_dist/syntaur-icon.icns"
 printf 'icon bundle\n' >"$publish_dist/syntaur-icon.icns.cosign.bundle"
 truncate -s 3145728 "$publish_dist/syntaur-sbom.spdx.json"
@@ -269,6 +298,7 @@ printf 'SBOM bundle\n' >"$publish_dist/syntaur-sbom.spdx.json.cosign.bundle"
   sha256sum \
     syntaur-icon.icns \
     syntaur-release-operation.json \
+    syntaur-process-inspector-linux-x86_64 \
     syntaur-sbom.spdx.json \
     syntaur-source-commit.txt \
     >checksums.txt

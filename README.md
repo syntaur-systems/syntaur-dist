@@ -10,9 +10,9 @@ Syntaur is a paid, closed-source product, licensed under the [End User License A
 ```sh
 wget https://github.com/syntaur-systems/syntaur-dist/releases/latest/download/install.sh
 sh install.sh --server      # gateway + service unit  (--connect for client-only)
-# The installer asks you to accept the EULA; pass --accept-eula to pre-accept.
+# First install asks for EULA acceptance; the exact current acceptance is reused.
 ```
-The Linux/macOS installer includes the native Syntaur browser engine when that asset is present, with `syntaur-viewer` and the system browser as fallbacks. It requires [Cosign](https://docs.sigstore.dev/system_config/installation/), downloads `checksums.txt` plus its bundle, and **verifies every installed binary before installing it**. Missing verification tooling or trust assets aborts the install; `--skip-verify` is the explicit unverified developer path.
+The Linux/macOS installer includes the native Syntaur browser engine when that asset is present, with `syntaur-viewer` and the system browser as fallbacks. An exact accepted EULA version and hash are durable; another prompt is required only when that authority changes or the record is unsafe. It requires [Cosign](https://docs.sigstore.dev/system_config/installation/), downloads `checksums.txt` plus its bundle, and **verifies every installed binary before installing it**. Managed Linux installs also authenticate a versioned, root-owned process inspector carrying only `CAP_SYS_PTRACE`; the main runtime remains unprivileged. Missing verification tooling or trust assets aborts the install; `--skip-verify` never bypasses the runtime or inspector hashes.
 
 The two-line bootstrap above trusts GitHub HTTPS for the installer script itself. To verify the installer independently before execution, download a versioned `install.sh`, its bundle, `checksums.txt`, and the operation metadata from the same release, establish the accepted workflow commit as below, then verify the installer exactly like any other manifest entry before running it.
 

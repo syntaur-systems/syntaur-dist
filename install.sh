@@ -25,6 +25,9 @@ VERSION="0.7.114"
 # Stamped from the built runtime artifact by release-sign.yml before this
 # installer is signed. Managed installs enforce it regardless of --skip-verify.
 RUNTIME_BOOTSTRAP_SHA256="44ee248a5eda3f35988df61a323dfca52c9612ee6a712db6be853594917b5cdc"
+# Stamped from the matching helper asset. This pin remains mandatory even
+# when --skip-verify is used for developer-only direct assets.
+PROCESS_INSPECTOR_SHA256=""
 # Stamped from the exact public workflow checkout before this installer is
 # signed. Cosign verification binds the manifest to this immutable commit.
 DIST_WORKFLOW_COMMIT="8811aa006673caa5082a7c9343e83c0b7ac51d16"
@@ -36,6 +39,9 @@ AUTOSUDO="1"
 ACCEPT_EULA="0"
 EULA_VERSION="1.0"
 EULA_URL="https://github.com/syntaur-systems/syntaur-dist/blob/main/EULA.md"
+EULA_SHA256="3e417ea33bc2d6296070222df816a6d145846743c1d98e7e4d20c7c2c8e9a720"
+EULA_RECORD_FORMAT="1"
+EULA_RECORD_MAX_BYTES="4096"
 
 # Parse flags
 for arg in "$@"; do
@@ -266,7 +272,7 @@ download_bounded_exact() (
     rm -f "$OUT"
     return 1
   fi
-  ACTUAL_SHA256=$(sha256_file "$OUT") || return 1
+  ACTUAL_SHA256=$(/usr/bin/sha256sum -- "$OUT" 2>/dev/null | /usr/bin/awk '{print $1}') || return 1
   if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
     echo "  Error: $URL does not match the signed runtime catalog"
     rm -f "$OUT"
@@ -275,21 +281,241 @@ download_bounded_exact() (
   chmod 700 "$OUT"
 )
 
-download_managed_bootstrap() (
+download_pinned_release_asset() (
   RELEASE_BASE="$1"
   ASSET="$2"
   OUT="$3"
-  EXPECTED_SHA256="$RUNTIME_BOOTSTRAP_SHA256"
+  EXPECTED_SHA256="$4"
+  LABEL="$5"
   case "$EXPECTED_SHA256" in ''|*[!0-9a-f]*) return 1 ;; esac
   [ "${#EXPECTED_SHA256}" -eq 64 ] || return 1
   download_bounded "$RELEASE_BASE/$ASSET" "$OUT" 1073741824 || return $?
   ACTUAL_SHA256=$(sha256_file "$OUT") || return 1
   if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
-    echo "  Error: managed runtime bootstrap checksum mismatch"
+    echo "  Error: $LABEL checksum mismatch"
     rm -f "$OUT"
     return 1
   fi
   chmod 700 "$OUT"
+)
+
+download_managed_bootstrap() {
+  download_pinned_release_asset "$1" "$2" "$3" "$RUNTIME_BOOTSTRAP_SHA256" "managed runtime bootstrap"
+}
+
+process_inspector_acl_free() (
+  ENTRY="$1"
+  PERMISSIONS=$(LC_ALL=C /usr/bin/ls -ld -- "$ENTRY" 2>/dev/null | /usr/bin/awk '{print $1}') || return 1
+  case "$PERMISSIONS" in ''|*+) return 1 ;; esac
+)
+
+validate_process_inspector_directory() (
+  DIRECTORY="$1"
+  [ -d "$DIRECTORY" ] && [ ! -L "$DIRECTORY" ] || return 1
+  METADATA=$(LC_ALL=C /usr/bin/stat -c '%u:%g:%a:%F' -- "$DIRECTORY" 2>/dev/null) || return 1
+  OLD_IFS=$IFS
+  IFS=:
+  read -r PI_UID PI_GID PI_MODE PI_KIND <<EOF
+$METADATA
+EOF
+  IFS=$OLD_IFS
+  [ "$PI_UID" = 0 ] && [ "$PI_GID" = 0 ] && [ "$PI_KIND" = "directory" ] || return 1
+  case "$PI_MODE" in
+    ''|*[!0-7]*|*[2367][0-7]|*[0-7][2367]) return 1 ;;
+  esac
+  process_inspector_acl_free "$DIRECTORY"
+)
+
+validate_process_inspector_file() (
+  INSPECTOR="$1"
+  EXPECTED_SHA256="$2"
+  GETCAP_BIN="$3"
+  [ -f "$INSPECTOR" ] && [ ! -L "$INSPECTOR" ] || return 1
+  METADATA=$(LC_ALL=C /usr/bin/stat -c '%u:%g:%a:%h:%F' -- "$INSPECTOR" 2>/dev/null) || return 1
+  [ "$METADATA" = "0:0:755:1:regular file" ] || return 1
+  process_inspector_acl_free "$INSPECTOR" || return 1
+  ACTUAL_SHA256=$(/usr/bin/sha256sum -- "$INSPECTOR" 2>/dev/null | /usr/bin/awk '{print $1}') || return 1
+  [ "$ACTUAL_SHA256" = "$EXPECTED_SHA256" ] || return 1
+  CAPABILITY=$(LC_ALL=C "$GETCAP_BIN" -n "$INSPECTOR" 2>/dev/null) || return 1
+  [ "$CAPABILITY" = "$INSPECTOR cap_sys_ptrace=ep" ]
+)
+
+validate_process_inspector_protocol() (
+  INSPECTOR="$1"
+  PROBE_DIRECTORY="$2"
+  PROBE=$(/usr/bin/mktemp "$PROBE_DIRECTORY/process-inspector-probe.XXXXXX") || return 1
+  trap '/usr/bin/rm -f -- "$PROBE"' EXIT HUP INT TERM
+  chmod 600 "$PROBE"
+  "$INSPECTOR" "$$" >"$PROBE" 2>/dev/null || return 1
+  SIZE=$(/usr/bin/wc -c <"$PROBE" | /usr/bin/tr -d '[:space:]') || return 1
+  case "$SIZE" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$SIZE" -ge 21 ] && [ "$SIZE" -le 4116 ] || return 1
+  MAGIC=$(/usr/bin/dd if="$PROBE" bs=1 count=16 status=none | /usr/bin/od -An -tx1 | /usr/bin/tr -d '[:space:]') || return 1
+  [ "$MAGIC" = "53594e544155522d50492d5631000000" ] || return 1
+  LENGTH_BYTES=$(/usr/bin/dd if="$PROBE" bs=1 skip=16 count=4 status=none | /usr/bin/od -An -tu1) || return 1
+  # shellcheck disable=SC2086 # four decimal protocol bytes intentionally split into argv fields.
+  set -- $LENGTH_BYTES
+  [ "$#" -eq 4 ] || return 1
+  BYTE_1=$1
+  BYTE_2=$2
+  BYTE_3=$3
+  BYTE_4=$4
+  for BYTE in "$BYTE_1" "$BYTE_2" "$BYTE_3" "$BYTE_4"; do
+    case "$BYTE" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$BYTE" -le 255 ] || return 1
+  done
+  LENGTH=$((BYTE_1 * 16777216 + BYTE_2 * 65536 + BYTE_3 * 256 + BYTE_4))
+  [ "$LENGTH" -ge 1 ] && [ "$LENGTH" -le 4096 ] || return 1
+  [ "$SIZE" -eq $((20 + LENGTH)) ] || return 1
+  FIRST=$(/usr/bin/dd if="$PROBE" bs=1 skip=20 count=1 status=none | /usr/bin/od -An -tu1 | /usr/bin/tr -d '[:space:]') || return 1
+  [ "$FIRST" = 47 ] || return 1
+  NON_NUL=$(/usr/bin/dd if="$PROBE" bs=1 skip=20 count="$LENGTH" status=none | /usr/bin/tr -d '\000' | /usr/bin/wc -c | /usr/bin/tr -d '[:space:]') || return 1
+  [ "$NON_NUL" = "$LENGTH" ]
+)
+
+provision_process_inspector() (
+  STAGED_INSPECTOR="$1"
+  EXPECTED_SHA256="$2"
+  RELEASE_VERSION="$3"
+  INSPECTOR_ROOT="$4"
+  PROBE_DIRECTORY="$5"
+
+  case "$EXPECTED_SHA256" in ''|*[!0-9a-f]*) return 1 ;; esac
+  [ "${#EXPECTED_SHA256}" -eq 64 ] || return 1
+  safe_release_component "$RELEASE_VERSION" || return 1
+  case "$RELEASE_VERSION" in [0-9]*.[0-9]*.[0-9]*) ;; *) return 1 ;; esac
+  [ -f "$STAGED_INSPECTOR" ] && [ ! -L "$STAGED_INSPECTOR" ] || return 1
+  STAGED_SHA256=$(/usr/bin/sha256sum -- "$STAGED_INSPECTOR" 2>/dev/null | /usr/bin/awk '{print $1}') || return 1
+  [ "$STAGED_SHA256" = "$EXPECTED_SHA256" ] || return 1
+  [ -d "$PROBE_DIRECTORY" ] && [ ! -L "$PROBE_DIRECTORY" ] || return 1
+  [ "$INSPECTOR_ROOT" = "/usr/local/libexec/syntaur/process-inspectors" ] || return 1
+
+  SETCAP_BIN=/usr/sbin/setcap
+  GETCAP_BIN=/usr/sbin/getcap
+  [ -x "$SETCAP_BIN" ] || SETCAP_BIN=/sbin/setcap
+  [ -x "$GETCAP_BIN" ] || GETCAP_BIN=/sbin/getcap
+  [ -x "$SETCAP_BIN" ] && [ -x "$GETCAP_BIN" ] || {
+    echo "  Error: setcap and getcap are required for the managed runtime"
+    return 1
+  }
+
+  VERSION_DIRECTORY="$INSPECTOR_ROOT/$RELEASE_VERSION"
+  DESTINATION="$VERSION_DIRECTORY/syntaur-process-inspector"
+  for DIRECTORY in / /usr /usr/local; do
+    validate_process_inspector_directory "$DIRECTORY" || {
+      echo "  Error: process inspector ancestor authority is unsafe: $DIRECTORY"
+      return 1
+    }
+  done
+
+  if [ -e "$DESTINATION" ] || [ -L "$DESTINATION" ]; then
+    for DIRECTORY in \
+      /usr/local/libexec \
+      /usr/local/libexec/syntaur \
+      /usr/local/libexec/syntaur/process-inspectors \
+      "$VERSION_DIRECTORY"
+    do
+      validate_process_inspector_directory "$DIRECTORY" || {
+        echo "  Error: process inspector directory authority is unsafe: $DIRECTORY"
+        return 1
+      }
+    done
+    if ! validate_process_inspector_file "$DESTINATION" "$EXPECTED_SHA256" "$GETCAP_BIN" \
+        || ! validate_process_inspector_protocol "$DESTINATION" "$PROBE_DIRECTORY"; then
+      echo "  Error: the immutable process inspector for v$RELEASE_VERSION is invalid"
+      return 1
+    fi
+    echo "  ✓ Reusing the authenticated process inspector for v$RELEASE_VERSION"
+    return 0
+  fi
+
+  if [ "$(id -u)" = 0 ]; then
+    ROOT_PREFIX=""
+  else
+    if [ "${SYNTAUR_INSTALL_TEST_LIBRARY_ONLY:-0}" = 1 ] \
+       && [ "${SYNTAUR_INSTALL_TEST_FORBID_SUDO:-0}" = 1 ]; then
+      echo "  Error: test forbids privilege escalation"
+      return 1
+    fi
+    [ -x /usr/bin/sudo ] || {
+      echo "  Error: sudo is required to install the narrow process inspector"
+      return 1
+    }
+    /usr/bin/sudo -v || return 1
+    ROOT_PREFIX=/usr/bin/sudo
+  fi
+
+  run_process_inspector_root() {
+    if [ -n "$ROOT_PREFIX" ]; then
+      "$ROOT_PREFIX" -n "$@"
+    else
+      "$@"
+    fi
+  }
+
+  for DIRECTORY in \
+    /usr/local/libexec \
+    /usr/local/libexec/syntaur \
+    /usr/local/libexec/syntaur/process-inspectors \
+    "$VERSION_DIRECTORY"
+  do
+    if [ -e "$DIRECTORY" ] || [ -L "$DIRECTORY" ]; then
+      validate_process_inspector_directory "$DIRECTORY" || {
+        echo "  Error: process inspector directory authority is unsafe: $DIRECTORY"
+        return 1
+      }
+    else
+      run_process_inspector_root /usr/bin/install --directory --mode=0755 --owner=root --group=root -- "$DIRECTORY" || return 1
+      validate_process_inspector_directory "$DIRECTORY" || return 1
+    fi
+  done
+
+  if [ -e "$DESTINATION" ] || [ -L "$DESTINATION" ]; then
+    echo "  Error: process inspector destination appeared during publication"
+    return 1
+  fi
+  ROOT_TEMP=$(run_process_inspector_root /usr/bin/mktemp --tmpdir="$VERSION_DIRECTORY" .syntaur-process-inspector.XXXXXX) || return 1
+  case "$ROOT_TEMP" in "$VERSION_DIRECTORY"/.syntaur-process-inspector.*) ;; *) return 1 ;; esac
+  # shellcheck disable=SC2329 # invoked by the signal and EXIT traps below.
+  cleanup_process_inspector_temp() {
+    if [ -n "${ROOT_TEMP:-}" ]; then
+      run_process_inspector_root /usr/bin/rm --force -- "$ROOT_TEMP" >/dev/null 2>&1 || true
+    fi
+  }
+  trap cleanup_process_inspector_temp EXIT
+  trap 'cleanup_process_inspector_temp; exit 129' HUP
+  trap 'cleanup_process_inspector_temp; exit 130' INT
+  trap 'cleanup_process_inspector_temp; exit 143' TERM
+  run_process_inspector_root /usr/bin/install --mode=0755 --owner=root --group=root -- "$STAGED_INSPECTOR" "$ROOT_TEMP" || return 1
+  ROOT_SHA256=$(run_process_inspector_root /usr/bin/sha256sum -- "$ROOT_TEMP" | /usr/bin/awk '{print $1}') || return 1
+  [ "$ROOT_SHA256" = "$EXPECTED_SHA256" ] || return 1
+  run_process_inspector_root "$SETCAP_BIN" cap_sys_ptrace=ep "$ROOT_TEMP" || return 1
+  ROOT_SHA256=$(run_process_inspector_root /usr/bin/sha256sum -- "$ROOT_TEMP" | /usr/bin/awk '{print $1}') || return 1
+  [ "$ROOT_SHA256" = "$EXPECTED_SHA256" ] || return 1
+  validate_process_inspector_file "$ROOT_TEMP" "$EXPECTED_SHA256" "$GETCAP_BIN" || return 1
+  validate_process_inspector_protocol "$ROOT_TEMP" "$PROBE_DIRECTORY" || return 1
+  if [ "${SYNTAUR_INSTALL_TEST_LIBRARY_ONLY:-0}" = 1 ] \
+     && [ -n "${SYNTAUR_INSTALL_TEST_BEFORE_PUBLISH_READY:-}" ]; then
+    : >"$SYNTAUR_INSTALL_TEST_BEFORE_PUBLISH_READY"
+    WAIT_COUNT=0
+    while [ ! -f "${SYNTAUR_INSTALL_TEST_BEFORE_PUBLISH_CONTINUE:-}" ]; do
+      WAIT_COUNT=$((WAIT_COUNT + 1))
+      [ "$WAIT_COUNT" -le 100 ] || return 1
+      sleep 0.05
+    done
+  fi
+  if ! run_process_inspector_root /usr/bin/ln -- "$ROOT_TEMP" "$DESTINATION"; then
+    echo "  Error: process inspector destination already exists"
+    return 1
+  fi
+  if ! run_process_inspector_root /usr/bin/rm -- "$ROOT_TEMP"; then
+    echo "  Error: could not finalize the process inspector publication"
+    return 1
+  fi
+  ROOT_TEMP=""
+  validate_process_inspector_file "$DESTINATION" "$EXPECTED_SHA256" "$GETCAP_BIN" || return 1
+  validate_process_inspector_protocol "$DESTINATION" "$PROBE_DIRECTORY" || return 1
+  echo "  ✓ Installed the authenticated process inspector for v$RELEASE_VERSION"
 )
 
 safe_release_component() {
@@ -327,6 +553,191 @@ validate_stage_requirement() {
   [ "$REQ_SIZE" -le "$REQ_MAX_SIZE" ]
 }
 
+portable_stat_uid() {
+  stat -c '%u' "$1" 2>/dev/null || stat -f '%u' "$1" 2>/dev/null
+}
+
+portable_stat_mode() {
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
+}
+
+portable_stat_size() {
+  stat -c '%s' "$1" 2>/dev/null || stat -f '%z' "$1" 2>/dev/null
+}
+
+safe_eula_entry() {
+  EULA_ENTRY_PATH="$1"
+  EULA_ENTRY_KIND="$2"
+  [ ! -L "$EULA_ENTRY_PATH" ] || return 1
+  case "$EULA_ENTRY_KIND" in
+    directory) [ -d "$EULA_ENTRY_PATH" ] || return 1 ;;
+    file) [ -f "$EULA_ENTRY_PATH" ] || return 1 ;;
+    *) return 1 ;;
+  esac
+  EULA_ENTRY_UID=$(portable_stat_uid "$EULA_ENTRY_PATH") || return 1
+  [ "$EULA_ENTRY_UID" = "$(id -u)" ] || return 1
+  EULA_ENTRY_MODE=$(portable_stat_mode "$EULA_ENTRY_PATH") || return 1
+  case "$EULA_ENTRY_MODE" in
+    [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) ;;
+    *) return 1 ;;
+  esac
+  [ $((0$EULA_ENTRY_MODE & 0022)) -eq 0 ]
+}
+
+canonical_eula_timestamp() {
+  case "$1" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+canonical_installer_version() {
+  EULA_VERSION_VALUE="$1"
+  case "$EULA_VERSION_VALUE" in *[!0-9.]*|'') return 1 ;; esac
+  EULA_VERSION_MAJOR=${EULA_VERSION_VALUE%%.*}
+  EULA_VERSION_REMAINDER=${EULA_VERSION_VALUE#*.}
+  [ "$EULA_VERSION_REMAINDER" != "$EULA_VERSION_VALUE" ] || return 1
+  EULA_VERSION_MINOR=${EULA_VERSION_REMAINDER%%.*}
+  EULA_VERSION_PATCH=${EULA_VERSION_REMAINDER#*.}
+  [ "$EULA_VERSION_PATCH" != "$EULA_VERSION_REMAINDER" ] || return 1
+  case "$EULA_VERSION_PATCH" in *.*) return 1 ;; esac
+  for EULA_VERSION_FIELD in "$EULA_VERSION_MAJOR" "$EULA_VERSION_MINOR" "$EULA_VERSION_PATCH"; do
+    case "$EULA_VERSION_FIELD" in
+      ''|*[!0-9]*|0[0-9]*) return 1 ;;
+    esac
+  done
+}
+
+eula_record_is_current() {
+  EULA_RECORD_PATH="$1"
+  EULA_RECORD_DIR=${EULA_RECORD_PATH%/*}
+  safe_eula_entry "$EULA_RECORD_DIR" directory || return 1
+  safe_eula_entry "$EULA_RECORD_PATH" file || return 1
+  EULA_RECORD_SIZE=$(portable_stat_size "$EULA_RECORD_PATH") || return 1
+  case "$EULA_RECORD_SIZE" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$EULA_RECORD_SIZE" -gt 0 ] && [ "$EULA_RECORD_SIZE" -le "$EULA_RECORD_MAX_BYTES" ] || return 1
+
+  EULA_RECORD_SCHEMA=""
+  EULA_RECORD_VERSION=""
+  EULA_RECORD_SHA256=""
+  EULA_RECORD_URL=""
+  EULA_RECORD_ACCEPTED_AT=""
+  EULA_RECORD_METHOD=""
+  EULA_RECORD_INSTALLER_VERSION=""
+  EULA_RECORD_LINE_NUMBER=0
+  while IFS= read -r EULA_RECORD_LINE || [ -n "$EULA_RECORD_LINE" ]; do
+    EULA_RECORD_LINE_NUMBER=$((EULA_RECORD_LINE_NUMBER + 1))
+    case "$EULA_RECORD_LINE_NUMBER:$EULA_RECORD_LINE" in
+      1:record_format=*) EULA_RECORD_SCHEMA=${EULA_RECORD_LINE#record_format=} ;;
+      2:eula_version=*) EULA_RECORD_VERSION=${EULA_RECORD_LINE#eula_version=} ;;
+      3:eula_sha256=*) EULA_RECORD_SHA256=${EULA_RECORD_LINE#eula_sha256=} ;;
+      4:eula_url=*) EULA_RECORD_URL=${EULA_RECORD_LINE#eula_url=} ;;
+      5:accepted_at=*) EULA_RECORD_ACCEPTED_AT=${EULA_RECORD_LINE#accepted_at=} ;;
+      6:method=*) EULA_RECORD_METHOD=${EULA_RECORD_LINE#method=} ;;
+      7:installer_version=*) EULA_RECORD_INSTALLER_VERSION=${EULA_RECORD_LINE#installer_version=} ;;
+      *) return 1 ;;
+    esac
+  done < "$EULA_RECORD_PATH"
+
+  [ "$EULA_RECORD_LINE_NUMBER" -eq 7 ] || return 1
+  [ "$EULA_RECORD_SCHEMA" = "$EULA_RECORD_FORMAT" ] || return 1
+  [ "$EULA_RECORD_SHA256" = "$EULA_SHA256" ] || return 1
+  [ "$EULA_RECORD_VERSION" = "$EULA_VERSION" ] || return 1
+  [ "$EULA_RECORD_URL" = "$EULA_URL" ] || return 1
+  canonical_eula_timestamp "$EULA_RECORD_ACCEPTED_AT" || return 1
+  case "$EULA_RECORD_METHOD" in flag|prompt) ;; *) return 1 ;; esac
+  canonical_installer_version "$EULA_RECORD_INSTALLER_VERSION"
+}
+
+persist_eula_acceptance() {
+  EULA_METHOD_TO_RECORD="$1"
+  EULA_SYNTAUR_DIR="$HOME/.syntaur"
+  EULA_ACCEPTANCE_RECORD="$EULA_SYNTAUR_DIR/eula-accepted"
+  if [ -e "$EULA_SYNTAUR_DIR" ] || [ -L "$EULA_SYNTAUR_DIR" ]; then
+    safe_eula_entry "$EULA_SYNTAUR_DIR" directory || return 1
+  else
+    EULA_OLD_UMASK=$(umask)
+    umask 077
+    mkdir "$EULA_SYNTAUR_DIR" 2>/dev/null || {
+      umask "$EULA_OLD_UMASK"
+      return 1
+    }
+    umask "$EULA_OLD_UMASK"
+    safe_eula_entry "$EULA_SYNTAUR_DIR" directory || return 1
+  fi
+  if [ -L "$EULA_ACCEPTANCE_RECORD" ]; then
+    rm -f "$EULA_ACCEPTANCE_RECORD" || return 1
+  elif [ -e "$EULA_ACCEPTANCE_RECORD" ] && [ ! -f "$EULA_ACCEPTANCE_RECORD" ]; then
+    return 1
+  fi
+  EULA_RECORD_TEMP=$(mktemp "$EULA_SYNTAUR_DIR/.eula-accepted.tmp.XXXXXX") || return 1
+  chmod 600 "$EULA_RECORD_TEMP" || {
+    rm -f "$EULA_RECORD_TEMP"
+    return 1
+  }
+  EULA_ACCEPTED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || {
+    rm -f "$EULA_RECORD_TEMP"
+    return 1
+  }
+  if ! {
+    printf 'record_format=%s\n' "$EULA_RECORD_FORMAT"
+    printf 'eula_version=%s\n' "$EULA_VERSION"
+    printf 'eula_sha256=%s\n' "$EULA_SHA256"
+    printf 'eula_url=%s\n' "$EULA_URL"
+    printf 'accepted_at=%s\n' "$EULA_ACCEPTED_AT"
+    printf 'method=%s\n' "$EULA_METHOD_TO_RECORD"
+    printf 'installer_version=%s\n' "$VERSION"
+  } > "$EULA_RECORD_TEMP"; then
+    rm -f "$EULA_RECORD_TEMP"
+    return 1
+  fi
+  if ! mv -f "$EULA_RECORD_TEMP" "$EULA_ACCEPTANCE_RECORD"; then
+    rm -f "$EULA_RECORD_TEMP"
+    return 1
+  fi
+  safe_eula_entry "$EULA_ACCEPTANCE_RECORD" file
+}
+
+ensure_eula_acceptance() {
+  EULA_ACCEPTANCE_RECORD="$HOME/.syntaur/eula-accepted"
+  if eula_record_is_current "$EULA_ACCEPTANCE_RECORD"; then
+    echo "  EULA v$EULA_VERSION previously accepted; continuing."
+    echo ""
+    return 0
+  fi
+
+  EULA_METHOD=""
+  if [ "$ACCEPT_EULA" = "1" ]; then
+    EULA_METHOD="flag"
+  else
+    echo "  Installing $BRAND requires accepting the End User License Agreement (v$EULA_VERSION):"
+    echo "    $EULA_URL"
+    echo ""
+    if [ -t 0 ]; then
+      printf '  Type "I AGREE" to accept (anything else aborts): '
+      read -r EULA_ANS || EULA_ANS=""
+    elif ( : < /dev/tty ) 2>/dev/null; then
+      printf '  Type "I AGREE" to accept (anything else aborts): ' > /dev/tty
+      read -r EULA_ANS < /dev/tty || EULA_ANS=""
+    else
+      echo "  No terminal available to accept interactively."
+      echo "  Re-run with --accept-eula after reading the EULA at the URL above."
+      return 1
+    fi
+    EULA_ANS_UC=$(printf '%s' "$EULA_ANS" | tr '[:lower:]' '[:upper:]')
+    case "$EULA_ANS_UC" in
+      "I AGREE") EULA_METHOD="prompt" ;;
+      *) echo "  EULA not accepted — install aborted."; return 1 ;;
+    esac
+  fi
+  if ! persist_eula_acceptance "$EULA_METHOD"; then
+    echo "  Warning: EULA acceptance could not be stored securely; this install will continue,"
+    echo "  but a future installer may need to ask again."
+  fi
+  echo "  EULA v$EULA_VERSION accepted (via $EULA_METHOD)."
+  echo ""
+}
+
 if [ "${SYNTAUR_INSTALL_TEST_LIBRARY_ONLY:-0}" = "1" ]; then
   # shellcheck disable=SC2317 # direct execution uses exit; tests source and return.
   return 0 2>/dev/null || exit 0
@@ -337,45 +748,9 @@ echo "  ♞ $BRAND v$VERSION"
 echo "  Your personal AI platform"
 echo ""
 
-# ── EULA acceptance ─────────────────────────────────────────────────────────
-# Use of Syntaur is governed by the EULA. Acceptance is an affirmative
-# act (EULA §17): the --accept-eula flag, or typing "I AGREE" here.
-EULA_METHOD=""
-if [ "$ACCEPT_EULA" = "1" ]; then
-  EULA_METHOD="flag"
-else
-  echo "  Installing $BRAND requires accepting the End User License Agreement (v$EULA_VERSION):"
-  echo "    $EULA_URL"
-  echo ""
-  if [ -t 0 ]; then
-    printf '  Type "I AGREE" to accept (anything else aborts): '
-    read -r EULA_ANS || EULA_ANS=""
-  elif ( : < /dev/tty ) 2>/dev/null; then
-    printf '  Type "I AGREE" to accept (anything else aborts): ' > /dev/tty
-    read -r EULA_ANS < /dev/tty || EULA_ANS=""
-  else
-    echo "  No terminal available to accept interactively."
-    echo "  Re-run with --accept-eula after reading the EULA at the URL above."
-    exit 1
-  fi
-  EULA_ANS_UC=$(printf '%s' "$EULA_ANS" | tr '[:lower:]' '[:upper:]')
-  case "$EULA_ANS_UC" in
-    "I AGREE") EULA_METHOD="prompt" ;;
-    *) echo "  EULA not accepted — install aborted."; exit 1 ;;
-  esac
-fi
-# Local acceptance record (EULA §17). Best-effort: never fails the install.
-if mkdir -p "$HOME/.syntaur" 2>/dev/null; then
-  {
-    echo "eula_version=$EULA_VERSION"
-    echo "eula_url=$EULA_URL"
-    echo "accepted_at=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)"
-    echo "method=$EULA_METHOD"
-    echo "installer_version=$VERSION"
-  } > "$HOME/.syntaur/eula-accepted" 2>/dev/null || true
-fi
-echo "  EULA v$EULA_VERSION accepted (via $EULA_METHOD)."
-echo ""
+# A valid exact-version record is durable affirmative acceptance. Changed,
+# malformed, or unsafe records fall through to a fresh explicit acceptance.
+ensure_eula_acceptance || exit 1
 
 # If no mode specified, ask
 if [ -z "$MODE" ]; then
@@ -464,6 +839,16 @@ if [ "$MANAGED_RUNTIME" = "1" ]; then
     echo "  Error: could not install a verified runtime bootstrap"
     exit 1
   fi
+  PROCESS_INSPECTOR_ASSET="syntaur-process-inspector-linux-x86_64"
+  if ! download_pinned_release_asset \
+      "$RELEASE_BASE" \
+      "$PROCESS_INSPECTOR_ASSET" \
+      "$RUNTIME_STAGE/$PROCESS_INSPECTOR_ASSET" \
+      "$PROCESS_INSPECTOR_SHA256" \
+      "process inspector"; then
+    echo "  Error: could not authenticate the narrow process inspector"
+    exit 1
+  fi
 
   # The release asset name is transport-facing. The CLI accepts only a
   # canonical supervisor invocation name, and then verifies its own mapped
@@ -476,7 +861,7 @@ if [ "$MANAGED_RUNTIME" = "1" ]; then
     echo "  Error: the runtime rejected the signed release catalog"
     exit 1
   fi
-  if ! awk -F '\t' '
+  if ! /usr/bin/awk -F '\t' '
       NF != 7 || $1 != "syntaur-stage-v1" { exit 1 }
       END { if (NR == 0) exit 1 }
     ' "$REQUIREMENTS"; then
@@ -507,6 +892,17 @@ if [ "$MANAGED_RUNTIME" = "1" ]; then
         exit 1
       }
   done < "$REQUIREMENTS"
+
+  if ! provision_process_inspector \
+      "$RUNTIME_STAGE/$PROCESS_INSPECTOR_ASSET" \
+      "$PROCESS_INSPECTOR_SHA256" \
+      "$VERSION" \
+      "/usr/local/libexec/syntaur/process-inspectors" \
+      "$RUNTIME_STAGE"; then
+    echo "  Error: could not provision the narrow process inspector"
+    exit 1
+  fi
+  rm -f "$RUNTIME_STAGE/$PROCESS_INSPECTOR_ASSET"
 
   if [ "$MODE" = "server" ]; then
     "$RUNTIME_BOOTSTRAP" install-release "$RUNTIME_STAGE" "$MODE" "$DASHBOARD_URL"

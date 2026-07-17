@@ -19,46 +19,212 @@ $Version = "0.7.114"
 $Binary = "syntaur.exe"
 $InstallDir = "$env:LOCALAPPDATA\Syntaur"
 $DashboardUrl = "http://localhost:18789"
+$EulaVersion = "1.0"
+$EulaUrl = "https://github.com/syntaur-systems/syntaur-dist/blob/main/EULA.md"
+$EulaSha256 = "3e417ea33bc2d6296070222df816a6d145846743c1d98e7e4d20c7c2c8e9a720"
+$EulaRecordFormat = "1"
+$EulaRecordMaxBytes = 4096
+
+function Get-OwnerSid {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+    $Owner = (Get-Acl -LiteralPath $LiteralPath).Owner
+    try {
+        return (New-Object -TypeName System.Security.Principal.SecurityIdentifier -ArgumentList @($Owner))
+    } catch {
+        $Account = New-Object -TypeName System.Security.Principal.NTAccount -ArgumentList @($Owner)
+        return $Account.Translate([System.Security.Principal.SecurityIdentifier])
+    }
+}
+
+function Test-SafeEulaDacl {
+    param(
+        [Parameter(Mandatory = $true)]$Acl,
+        [Parameter(Mandatory = $true)][Security.Principal.SecurityIdentifier]$CurrentSid
+    )
+    $TrustedSids = @(
+        $CurrentSid.Value,
+        "S-1-5-18",       # LocalSystem
+        "S-1-5-32-544"    # BUILTIN\Administrators
+    )
+    $MutatingMask = [int64][Security.AccessControl.FileSystemRights]::WriteData `
+        -bor [int64][Security.AccessControl.FileSystemRights]::AppendData `
+        -bor [int64][Security.AccessControl.FileSystemRights]::WriteExtendedAttributes `
+        -bor [int64][Security.AccessControl.FileSystemRights]::WriteAttributes `
+        -bor [int64][Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles `
+        -bor [int64][Security.AccessControl.FileSystemRights]::Delete `
+        -bor [int64][Security.AccessControl.FileSystemRights]::ChangePermissions `
+        -bor [int64][Security.AccessControl.FileSystemRights]::TakeOwnership
+    foreach ($Rule in $Acl.Access) {
+        if ($Rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {
+            continue
+        }
+        if (($Rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) {
+            continue
+        }
+        if (([int64]$Rule.FileSystemRights -band $MutatingMask) -eq 0) {
+            continue
+        }
+        try {
+            $RuleSid = $Rule.IdentityReference.Translate(
+                [Security.Principal.SecurityIdentifier]
+            )
+        } catch {
+            return $false
+        }
+        if ($TrustedSids -notcontains $RuleSid.Value) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Test-SafeEulaEntry {
+    param(
+        [Parameter(Mandatory = $true)][string]$LiteralPath,
+        [Parameter(Mandatory = $true)][bool]$Container
+    )
+    try {
+        $Item = Get-Item -LiteralPath $LiteralPath -Force
+        if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+        if ([bool]$Item.PSIsContainer -ne $Container) { return $false }
+        $Acl = Get-Acl -LiteralPath $LiteralPath
+        $OwnerSid = Get-OwnerSid -LiteralPath $LiteralPath
+        $CurrentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        return $OwnerSid.Value -eq $CurrentSid.Value `
+            -and (Test-SafeEulaDacl -Acl $Acl -CurrentSid $CurrentSid)
+    } catch {
+        return $false
+    }
+}
+
+function Test-CurrentEulaRecord {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+    $Directory = Split-Path -Parent $LiteralPath
+    if (-not (Test-SafeEulaEntry -LiteralPath $Directory -Container $true)) { return $false }
+    if (-not (Test-SafeEulaEntry -LiteralPath $LiteralPath -Container $false)) { return $false }
+    try {
+        $Item = Get-Item -LiteralPath $LiteralPath -Force
+        if ($Item.Length -le 0 -or $Item.Length -gt $EulaRecordMaxBytes) { return $false }
+        $Lines = [IO.File]::ReadAllLines($LiteralPath)
+    } catch {
+        return $false
+    }
+    if ($Lines.Count -ne 7 -or -not $Lines[0].StartsWith("record_format=")) {
+        return $false
+    }
+    $ExpectedKeys = @(
+        "record_format", "eula_version", "eula_sha256", "eula_url",
+        "accepted_at", "method", "installer_version"
+    )
+    $Values = @{}
+    for ($Index = 0; $Index -lt $Lines.Count; $Index++) {
+        $Separator = $Lines[$Index].IndexOf("=")
+        if ($Separator -le 0) { return $false }
+        $Key = $Lines[$Index].Substring(0, $Separator)
+        if ($Key -ne $ExpectedKeys[$Index] -or $Values.ContainsKey($Key)) { return $false }
+        $Values[$Key] = $Lines[$Index].Substring($Separator + 1)
+    }
+    if ($Values["record_format"] -ne $EulaRecordFormat) { return $false }
+    if ($Values["eula_sha256"] -ne $EulaSha256) { return $false }
+    if ($Values["eula_version"] -ne $EulaVersion) { return $false }
+    if ($Values["eula_url"] -ne $EulaUrl) { return $false }
+    if ($Values["accepted_at"] -notmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$') {
+        return $false
+    }
+    if ($Values["method"] -notin @("flag", "prompt")) { return $false }
+    return $Values["installer_version"] -match '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+}
+
+function Save-EulaAcceptance {
+    param([Parameter(Mandatory = $true)][ValidateSet("flag", "prompt")][string]$Method)
+    $SyntaurDirectory = Join-Path $env:USERPROFILE ".syntaur"
+    $Record = Join-Path $SyntaurDirectory "eula-accepted"
+    $Temporary = $null
+    try {
+        if (Test-Path -LiteralPath $SyntaurDirectory) {
+            if (-not (Test-SafeEulaEntry -LiteralPath $SyntaurDirectory -Container $true)) {
+                return $false
+            }
+        } else {
+            New-Item -ItemType Directory -Path $SyntaurDirectory | Out-Null
+            if (-not (Test-SafeEulaEntry -LiteralPath $SyntaurDirectory -Container $true)) {
+                return $false
+            }
+        }
+        if (Test-Path -LiteralPath $Record) {
+            if (-not (Test-SafeEulaEntry -LiteralPath $Record -Container $false)) {
+                return $false
+            }
+        }
+        $Temporary = Join-Path $SyntaurDirectory (".eula-accepted.tmp." + [Guid]::NewGuid().ToString("N"))
+        $Lines = @(
+            "record_format=$EulaRecordFormat"
+            "eula_version=$EulaVersion"
+            "eula_sha256=$EulaSha256"
+            "eula_url=$EulaUrl"
+            "accepted_at=$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
+            "method=$Method"
+            "installer_version=$Version"
+        )
+        $Encoding = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
+        [IO.File]::WriteAllLines($Temporary, $Lines, $Encoding)
+        if (Test-Path -LiteralPath $Record) {
+            [IO.File]::Replace($Temporary, $Record, $null, $true)
+        } else {
+            [IO.File]::Move($Temporary, $Record)
+        }
+        return Test-SafeEulaEntry -LiteralPath $Record -Container $false
+    } catch {
+        if ($Temporary -and (Test-Path -LiteralPath $Temporary)) {
+            Remove-Item -LiteralPath $Temporary -Force -ErrorAction SilentlyContinue
+        }
+        return $false
+    }
+}
+
+function Confirm-EulaAcceptance {
+    param([Parameter(Mandatory = $true)][bool]$AcceptByFlag)
+    $Record = Join-Path (Join-Path $env:USERPROFILE ".syntaur") "eula-accepted"
+    if (Test-CurrentEulaRecord -LiteralPath $Record) {
+        Write-Host "  EULA v$EulaVersion previously accepted; continuing."
+        Write-Host ""
+        return $true
+    }
+    if ($AcceptByFlag) {
+        $Method = "flag"
+    } else {
+        Write-Host "  Installing $Brand requires accepting the End User License Agreement (v$EulaVersion):"
+        Write-Host "    $EulaUrl"
+        Write-Host ""
+        $Answer = Read-Host '  Type "I AGREE" to accept (anything else aborts)'
+        if ($Answer.Trim() -ine "I AGREE") {
+            Write-Host "  EULA not accepted - install aborted."
+            return $false
+        }
+        $Method = "prompt"
+    }
+    if (-not (Save-EulaAcceptance -Method $Method)) {
+        Write-Warning "EULA acceptance could not be stored securely; a future installer may need to ask again."
+    }
+    Write-Host "  EULA v$EulaVersion accepted (via $Method)."
+    Write-Host ""
+    return $true
+}
+
+if ($env:SYNTAUR_INSTALL_TEST_LIBRARY_ONLY -eq "1") {
+    return
+}
 
 Write-Host ""
 Write-Host "  $([char]0x265E) $Brand v$Version"
 Write-Host "  Your personal AI platform"
 Write-Host ""
 
-# ── EULA acceptance ──────────────────────────────────────────────────
-# Use of Syntaur is governed by the EULA. Acceptance is an affirmative
-# act (EULA §17): the --accept-eula flag, or typing "I AGREE" here.
-$EulaVersion = "1.0"
-$EulaUrl = "https://github.com/syntaur-systems/syntaur-dist/blob/main/EULA.md"
-$EulaMethod = ""
-if ($args -contains "--accept-eula") {
-    $EulaMethod = "flag"
-} else {
-    Write-Host "  Installing $Brand requires accepting the End User License Agreement (v$EulaVersion):"
-    Write-Host "    $EulaUrl"
-    Write-Host ""
-    $EulaAns = Read-Host '  Type "I AGREE" to accept (anything else aborts)'
-    if ($EulaAns.Trim() -ieq "I AGREE") {
-        $EulaMethod = "prompt"
-    } else {
-        Write-Host "  EULA not accepted - install aborted."
-        exit 1
-    }
+# A matching exact-version record is durable acceptance; only a changed or
+# invalid record requires another affirmative act.
+if (-not (Confirm-EulaAcceptance -AcceptByFlag ($args -contains "--accept-eula"))) {
+    exit 1
 }
-# Local acceptance record (EULA §17). Best-effort: never fails the install.
-try {
-    $SynDir = Join-Path $env:USERPROFILE ".syntaur"
-    New-Item -ItemType Directory -Force -Path $SynDir | Out-Null
-    @(
-        "eula_version=$EulaVersion"
-        "eula_url=$EulaUrl"
-        "accepted_at=$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
-        "method=$EulaMethod"
-        "installer_version=$Version"
-    ) | Set-Content -Path (Join-Path $SynDir "eula-accepted")
-} catch { }
-Write-Host "  EULA v$EulaVersion accepted (via $EulaMethod)."
-Write-Host ""
 
 # Parse mode
 $Mode = ""

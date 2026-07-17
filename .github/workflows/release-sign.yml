@@ -187,6 +187,8 @@ jobs:
             package: syntaur-runtime
             binary: syntaur-runtime
             artifact_name: syntaur-runtime-linux-x86_64
+            extra_binary: syntaur-process-inspector
+            extra_artifact_name: syntaur-process-inspector-linux-x86_64
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             package: syntaur-isolation-tests
@@ -304,6 +306,13 @@ jobs:
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.artifact_name }}"
 
+      - name: Stage auxiliary runtime artifact
+        if: matrix.extra_binary != ''
+        shell: bash
+        run: |
+          cp "target/${{ matrix.target }}/release/${{ matrix.extra_binary }}" \
+            "dist/${{ matrix.extra_artifact_name }}"
+
       - name: Smoke test (non-Windows)
         if: runner.os != 'Windows' && matrix.package == 'syntaur-gateway' && matrix.artifact_name != 'syntaur-gateway-managed-linux-x86_64'
         shell: bash
@@ -355,6 +364,14 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}
           path: dist/${{ matrix.artifact_name }}
+          retention-days: 7
+
+      - name: Upload auxiliary runtime binary
+        if: matrix.extra_artifact_name != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.extra_artifact_name }}
+          path: dist/${{ matrix.extra_artifact_name }}
           retention-days: 7
 
       # Provenance + SBOM — produced HERE (the only job with the source
@@ -626,13 +643,16 @@ jobs:
           sed -i -E "s/^(VERSION=\")[^\"]+(\")/\1${REL_VERSION}\2/" install.sh
           sed -i -E "s/^(\\\$Version[[:space:]]*=[[:space:]]*\")[^\"]+(\")/\1${REL_VERSION}\2/" install.ps1
           runtime_sha256=$(sha256sum dist/syntaur-runtime-linux-x86_64 | awk '{print $1}')
+          process_inspector_sha256=$(sha256sum dist/syntaur-process-inspector-linux-x86_64 | awk '{print $1}')
           sed -i -E "s/^(RUNTIME_BOOTSTRAP_SHA256=\")[^\"]*(\")/\1${runtime_sha256}\2/" install.sh
+          sed -i -E "s/^(PROCESS_INSPECTOR_SHA256=\")[^\"]*(\")/\1${process_inspector_sha256}\2/" install.sh
           sed -i -E "s/^(DIST_WORKFLOW_COMMIT=\")[^\"]*(\")/\1${DIST_COMMIT}\2/" install.sh
           # Fail loudly if the stamp did not apply (sed exits 0 on zero matches;
           # issue #27 must NEVER silently reintroduce a stale install-script version).
           grep -qE "^VERSION=\"${REL_VERSION}\"" install.sh || { echo "::error::install.sh VERSION not stamped to ${REL_VERSION} (sed matched nothing — check the VERSION= line format)"; exit 1; }
           grep -qE "^\\\$Version[[:space:]]*=[[:space:]]*\"${REL_VERSION}\"" install.ps1 || { echo "::error::install.ps1 \$Version not stamped to ${REL_VERSION} (sed matched nothing — check the \$Version line format)"; exit 1; }
           grep -qE "^RUNTIME_BOOTSTRAP_SHA256=\"[0-9a-f]{64}\"$" install.sh || { echo "::error::install.sh runtime bootstrap hash was not stamped"; exit 1; }
+          grep -qE "^PROCESS_INSPECTOR_SHA256=\"[0-9a-f]{64}\"$" install.sh || { echo "::error::install.sh process inspector hash was not stamped"; exit 1; }
           grep -qE "^DIST_WORKFLOW_COMMIT=\"${DIST_COMMIT}\"$" install.sh || { echo "::error::install.sh workflow commit was not stamped"; exit 1; }
           cp install.sh   dist/install.sh
           cp install.ps1  dist/install.ps1
@@ -654,6 +674,7 @@ jobs:
             syntaur-gateway-managed-linux-x86_64
             syntaur-viewer-linux-x86_64
             syntaur-runtime-linux-x86_64
+            syntaur-process-inspector-linux-x86_64
             syntaur-isolation-tests-linux-x86_64
             syntaur-gateway-macos-arm64
             syntaur-viewer-macos-arm64
@@ -723,6 +744,7 @@ jobs:
             syntaur-isolation-tests-linux-x86_64 \
             syntaur-release-operation.json \
             syntaur-runtime-linux-x86_64 \
+            syntaur-process-inspector-linux-x86_64 \
             syntaur-sbom.spdx.json \
             syntaur-source-commit.txt \
             syntaur-viewer-linux-x86_64 \
@@ -1118,6 +1140,7 @@ jobs:
             syntaur-isolation-tests-linux-x86_64
             syntaur-release-operation.json
             syntaur-runtime-linux-x86_64
+            syntaur-process-inspector-linux-x86_64
             syntaur-source-commit.txt
             syntaur-viewer-linux-x86_64
             syntaur-viewer-macos-arm64
