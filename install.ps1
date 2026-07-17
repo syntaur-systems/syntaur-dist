@@ -90,7 +90,12 @@ function Test-SafeEulaEntry {
         $Acl = Get-Acl -LiteralPath $LiteralPath
         $OwnerSid = Get-OwnerSid -LiteralPath $LiteralPath
         $CurrentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-        return $OwnerSid.Value -eq $CurrentSid.Value `
+        $TrustedOwnerSids = @(
+            $CurrentSid.Value,
+            "S-1-5-18",       # LocalSystem
+            "S-1-5-32-544"    # BUILTIN\Administrators
+        )
+        return $TrustedOwnerSids -contains $OwnerSid.Value `
             -and (Test-SafeEulaDacl -Acl $Acl -CurrentSid $CurrentSid)
     } catch {
         return $false
