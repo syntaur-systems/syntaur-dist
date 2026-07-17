@@ -46,12 +46,17 @@ run_validate() {
     DIST_COMMIT_IN="$dist_commit" \
     RELEASE_CORRELATION_IN="${1:-$correlation}" \
     GITHUB_SHA="$dist_commit" \
+    GITHUB_RUN_ATTEMPT_IN="${2:-1}" \
     bash "$validate_step"
 }
 
 run_validate >/dev/null
 if run_validate "$(printf 'd%.0s' {1..64})" >/dev/null 2>&1; then
   echo 'invalid release correlation passed validation' >&2
+  exit 1
+fi
+if run_validate "$correlation" 2 >/dev/null 2>&1; then
+  echo 'release workflow rerun passed first-attempt validation' >&2
   exit 1
 fi
 if env \
@@ -62,6 +67,7 @@ if env \
   DIST_COMMIT_IN="$dist_commit" \
   RELEASE_CORRELATION_IN="$correlation" \
   GITHUB_SHA="$dist_commit" \
+  GITHUB_RUN_ATTEMPT_IN=1 \
   bash "$validate_step" >/dev/null 2>&1; then
   echo 'mismatched release tag passed validation' >&2
   exit 1
@@ -150,7 +156,7 @@ jq -n \
   --arg target "$dist_commit" \
   --arg body "<!-- syntaur-release-correlation:${correlation} -->" \
   --argjson size "$operation_size" \
-  '{tag_name:$tag,target_commitish:$target,body:$body,draft:true,prerelease:false,assets:[{id:101,name:"syntaur-release-operation.json",size:$size,state:"uploaded"}]}' \
+  '{id:17,tag_name:$tag,target_commitish:$target,body:$body,draft:true,prerelease:false,assets:[{id:101,name:"syntaur-release-operation.json",size:$size,state:"uploaded"}]}' \
   >"$release_fixture"
 
 cat >"$prepare_case/bin/gh" <<'STUB'
@@ -158,9 +164,29 @@ cat >"$prepare_case/bin/gh" <<'STUB'
 set -euo pipefail
 endpoint=${!#}
 case "$endpoint" in
-  repos/*/releases/tags/*) cat "$MOCK_RELEASE_JSON" ;;
+  repos/*/releases/tags/*)
+    if [ "${MOCK_RELEASE_PUBLIC:-0}" = 1 ]; then
+      cat "$MOCK_RELEASE_JSON"
+    else
+      echo 'gh: Not Found (HTTP 404)' >&2
+      exit 1
+    fi
+    ;;
+  repos/*/releases)
+    if [ "${MOCK_DUPLICATE_RELEASE:-0}" = 1 ]; then
+      jq -s '.[0] as $release | [$release, ($release + {id:102})]' "$MOCK_RELEASE_JSON"
+    else
+      jq -s '.' "$MOCK_RELEASE_JSON"
+    fi
+    ;;
+  repos/*/releases/17) cat "$MOCK_RELEASE_JSON" ;;
   repos/*/git/ref/tags/*)
-    jq -n --arg sha "$MOCK_TAG_COMMIT" '{object:{type:"commit",sha:$sha}}'
+    if [ -n "${MOCK_TAG_COMMIT:-}" ]; then
+      jq -n --arg sha "$MOCK_TAG_COMMIT" '{object:{type:"commit",sha:$sha}}'
+    else
+      echo 'gh: Not Found (HTTP 404)' >&2
+      exit 1
+    fi
     ;;
   repos/*/releases/assets/101) cat "$MOCK_OPERATION" ;;
   *) echo "unexpected gh API endpoint: $endpoint" >&2; exit 1 ;;
@@ -175,7 +201,8 @@ run_prepare() {
       PATH="$prepare_case/bin:$system_path" \
       MOCK_RELEASE_JSON="$release_fixture" \
       MOCK_OPERATION="$operation_fixture" \
-      MOCK_TAG_COMMIT="${1:-$dist_commit}" \
+      MOCK_TAG_COMMIT="${1:-}" \
+      MOCK_DUPLICATE_RELEASE="${3:-0}" \
       GH_TOKEN=stub \
       GH_REPO=syntaur-systems/syntaur-dist \
       TAG="$tag" \
@@ -197,7 +224,7 @@ if run_prepare "$(printf 'd%.0s' {1..40})" >/dev/null 2>&1; then
   exit 1
 fi
 attempt_error="$temporary/attempt-mismatch.error"
-if run_prepare "$dist_commit" 3 >/dev/null 2>"$attempt_error"; then
+if run_prepare "" 3 >/dev/null 2>"$attempt_error"; then
   echo 'release recovery replaced a signed operation from an earlier attempt' >&2
   exit 1
 fi
@@ -211,6 +238,19 @@ if run_prepare >/dev/null 2>&1; then
   exit 1
 fi
 release_fixture="$prepare_case/release.json"
+
+jq '.assets = []' "$release_fixture" >"$prepare_case/release-empty.json"
+release_fixture="$prepare_case/release-empty.json"
+if run_prepare >/dev/null 2>&1; then
+  echo 'release recovery accepted an existing empty draft without operation authority' >&2
+  exit 1
+fi
+release_fixture="$prepare_case/release.json"
+
+if run_prepare "" 2 1 >/dev/null 2>&1; then
+  echo 'release recovery accepted duplicate exact release candidates' >&2
+  exit 1
+fi
 
 publish_case="$temporary/publish"
 publish_dist="$publish_case/dist"
@@ -239,8 +279,23 @@ cat >"$publish_case/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 
+is_public() {
+  local count=0
+  if [ "${MOCK_PUBLIC:-0}" = 1 ]; then
+    return 0
+  fi
+  if [ -f "$MOCK_STATE/upload-count" ]; then
+    read -r count <"$MOCK_STATE/upload-count"
+  fi
+  [ "${MOCK_PUBLISH_AFTER_UPLOADS:-0}" -gt 0 ] \
+    && [ "$count" -ge "${MOCK_PUBLISH_AFTER_UPLOADS}" ]
+}
+
 release_json() {
-  local assets='[]' id=100 path name size
+  local assets='[]' id=100 path name size draft=true release_id=17
+  if is_public; then
+    draft=false
+  fi
   shopt -s nullglob
   for path in "$MOCK_STATE"/assets/*; do
     name=$(basename "$path")
@@ -257,28 +312,49 @@ release_json() {
     --arg tag "$TAG" \
     --arg target "$DIST_COMMIT" \
     --arg body "<!-- syntaur-release-correlation:${RELEASE_CORRELATION} -->" \
+    --arg upload_url "https://uploads.github.com/repos/${GH_REPO}/releases/${release_id}/assets{?name,label}" \
     --argjson assets "$assets" \
-    '{id:17,tag_name:$tag,target_commitish:$target,body:$body,draft:true,prerelease:false,assets:$assets}'
+    --argjson draft "$draft" \
+    --argjson id "$release_id" \
+    '{id:$id,tag_name:$tag,target_commitish:$target,body:$body,upload_url:$upload_url,draft:$draft,prerelease:false,assets:$assets}'
+}
+
+increment() {
+  local path=$1 value=0
+  if [ -f "$path" ]; then
+    read -r value <"$path"
+  fi
+  printf '%s\n' "$((value + 1))" >"$path"
+}
+
+argument_after() {
+  local wanted=$1 previous= argument
+  shift
+  for argument in "$@"; do
+    if [ "$previous" = "$wanted" ]; then
+      printf '%s\n' "$argument"
+      return 0
+    fi
+    previous=$argument
+  done
+  return 1
 }
 
 if [ "$1" = api ]; then
   endpoint=${!#}
+  method=$(argument_after --method "$@" 2>/dev/null || printf 'GET\n')
   case "$endpoint" in
     repos/*/releases/tags/*)
-      if [ ! -f "$MOCK_STATE/created" ]; then
+      if [ ! -f "$MOCK_STATE/created" ] || ! is_public; then
         echo 'gh: Not Found (HTTP 404)' >&2
         exit 1
       fi
       release_json
-      if [ "${MOCK_OVERSIZED_RELEASE_JSON:-0}" = 1 ]; then
-        dd if=/dev/zero bs=1048576 count=3 status=none
-        touch "$MOCK_STATE/oversized-release-write-completed"
-      fi
       ;;
     repos/*/git/ref/tags/*)
       if [ -n "${MOCK_PREEXISTING_TAG_COMMIT:-}" ]; then
         jq -n --arg sha "$MOCK_PREEXISTING_TAG_COMMIT" '{object:{type:"commit",sha:$sha}}'
-      elif [ -f "$MOCK_STATE/created" ]; then
+      elif [ -f "$MOCK_STATE/created" ] && is_public; then
         jq -n --arg sha "$DIST_COMMIT" '{object:{type:"commit",sha:$sha}}'
       else
         echo 'gh: Not Found (HTTP 404)' >&2
@@ -303,27 +379,137 @@ if [ "$1" = api ]; then
       echo "unknown asset ID $wanted" >&2
       exit 1
       ;;
+    repos/*/releases)
+      if [ "$method" = POST ]; then
+        increment "$MOCK_STATE/create-count"
+        touch "$MOCK_STATE/created"
+        release_json
+        exit "${MOCK_CREATE_STATUS:-1}"
+      fi
+      page=1
+      for argument in "$@"; do
+        case "$argument" in
+          page=*) page=${argument#page=} ;;
+        esac
+      done
+      if [ "${MOCK_INVENTORY_API_FAILURE:-0}" = 1 ]; then
+        increment "$MOCK_STATE/inventory-api-failure-count"
+        echo 'gh: simulated inventory API failure' >&2
+        exit 1
+      elif [ "${MOCK_FULL_INVENTORY:-0}" = 1 ]; then
+        jq -n --arg page "$page" \
+          '[range(0;10) as $index | {id:((($page | tonumber) * 1000) + $index),tag_name:("v0.6." + $page + "." + ($index | tostring)),body:"unrelated"}]'
+      elif [ ! -f "$MOCK_STATE/created" ] || [ "${MOCK_NEVER_VISIBLE:-0}" = 1 ]; then
+        printf '[]\n'
+      elif [ "${MOCK_TRANSIENT_VISIBILITY:-0}" = 1 ]; then
+        increment "$MOCK_STATE/transient-visibility-count"
+        read -r transient_visibility_count <"$MOCK_STATE/transient-visibility-count"
+        if [ "$transient_visibility_count" = 1 ]; then
+          printf '[]\n'
+        else
+          release=$(release_json)
+          jq -n --argjson release "$release" '[$release]'
+        fi
+      elif [ "${MOCK_MUTATE_BETWEEN_SCANS:-0}" = 1 ]; then
+        increment "$MOCK_STATE/mutation-scan-count"
+        read -r mutation_scan_count <"$MOCK_STATE/mutation-scan-count"
+        if (( mutation_scan_count % 2 == 1 )); then
+          release=$(release_json)
+          jq -n --argjson release "$release" '[$release]'
+        else
+          printf '[]\n'
+        fi
+      elif [ "${MOCK_SPLIT_DUPLICATE:-0}" = 1 ]; then
+        release=$(release_json)
+        if [ "$page" = 1 ]; then
+          jq -n --argjson release "$release" \
+            '[$release] + [range(0;9) as $index | {id:(2000 + $index),tag_name:("v0.6." + ($index | tostring)),body:"unrelated"}]'
+        else
+          jq -n --argjson release "$release" '[$release]'
+        fi
+      elif [ "${MOCK_CROSS_PAGE:-0}" = 1 ] && [ "$page" = 1 ]; then
+        jq -n '[range(0;10) as $index | {id:(3000 + $index),tag_name:("v0.6." + ($index | tostring)),body:"unrelated"}]'
+      else
+        increment "$MOCK_STATE/inventory-count"
+        read -r inventory_count <"$MOCK_STATE/inventory-count"
+        if (( inventory_count <= ${MOCK_INVENTORY_DELAY:-0} )); then
+          printf '[]\n'
+        elif [ "${MOCK_DUPLICATE_RELEASE:-0}" = 1 ]; then
+          release=$(release_json)
+          jq -n --argjson release "$release" '[$release, ($release + {id:18})]'
+        else
+          release=$(release_json)
+          if [ "${MOCK_VOLATILE_METADATA:-0}" = 1 ]; then
+            increment "$MOCK_STATE/volatile-metadata-count"
+            read -r volatile_metadata_count <"$MOCK_STATE/volatile-metadata-count"
+            release=$(jq -c --argjson count "$volatile_metadata_count" \
+              '.assets |= map(. + {download_count:$count})' <<<"$release")
+          fi
+          jq -n --argjson release "$release" '[$release]'
+        fi
+      fi
+      if [ "${MOCK_OVERSIZED_RELEASE_JSON:-0}" = 1 ]; then
+        dd if=/dev/zero bs=1048576 count=3 status=none
+        touch "$MOCK_STATE/oversized-release-write-completed"
+      fi
+      ;;
+    repos/*/releases/[0-9]*)
+      if [ -f "$MOCK_STATE/created" ] && [ "${endpoint##*/}" = 17 ]; then
+        release_json
+      else
+        echo 'gh: Not Found (HTTP 404)' >&2
+        exit 1
+      fi
+      ;;
+    https://uploads.github.com/*)
+      asset=$(argument_after --input "$@")
+      test "$(argument_after -f "$@")" = "name=$(basename "$asset")"
+      increment "$MOCK_STATE/upload-count"
+      increment "$MOCK_STATE/upload-$(basename "$asset")-count"
+      ln "$asset" "$MOCK_STATE/assets/$(basename "$asset")"
+      jq -n --arg name "$(basename "$asset")" --argjson size "$(stat -c '%s' "$asset")" \
+        '{id:999,name:$name,size:$size,state:"uploaded"}'
+      exit "${MOCK_UPLOAD_STATUS:-1}"
+      ;;
     *) echo "unexpected gh API endpoint: $endpoint" >&2; exit 1 ;;
   esac
-elif [ "$1" = release ] && [ "$2" = create ]; then
-  touch "$MOCK_STATE/created"
-  exit 1
-elif [ "$1" = release ] && [ "$2" = upload ]; then
-  asset=${!#}
-  cp "$asset" "$MOCK_STATE/assets/$(basename "$asset")"
-  exit 1
 else
   echo "unexpected gh invocation: $*" >&2
   exit 1
 fi
 STUB
 chmod +x "$publish_case/bin/gh"
+cat >"$publish_case/bin/sleep" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$publish_case/bin/sleep"
+
+detach_state_assets() {
+  local state=$1 path detached
+  for path in "$state"/assets/*; do
+    detached="${path}.detached"
+    cp "$path" "$detached"
+    mv "$detached" "$path"
+  done
+}
 
 run_publish() {
   local state=${1:-$publish_state}
   local preexisting_tag=${2:-}
   local oversized_release=${3:-0}
   local oversized_asset=${4:-}
+  local duplicate_release=${5:-0}
+  local never_visible=${6:-0}
+  local public_release=${7:-0}
+  local cross_page=${8:-0}
+  local split_duplicate=${9:-0}
+  local full_inventory=${10:-0}
+  local publish_after_uploads=${11:-0}
+  local mutate_between_scans=${12:-0}
+  local inventory_api_failure=${13:-0}
+  local transient_visibility=${14:-0}
+  local volatile_metadata=${15:-0}
   (
     cd "$publish_dist"
     env \
@@ -332,6 +518,17 @@ run_publish() {
       MOCK_PREEXISTING_TAG_COMMIT="$preexisting_tag" \
       MOCK_OVERSIZED_RELEASE_JSON="$oversized_release" \
       MOCK_OVERSIZED_ASSET_NAME="$oversized_asset" \
+      MOCK_DUPLICATE_RELEASE="$duplicate_release" \
+      MOCK_NEVER_VISIBLE="$never_visible" \
+      MOCK_PUBLIC="$public_release" \
+      MOCK_CROSS_PAGE="$cross_page" \
+      MOCK_SPLIT_DUPLICATE="$split_duplicate" \
+      MOCK_FULL_INVENTORY="$full_inventory" \
+      MOCK_PUBLISH_AFTER_UPLOADS="$publish_after_uploads" \
+      MOCK_MUTATE_BETWEEN_SCANS="$mutate_between_scans" \
+      MOCK_INVENTORY_API_FAILURE="$inventory_api_failure" \
+      MOCK_TRANSIENT_VISIBILITY="$transient_visibility" \
+      MOCK_VOLATILE_METADATA="$volatile_metadata" \
       GH_TOKEN=stub \
       GH_REPO=syntaur-systems/syntaur-dist \
       TAG="$tag" \
@@ -354,9 +551,129 @@ fi
 test ! -e "$wrong_tag_state/created"
 
 run_publish >/dev/null
+detach_state_assets "$publish_state"
+test "$(cat "$publish_state/create-count")" = 1
 for asset in "$publish_dist"/*; do
   cmp --silent "$asset" "$publish_state/assets/$(basename "$asset")"
+  test "$(cat "$publish_state/upload-$(basename "$asset")-count")" = 1
 done
+
+existing_draft_state="$publish_case/existing-draft-state"
+mkdir -p "$existing_draft_state/assets"
+touch "$existing_draft_state/created"
+run_publish "$existing_draft_state" >/dev/null
+detach_state_assets "$existing_draft_state"
+test ! -e "$existing_draft_state/create-count"
+for asset in "$publish_dist"/*; do
+  cmp --silent "$asset" "$existing_draft_state/assets/$(basename "$asset")"
+  test "$(cat "$existing_draft_state/upload-$(basename "$asset")-count")" = 1
+done
+
+published_during_upload_state="$publish_case/published-during-upload-state"
+mkdir -p "$published_during_upload_state/assets"
+touch "$published_during_upload_state/created"
+if run_publish "$published_during_upload_state" '' 0 '' 0 0 0 0 0 0 1 >/dev/null 2>&1; then
+  echo 'release staging continued uploading after the draft became public' >&2
+  exit 1
+fi
+test "$(cat "$published_during_upload_state/upload-count")" = 1
+
+duplicate_state="$publish_case/duplicate-state"
+mkdir -p "$duplicate_state/assets"
+touch "$duplicate_state/created"
+if run_publish "$duplicate_state" '' 0 '' 1 >/dev/null 2>&1; then
+  echo 'release staging accepted duplicate exact release candidates' >&2
+  exit 1
+fi
+test ! -e "$duplicate_state/create-count"
+test ! -e "$duplicate_state/upload-count"
+
+cross_page_state="$publish_case/cross-page-state"
+mkdir -p "$cross_page_state/assets"
+touch "$cross_page_state/created"
+for asset in "$publish_dist"/*; do
+  cp "$asset" "$cross_page_state/assets/$(basename "$asset")"
+done
+run_publish "$cross_page_state" '' 0 '' 0 0 0 1 >/dev/null
+test ! -e "$cross_page_state/create-count"
+test ! -e "$cross_page_state/upload-count"
+
+split_duplicate_state="$publish_case/split-duplicate-state"
+mkdir -p "$split_duplicate_state/assets"
+touch "$split_duplicate_state/created"
+if run_publish "$split_duplicate_state" '' 0 '' 0 0 0 0 1 >/dev/null 2>&1; then
+  echo 'release staging accepted duplicate candidates split across inventory pages' >&2
+  exit 1
+fi
+test ! -e "$split_duplicate_state/create-count"
+test ! -e "$split_duplicate_state/upload-count"
+
+mutating_inventory_state="$publish_case/mutating-inventory-state"
+mkdir -p "$mutating_inventory_state/assets"
+touch "$mutating_inventory_state/created"
+if run_publish "$mutating_inventory_state" '' 0 '' 0 0 0 0 0 0 0 1 >/dev/null 2>&1; then
+  echo 'release staging accepted inventory mutation between complete scans' >&2
+  exit 1
+fi
+test ! -e "$mutating_inventory_state/create-count"
+test ! -e "$mutating_inventory_state/upload-count"
+
+inventory_failure_state="$publish_case/inventory-failure-state"
+mkdir -p "$inventory_failure_state/assets"
+if run_publish "$inventory_failure_state" '' 0 '' 0 0 0 0 0 0 0 0 1 >/dev/null 2>&1; then
+  echo 'release staging inferred absence from inventory API failures' >&2
+  exit 1
+fi
+test "$(cat "$inventory_failure_state/inventory-api-failure-count")" = 2
+test ! -e "$inventory_failure_state/create-count"
+test ! -e "$inventory_failure_state/upload-count"
+
+transient_visibility_state="$publish_case/transient-visibility-state"
+mkdir -p "$transient_visibility_state/assets"
+run_publish "$transient_visibility_state" '' 0 '' 0 0 0 0 0 0 0 0 0 1 >/dev/null
+detach_state_assets "$transient_visibility_state"
+test "$(cat "$transient_visibility_state/create-count")" = 1
+for asset in "$publish_dist"/*; do
+  cmp --silent "$asset" "$transient_visibility_state/assets/$(basename "$asset")"
+  test "$(cat "$transient_visibility_state/upload-$(basename "$asset")-count")" = 1
+done
+
+volatile_metadata_state="$publish_case/volatile-metadata-state"
+mkdir -p "$volatile_metadata_state/assets"
+touch "$volatile_metadata_state/created"
+for asset in "$publish_dist"/*; do
+  cp "$asset" "$volatile_metadata_state/assets/$(basename "$asset")"
+done
+run_publish "$volatile_metadata_state" '' 0 '' 0 0 0 0 0 0 0 0 0 0 1 >/dev/null
+test ! -e "$volatile_metadata_state/create-count"
+test ! -e "$volatile_metadata_state/upload-count"
+
+full_inventory_state="$publish_case/full-inventory-state"
+mkdir -p "$full_inventory_state/assets"
+if run_publish "$full_inventory_state" '' 0 '' 0 0 0 0 0 1 >/dev/null 2>&1; then
+  echo 'release staging inferred absence from a full bounded inventory' >&2
+  exit 1
+fi
+test ! -e "$full_inventory_state/create-count"
+test ! -e "$full_inventory_state/upload-count"
+
+invisible_state="$publish_case/invisible-state"
+mkdir -p "$invisible_state/assets"
+if run_publish "$invisible_state" '' 0 '' 0 1 >/dev/null 2>&1; then
+  echo 'release staging accepted an unreconciled ambiguous create' >&2
+  exit 1
+fi
+test "$(cat "$invisible_state/create-count")" = 1
+test ! -e "$invisible_state/upload-count"
+
+public_wrong_tag_state="$publish_case/public-wrong-tag-state"
+mkdir -p "$public_wrong_tag_state/assets"
+touch "$public_wrong_tag_state/created"
+if run_publish "$public_wrong_tag_state" "$(printf 'd%.0s' {1..40})" 0 '' 0 0 1 >/dev/null 2>&1; then
+  echo 'release staging accepted a public release whose tag resolved incorrectly' >&2
+  exit 1
+fi
+test ! -e "$public_wrong_tag_state/upload-count"
 
 if run_publish "$publish_state" '' 1 >/dev/null 2>&1; then
   echo 'release reconciliation accepted oversized GitHub metadata' >&2

@@ -63,7 +63,7 @@ permissions:
   attestations: write   # SLSA provenance
 
 concurrency:
-  group: syntaur-dist-release-${{ github.event.inputs.correlation || github.event.client_payload.correlation || github.run_id }}
+  group: syntaur-dist-release-${{ github.event.inputs.version || github.event.client_payload.version || github.run_id }}
   cancel-in-progress: false
 
 env:
@@ -93,6 +93,7 @@ jobs:
           ENGINE_COMMIT_IN: ${{ env.ENGINE_COMMIT }}
           DIST_COMMIT_IN: ${{ env.DIST_COMMIT }}
           RELEASE_CORRELATION_IN: ${{ env.RELEASE_CORRELATION }}
+          GITHUB_RUN_ATTEMPT_IN: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           # Reject multi-line inputs first: `grep -Eq '^...$'` matches
@@ -149,6 +150,10 @@ jobs:
           fi
           if [ "$DIST_COMMIT_IN" != "$GITHUB_SHA" ]; then
             echo "::error::workflow commit $GITHUB_SHA differs from pinned $DIST_COMMIT_IN"
+            exit 1
+          fi
+          if [ "$GITHUB_RUN_ATTEMPT_IN" != 1 ]; then
+            echo "::error::workflow reruns cannot preserve first-attempt release authority; cut a successor version"
             exit 1
           fi
           echo "inputs OK: version=$REL_VERSION_IN source=$SRC_COMMIT_IN engine=$ENGINE_COMMIT_IN dist=$DIST_COMMIT_IN correlation=$RELEASE_CORRELATION_IN"
@@ -770,6 +775,122 @@ jobs:
             fi
           }
 
+          scan_release_inventory() {
+            local candidate_path=$1 fingerprint_path=$2 error_path=$3 prefix=$4
+            local ids_path="/tmp/${prefix}-release-ids" duplicates
+            local page page_json page_error count matches selected=0
+            rm -f "$candidate_path" "$error_path"
+            : >"$fingerprint_path"
+            : >"$ids_path"
+            for page in $(seq 1 100); do
+              page_json="/tmp/${prefix}-page-${page}.json"
+              page_error="/tmp/${prefix}-page-${page}.error"
+              if gh_api_to_file_bounded 2097152 "$page_json" "$page_error" \
+                --method GET -F per_page=10 -F "page=${page}" \
+                "repos/${GH_REPO}/releases"; then
+                :
+              else
+                cp "$page_error" "$error_path"
+                return 3
+              fi
+              jq -e 'type == "array" and length <= 10 and all(.[]; ((.id | type) == "number") and (.id > 0) and (.id == (.id | floor)) and ((.tag_name | type) == "string"))' \
+                "$page_json" >/dev/null || {
+                echo "::error::GitHub release inventory page ${page} is malformed" >"$error_path"
+                return 2
+              }
+              jq -r '.[].id' "$page_json" >>"$fingerprint_path"
+              jq -r '.[].id' "$page_json" >>"$ids_path"
+              count=$(jq 'length' "$page_json")
+              matches=$(jq \
+                --arg tag "$TAG" \
+                --arg marker "$marker" \
+                '[.[] | select(.tag_name == $tag or (((.body? | strings) // "") | contains($marker)))] | length' \
+                "$page_json")
+              if (( matches > 1 || selected + matches > 1 )); then
+                echo "::error::GitHub release inventory contains multiple candidates for ${TAG}" >"$error_path"
+                return 2
+              fi
+              if (( matches == 1 )); then
+                jq \
+                  --arg tag "$TAG" \
+                  --arg marker "$marker" \
+                  '[.[] | select(.tag_name == $tag or (((.body? | strings) // "") | contains($marker)))] | .[0]' \
+                  "$page_json" >"$candidate_path"
+                selected=1
+              fi
+              if (( count < 10 )); then
+                duplicates=$(sort "$ids_path" | uniq -d)
+                if [ -n "$duplicates" ]; then
+                  echo "::error::GitHub release inventory contains duplicate release IDs" >"$error_path"
+                  return 2
+                fi
+                if (( selected == 1 )); then
+                  return 0
+                fi
+                return 1
+              fi
+            done
+            echo "::error::GitHub release inventory exceeded the 100-page safety bound" >"$error_path"
+            return 2
+          }
+
+          load_release() {
+            local first_candidate=/tmp/syntaur-release-first-candidate.json
+            local second_candidate=/tmp/syntaur-release-second-candidate.json
+            local first_fingerprint=/tmp/syntaur-release-first-inventory.jsonl
+            local second_fingerprint=/tmp/syntaur-release-second-inventory.jsonl
+            local first_error=/tmp/syntaur-release-first-inventory.error
+            local second_error=/tmp/syntaur-release-second-inventory.error
+            local first_status second_status stability_attempt
+            for stability_attempt in 1 2 3 4; do
+              if scan_release_inventory "$first_candidate" "$first_fingerprint" "$first_error" \
+                syntaur-release-first; then
+                first_status=0
+              else
+                first_status=$?
+              fi
+              if scan_release_inventory "$second_candidate" "$second_fingerprint" "$second_error" \
+                syntaur-release-second; then
+                second_status=0
+              else
+                second_status=$?
+              fi
+              if (( first_status > 1 )); then
+                cp "$first_error" "$release_error"
+                return "$first_status"
+              fi
+              if (( second_status > 1 )); then
+                cp "$second_error" "$release_error"
+                return "$second_status"
+              fi
+              if (( first_status == second_status )) \
+                && cmp --silent "$first_fingerprint" "$second_fingerprint"; then
+                if (( second_status == 0 )); then
+                  cp "$second_candidate" "$release_json"
+                  return 0
+                fi
+                echo "gh: exact owned release is absent (HTTP 404)" >"$release_error"
+                return 1
+              fi
+              if (( stability_attempt < 4 )); then
+                sleep 1
+              fi
+            done
+            echo "::error::GitHub release inventory changed between complete scans" >"$release_error"
+            return 2
+          }
+
+          load_release_by_id() {
+            local expected_id=$1
+            printf '%s' "$expected_id" | grep -Eq '^[1-9][0-9]*$' || {
+              echo "::error::release ID is malformed" >&2
+              return 2
+            }
+            gh_api_to_file_bounded 2097152 "$release_json" "$release_error" \
+              --method GET "repos/${GH_REPO}/releases/${expected_id}"
+            test "$(jq -er '.id' "$release_json")" = "$expected_id"
+          }
+
           resolve_tag_commit() {
             local object_json=/tmp/syntaur-dist-tag-object.json
             local object_error=/tmp/syntaur-dist-tag-object.error
@@ -797,6 +918,33 @@ jobs:
             done
             echo "::error::release tag indirection exceeds the supported bound" >&2
             exit 1
+          }
+
+          validate_release_tag_authority() {
+            local draft object_json=/tmp/syntaur-dist-draft-tag-object.json
+            local object_error=/tmp/syntaur-dist-draft-tag-object.error
+            local exact_json=/tmp/syntaur-dist-exact-public-release.json
+            local exact_error=/tmp/syntaur-dist-exact-public-release.error
+            local status
+            draft=$(jq -r '.draft' "$release_json")
+            if [ "$draft" = true ]; then
+              if gh_api_to_file_bounded 2097152 "$object_json" "$object_error" \
+                "repos/${GH_REPO}/git/ref/tags/${TAG}"; then
+                test "$(resolve_tag_commit)" = "$DIST_COMMIT"
+                return 0
+              else
+                status=$?
+              fi
+              if grep -Fq '(HTTP 404)' "$object_error"; then
+                return 0
+              fi
+              cat "$object_error" >&2
+              return "$status"
+            fi
+            test "$(resolve_tag_commit)" = "$DIST_COMMIT"
+            gh_api_to_file_bounded 2097152 "$exact_json" "$exact_error" \
+              "repos/${GH_REPO}/releases/tags/${TAG}"
+            test "$(jq -er '.id' "$exact_json")" = "$(jq -er '.id' "$release_json")"
           }
 
           validate_existing_asset_metadata() {
@@ -859,23 +1007,28 @@ jobs:
           }
 
           set +e
-          gh_api_to_file_bounded 2097152 "$release_json" "$release_error" \
-            "repos/${GH_REPO}/releases/tags/${TAG}"
+          load_release
           lookup_status=$?
           set -e
           if (( lookup_status == 0 )); then
             found=1
+            release_id=$(jq -er '.id' "$release_json")
+            printf '%s' "$release_id" | grep -Eq '^[1-9][0-9]*$' || {
+              echo "::error::existing release has an invalid ID"
+              exit 1
+            }
+            load_release_by_id "$release_id"
             validate_existing_asset_metadata
             test "$(jq -r '.tag_name' "$release_json")" = "$TAG"
             test "$(jq -r '.target_commitish' "$release_json")" = "$DIST_COMMIT"
             test "$(jq -r '.prerelease' "$release_json")" = false
             case "$(jq -r '.draft' "$release_json")" in true|false) ;; *) exit 1 ;; esac
-            test "$(resolve_tag_commit)" = "$DIST_COMMIT"
             body=$(jq -r '.body // ""' "$release_json")
             if [[ "$body" != *"$marker"* ]]; then
               echo "::error::existing release is not owned by correlation ${RELEASE_CORRELATION}"
               exit 1
             fi
+            validate_release_tag_authority
             while IFS=$'\t' read -r asset_id asset_name reported; do
               [ -n "$asset_id" ] || continue
               gh_api_to_file_bounded "$reported" "${resume_dir}/${asset_name}" \
@@ -893,12 +1046,11 @@ jobs:
               echo "::error::existing release contains duplicate operation metadata"
               exit 1
             fi
-            if (( ${#operation_ids[@]} == 1 )); then
-              cp "${resume_dir}/$(basename "$operation")" "$operation"
-            elif (( $(jq '.assets | length' "$release_json") != 0 )); then
-              echo "::error::partial release has assets but no operation authority"
+            if (( ${#operation_ids[@]} != 1 )); then
+              echo "::error::existing release has no unique signed operation authority; this version is consumed and requires a successor"
               exit 1
             fi
+            cp "${resume_dir}/$(basename "$operation")" "$operation"
           elif ! grep -Fq '(HTTP 404)' "$release_error"; then
             cat "$release_error" >&2
             echo "::error::could not distinguish an absent release from a GitHub API failure"
@@ -1311,7 +1463,7 @@ jobs:
               "repos/${GH_REPO}/git/ref/tags/${TAG}"; then
               commit=$(resolve_tag_object "$object_json" "$object_error")
               if [ "$commit" != "$DIST_COMMIT" ]; then
-                echo "::error::refusing to create a release for pre-existing tag $TAG at $commit" >&2
+                echo "::error::release tag $TAG resolves to unexpected commit $commit" >&2
                 exit 1
               fi
               return 0
@@ -1326,13 +1478,145 @@ jobs:
             return "$status"
           }
 
-          load_release() {
+          require_tag_absent() {
+            local object_json=/tmp/syntaur-absent-tag-object.json
+            local object_error=/tmp/syntaur-absent-tag-object.error
+            local status
+            if gh_api_to_file_bounded 2097152 "$object_json" "$object_error" \
+              "repos/${GH_REPO}/git/ref/tags/${TAG}"; then
+              echo "::error::release tag $TAG exists without an owned release" >&2
+              return 2
+            else
+              status=$?
+            fi
+            if grep -Fq '(HTTP 404)' "$object_error"; then
+              return 0
+            fi
+            cat "$object_error" >&2
+            echo "::error::could not distinguish an absent tag from a GitHub API failure" >&2
+            return "$status"
+          }
+
+          scan_release_inventory() {
+            local candidate_path=$1 fingerprint_path=$2 error_path=$3 prefix=$4
+            local ids_path="/tmp/${prefix}-release-ids" duplicates
+            local page page_json page_error count matches selected=0
+            rm -f "$candidate_path" "$error_path"
+            : >"$fingerprint_path"
+            : >"$ids_path"
+            for page in $(seq 1 100); do
+              page_json="/tmp/${prefix}-page-${page}.json"
+              page_error="/tmp/${prefix}-page-${page}.error"
+              if gh_api_to_file_bounded 2097152 "$page_json" "$page_error" \
+                --method GET -F per_page=10 -F "page=${page}" \
+                "repos/${GH_REPO}/releases"; then
+                :
+              else
+                cp "$page_error" "$error_path"
+                return 3
+              fi
+              jq -e 'type == "array" and length <= 10 and all(.[]; ((.id | type) == "number") and (.id > 0) and (.id == (.id | floor)) and ((.tag_name | type) == "string"))' \
+                "$page_json" >/dev/null || {
+                echo "::error::GitHub release inventory page ${page} is malformed" >"$error_path"
+                return 2
+              }
+              jq -r '.[].id' "$page_json" >>"$fingerprint_path"
+              jq -r '.[].id' "$page_json" >>"$ids_path"
+              count=$(jq 'length' "$page_json")
+              matches=$(jq \
+                --arg tag "$TAG" \
+                --arg marker "$marker" \
+                '[.[] | select(.tag_name == $tag or (((.body? | strings) // "") | contains($marker)))] | length' \
+                "$page_json")
+              if (( matches > 1 || selected + matches > 1 )); then
+                echo "::error::GitHub release inventory contains multiple candidates for ${TAG}" >"$error_path"
+                return 2
+              fi
+              if (( matches == 1 )); then
+                jq \
+                  --arg tag "$TAG" \
+                  --arg marker "$marker" \
+                  '[.[] | select(.tag_name == $tag or (((.body? | strings) // "") | contains($marker)))] | .[0]' \
+                  "$page_json" >"$candidate_path"
+                selected=1
+              fi
+              if (( count < 10 )); then
+                duplicates=$(sort "$ids_path" | uniq -d)
+                if [ -n "$duplicates" ]; then
+                  echo "::error::GitHub release inventory contains duplicate release IDs" >"$error_path"
+                  return 2
+                fi
+                if (( selected == 1 )); then
+                  return 0
+                fi
+                return 1
+              fi
+            done
+            echo "::error::GitHub release inventory exceeded the 100-page safety bound" >"$error_path"
+            return 2
+          }
+
+          load_release_inventory() {
+            local first_candidate=/tmp/syntaur-publish-first-candidate.json
+            local second_candidate=/tmp/syntaur-publish-second-candidate.json
+            local first_fingerprint=/tmp/syntaur-publish-first-inventory.jsonl
+            local second_fingerprint=/tmp/syntaur-publish-second-inventory.jsonl
+            local first_error=/tmp/syntaur-publish-first-inventory.error
+            local second_error=/tmp/syntaur-publish-second-inventory.error
+            local first_status second_status stability_attempt
+            for stability_attempt in 1 2 3 4; do
+              if scan_release_inventory "$first_candidate" "$first_fingerprint" "$first_error" \
+                syntaur-publish-first; then
+                first_status=0
+              else
+                first_status=$?
+              fi
+              if scan_release_inventory "$second_candidate" "$second_fingerprint" "$second_error" \
+                syntaur-publish-second; then
+                second_status=0
+              else
+                second_status=$?
+              fi
+              if (( first_status > 1 )); then
+                cp "$first_error" "$release_error"
+                return "$first_status"
+              fi
+              if (( second_status > 1 )); then
+                cp "$second_error" "$release_error"
+                return "$second_status"
+              fi
+              if (( first_status == second_status )) \
+                && cmp --silent "$first_fingerprint" "$second_fingerprint"; then
+                if (( second_status == 0 )); then
+                  cp "$second_candidate" "$release_json"
+                  return 0
+                fi
+                echo "gh: exact owned release is absent (HTTP 404)" >"$release_error"
+                return 1
+              fi
+              if (( stability_attempt < 4 )); then
+                sleep 1
+              fi
+            done
+            echo "::error::GitHub release inventory changed between complete scans" >"$release_error"
+            return 2
+          }
+
+          load_release_by_id() {
+            local expected_id=$1
+            printf '%s' "$expected_id" | grep -Eq '^[1-9][0-9]*$' || {
+              echo "::error::release ID is malformed" >&2
+              return 2
+            }
             gh_api_to_file_bounded 2097152 "$release_json" "$release_error" \
-              "repos/${GH_REPO}/releases/tags/${TAG}"
+              --method GET "repos/${GH_REPO}/releases/${expected_id}"
+            test "$(jq -er '.id' "$release_json")" = "$expected_id"
           }
 
           validate_release() {
-            local count asset_id asset_name reported state maximum
+            local count asset_id asset_name reported state maximum release_id upload_url
+            local exact_json=/tmp/syntaur-publish-exact-public-release.json
+            local exact_error=/tmp/syntaur-publish-exact-public-release.error
             require_bounded_json_file "$release_json" "release metadata"
             jq -e '.assets | type == "array"' "$release_json" >/dev/null
             count=$(jq '.assets | length' "$release_json")
@@ -1341,9 +1625,23 @@ jobs:
             test "$(jq -r '.target_commitish' "$release_json")" = "$DIST_COMMIT"
             test "$(jq -r '.prerelease' "$release_json")" = false
             case "$(jq -r '.draft' "$release_json")" in true|false) ;; *) exit 1 ;; esac
-            test "$(resolve_tag_commit)" = "$DIST_COMMIT"
             body=$(jq -r '.body // ""' "$release_json")
             [[ "$body" == *"$marker"* ]]
+            release_id=$(jq -er '.id' "$release_json")
+            printf '%s' "$release_id" | grep -Eq '^[1-9][0-9]*$' || {
+              echo "::error::release has an invalid ID"
+              exit 1
+            }
+            upload_url=$(jq -er '.upload_url' "$release_json")
+            test "$upload_url" = "https://uploads.github.com/repos/${GH_REPO}/releases/${release_id}/assets{?name,label}"
+            if [ "$(jq -r '.draft' "$release_json")" = true ]; then
+              preflight_tag_ownership
+            else
+              test "$(resolve_tag_commit)" = "$DIST_COMMIT"
+              gh_api_to_file_bounded 2097152 "$exact_json" "$exact_error" \
+                "repos/${GH_REPO}/releases/tags/${TAG}"
+              test "$(jq -er '.id' "$exact_json")" = "$release_id"
+            fi
             duplicates=$(jq -r '.assets[].name' "$release_json" | sort | uniq -d)
             [ -z "$duplicates" ] || { echo "::error::duplicate release assets: $duplicates"; exit 1; }
             while IFS=$'\t' read -r asset_id asset_name reported state; do
@@ -1381,22 +1679,44 @@ jobs:
             done < <(jq -r '.assets[] | [.id, .name, .size, .state] | @tsv' "$release_json")
           }
 
-          if load_release; then
+          if load_release_inventory; then
             validate_release
+            release_id=$(jq -er '.id' "$release_json")
           elif grep -Fq '(HTTP 404)' "$release_error"; then
-            preflight_tag_ownership
+            require_tag_absent
+            create_json=/tmp/syntaur-create-release.json
+            create_error=/tmp/syntaur-create-release.error
+            set +e
+            gh_api_to_file_bounded 2097152 "$create_json" "$create_error" \
+              --method POST \
+              -f "tag_name=${TAG}" \
+              -f "target_commitish=${DIST_COMMIT}" \
+              -f "name=${TAG}" \
+              -F 'body=@/tmp/release-body.md' \
+              -F draft=true \
+              -F prerelease=false \
+              "repos/${GH_REPO}/releases"
+            create_status=$?
+            set -e
+            create_response_id=
+            if (( create_status == 0 )); then
+              create_response_id=$(jq -er '.id | select(type == "number")' "$create_json" 2>/dev/null || true)
+              if [ -n "$create_response_id" ]; then
+                printf '%s' "$create_response_id" | grep -Eq '^[1-9][0-9]*$' || {
+                  echo "::error::GitHub returned a malformed created release ID" >&2
+                  exit 1
+                }
+              fi
+            fi
             created=0
-            for attempt in 1 2 3; do
-              set +e
-              gh release create "$TAG" \
-                --draft \
-                --target "$DIST_COMMIT" \
-                --title "$TAG" \
-                --notes-file /tmp/release-body.md
-              create_status=$?
-              set -e
-              if load_release; then
+            for attempt in $(seq 1 12); do
+              if load_release_inventory; then
                 validate_release
+                release_id=$(jq -er '.id' "$release_json")
+                if [ -n "$create_response_id" ] && [ "$release_id" != "$create_response_id" ]; then
+                  echo "::error::release inventory ID ${release_id} differs from create response ${create_response_id}" >&2
+                  exit 1
+                fi
                 created=1
                 break
               fi
@@ -1404,16 +1724,21 @@ jobs:
                 cat "$release_error" >&2
                 exit 1
               fi
-              echo "release create attempt ${attempt} returned ${create_status}; no exact release visible yet"
-              sleep $(( attempt * 5 ))
+              echo "single release create returned ${create_status}; no exact owned release visible on poll ${attempt}"
+              if (( attempt < 12 )); then
+                sleep 5
+              fi
             done
-            (( created == 1 )) || { echo "::error::could not create or reconcile $TAG"; exit 1; }
+            (( created == 1 )) || {
+              cat "$create_error" >&2 || true
+              echo "::error::could not reconcile $TAG after one create request"
+              exit 1
+            }
           else
             cat "$release_error" >&2
             exit 1
           fi
 
-          is_draft=$(jq -r '.draft' "$release_json")
           verify_remote_asset() {
             local asset=$1
             mapfile -t ids < <(jq -r --arg name "$asset" '.assets[] | select(.name == $name) | .id' "$release_json")
@@ -1439,30 +1764,54 @@ jobs:
               echo "  exact: $asset"
               continue
             fi
-            [ "$is_draft" = "true" ] || { echo "::error::public release is missing $asset"; exit 1; }
+            [ "$(jq -r '.draft' "$release_json")" = true ] || {
+              echo "::error::public release is missing $asset"
+              exit 1
+            }
+            printf '%s' "$asset" | grep -Eq '^[A-Za-z0-9._-]+$' || {
+              echo "::error::refusing to upload an unsafe asset name" >&2
+              exit 1
+            }
+            upload_url=$(jq -er '.upload_url' "$release_json")
+            test "$upload_url" = "https://uploads.github.com/repos/${GH_REPO}/releases/${release_id}/assets{?name,label}"
+            upload_base=${upload_url%%\{*}
+            upload_json="/tmp/syntaur-upload-${release_id}-${asset}.json"
+            upload_error="/tmp/syntaur-upload-${release_id}-${asset}.error"
+            set +e
+            gh_api_to_file_bounded 2097152 "$upload_json" "$upload_error" \
+              --method POST \
+              -H 'Content-Type: application/octet-stream' \
+              --input "$asset" \
+              -f "name=${asset}" \
+              "$upload_base"
+            upload_status=$?
+            set -e
             uploaded=0
-            for attempt in 1 2 3 4 5; do
-              set +e
-              gh release upload "$TAG" "$asset"
-              upload_status=$?
-              set -e
-              if load_release; then
+            for attempt in $(seq 1 12); do
+              if load_release_by_id "$release_id"; then
                 validate_release
                 if verify_remote_asset "$asset"; then
-                  echo "  uploaded/reconciled: $asset (attempt=$attempt status=$upload_status)"
+                  echo "  uploaded/reconciled: $asset (poll=$attempt status=$upload_status)"
                   uploaded=1
                   break
                 fi
               else
                 cat "$release_error" >&2
               fi
-              sleep $(( attempt * 10 ))
+              if (( attempt < 12 )); then
+                sleep 5
+              fi
             done
-            (( uploaded == 1 )) || { echo "::error::could not upload or reconcile $asset"; exit 1; }
+            (( uploaded == 1 )) || {
+              cat "$upload_error" >&2 || true
+              echo "::error::could not reconcile $asset after one upload request"
+              exit 1
+            }
           done
 
-          load_release
+          load_release_inventory
           validate_release
+          test "$(jq -er '.id' "$release_json")" = "$release_id"
           printf '%s\n' "${assets[@]}" | sort -u >/tmp/expected-base-assets
           jq -r '.assets[].name' "$release_json" | sort -u >/tmp/remote-assets
           grep -vE '^syntaur-runtime-catalog-v1\.json(\.sig)?$' /tmp/remote-assets >/tmp/remote-base-assets || true
