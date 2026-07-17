@@ -31,6 +31,9 @@ PROCESS_INSPECTOR_SHA256=""
 # Stamped from the exact public workflow checkout before this installer is
 # signed. Cosign verification binds the manifest to this immutable commit.
 DIST_WORKFLOW_COMMIT="8811aa006673caa5082a7c9343e83c0b7ac51d16"
+# Immutable provenance for the exact EULA bytes below. This changes only when
+# EULA_VERSION or EULA_SHA256 changes, never for an ordinary product release.
+EULA_SOURCE_COMMIT="8811aa006673caa5082a7c9343e83c0b7ac51d16"
 BINARY="syntaur"
 INSTALL_DIR="$HOME/.local/bin"
 MODE=""
@@ -38,7 +41,7 @@ VERIFY="1"
 AUTOSUDO="1"
 ACCEPT_EULA="0"
 EULA_VERSION="1.0"
-EULA_URL="https://github.com/syntaur-systems/syntaur-dist/blob/main/EULA.md"
+EULA_URL="https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/$EULA_SOURCE_COMMIT/EULA.md"
 EULA_SHA256="3e417ea33bc2d6296070222df816a6d145846743c1d98e7e4d20c7c2c8e9a720"
 EULA_RECORD_FORMAT="1"
 EULA_RECORD_MAX_BYTES="4096"
@@ -303,6 +306,55 @@ download_managed_bootstrap() {
   download_pinned_release_asset "$1" "$2" "$3" "$RUNTIME_BOOTSTRAP_SHA256" "managed runtime bootstrap"
 }
 
+ensure_process_inspector_cap_tools() {
+  if command -v setcap >/dev/null 2>&1 && command -v getcap >/dev/null 2>&1; then
+    return 0
+  fi
+
+  CAP_MANAGER=""
+  CAP_PACKAGE=""
+  CAP_INSTALL_COMMAND=""
+  if command -v pacman >/dev/null 2>&1; then
+    CAP_MANAGER="pacman"
+    CAP_PACKAGE="libcap"
+    CAP_INSTALL_COMMAND="sudo pacman -S --needed libcap"
+  elif command -v apt-get >/dev/null 2>&1; then
+    CAP_MANAGER="apt"
+    CAP_PACKAGE="libcap2-bin"
+    CAP_INSTALL_COMMAND="sudo apt-get update && sudo apt-get install libcap2-bin"
+  elif command -v dnf >/dev/null 2>&1; then
+    CAP_MANAGER="dnf"
+    CAP_PACKAGE="libcap"
+    CAP_INSTALL_COMMAND="sudo dnf install libcap"
+  elif command -v zypper >/dev/null 2>&1; then
+    CAP_MANAGER="zypper"
+    CAP_PACKAGE="libcap-progs"
+    CAP_INSTALL_COMMAND="sudo zypper install libcap-progs"
+  fi
+  if [ -z "$CAP_MANAGER" ]; then
+    echo "  Error: setcap and getcap are required; install your distribution's libcap tools package."
+    return 1
+  fi
+  if [ "$AUTOSUDO" = "0" ] || [ ! -x /usr/bin/sudo ]; then
+    echo "  Error: setcap and getcap are required for the managed runtime."
+    echo "  Install them, then rerun: $CAP_INSTALL_COMMAND"
+    return 1
+  fi
+
+  echo "  Installing required capability tools ($CAP_PACKAGE)..."
+  /usr/bin/sudo -v || return 1
+  case "$CAP_MANAGER" in
+    pacman) /usr/bin/sudo pacman -S --needed --noconfirm "$CAP_PACKAGE" || return 1 ;;
+    apt)
+      /usr/bin/sudo apt-get update || return 1
+      /usr/bin/sudo apt-get install -y --no-install-recommends "$CAP_PACKAGE" || return 1
+      ;;
+    dnf) /usr/bin/sudo dnf install -y "$CAP_PACKAGE" || return 1 ;;
+    zypper) /usr/bin/sudo zypper --non-interactive install "$CAP_PACKAGE" || return 1 ;;
+  esac
+  command -v setcap >/dev/null 2>&1 && command -v getcap >/dev/null 2>&1
+}
+
 process_inspector_acl_free() (
   ENTRY="$1"
   PERMISSIONS=$(LC_ALL=C /usr/bin/ls -ld -- "$ENTRY" 2>/dev/null | /usr/bin/awk '{print $1}') || return 1
@@ -389,6 +441,10 @@ provision_process_inspector() (
   [ "$STAGED_SHA256" = "$EXPECTED_SHA256" ] || return 1
   [ -d "$PROBE_DIRECTORY" ] && [ ! -L "$PROBE_DIRECTORY" ] || return 1
   [ "$INSPECTOR_ROOT" = "/usr/local/libexec/syntaur/process-inspectors" ] || return 1
+  if [ "$(id -u)" = 0 ]; then
+    echo "  Error: run the installer as your ordinary account; it uses sudo only for the narrow helper."
+    return 1
+  fi
 
   SETCAP_BIN=/usr/sbin/setcap
   GETCAP_BIN=/usr/sbin/getcap
@@ -429,21 +485,17 @@ provision_process_inspector() (
     return 0
   fi
 
-  if [ "$(id -u)" = 0 ]; then
-    ROOT_PREFIX=""
-  else
-    if [ "${SYNTAUR_INSTALL_TEST_LIBRARY_ONLY:-0}" = 1 ] \
-       && [ "${SYNTAUR_INSTALL_TEST_FORBID_SUDO:-0}" = 1 ]; then
-      echo "  Error: test forbids privilege escalation"
-      return 1
-    fi
-    [ -x /usr/bin/sudo ] || {
-      echo "  Error: sudo is required to install the narrow process inspector"
-      return 1
-    }
-    /usr/bin/sudo -v || return 1
-    ROOT_PREFIX=/usr/bin/sudo
+  if [ "${SYNTAUR_INSTALL_TEST_LIBRARY_ONLY:-0}" = 1 ] \
+     && [ "${SYNTAUR_INSTALL_TEST_FORBID_SUDO:-0}" = 1 ]; then
+    echo "  Error: test forbids privilege escalation"
+    return 1
   fi
+  [ -x /usr/bin/sudo ] || {
+    echo "  Error: sudo is required to install the narrow process inspector"
+    return 1
+  }
+  /usr/bin/sudo -v || return 1
+  ROOT_PREFIX=/usr/bin/sudo
 
   run_process_inspector_root() {
     if [ -n "$ROOT_PREFIX" ]; then
@@ -474,6 +526,8 @@ provision_process_inspector() (
     echo "  Error: process inspector destination appeared during publication"
     return 1
   fi
+  run_process_inspector_root /usr/bin/find "$VERSION_DIRECTORY" \
+    -maxdepth 1 -type f -name '.syntaur-process-inspector.*' -delete || return 1
   ROOT_TEMP=$(run_process_inspector_root /usr/bin/mktemp --tmpdir="$VERSION_DIRECTORY" .syntaur-process-inspector.XXXXXX) || return 1
   case "$ROOT_TEMP" in "$VERSION_DIRECTORY"/.syntaur-process-inspector.*) ;; *) return 1 ;; esac
   # shellcheck disable=SC2329 # invoked by the signal and EXIT traps below.
@@ -494,6 +548,7 @@ provision_process_inspector() (
   [ "$ROOT_SHA256" = "$EXPECTED_SHA256" ] || return 1
   validate_process_inspector_file "$ROOT_TEMP" "$EXPECTED_SHA256" "$GETCAP_BIN" || return 1
   validate_process_inspector_protocol "$ROOT_TEMP" "$PROBE_DIRECTORY" || return 1
+  run_process_inspector_root /usr/bin/sync -- "$ROOT_TEMP" || return 1
   if [ "${SYNTAUR_INSTALL_TEST_LIBRARY_ONLY:-0}" = 1 ] \
      && [ -n "${SYNTAUR_INSTALL_TEST_BEFORE_PUBLISH_READY:-}" ]; then
     : >"$SYNTAUR_INSTALL_TEST_BEFORE_PUBLISH_READY"
@@ -504,15 +559,16 @@ provision_process_inspector() (
       sleep 0.05
     done
   fi
-  if ! run_process_inspector_root /usr/bin/ln -- "$ROOT_TEMP" "$DESTINATION"; then
+  if ! run_process_inspector_root /usr/bin/mv --no-clobber --no-target-directory -- "$ROOT_TEMP" "$DESTINATION"; then
+    echo "  Error: could not publish the process inspector"
+    return 1
+  fi
+  if [ -e "$ROOT_TEMP" ] || [ -L "$ROOT_TEMP" ]; then
     echo "  Error: process inspector destination already exists"
     return 1
   fi
-  if ! run_process_inspector_root /usr/bin/rm -- "$ROOT_TEMP"; then
-    echo "  Error: could not finalize the process inspector publication"
-    return 1
-  fi
   ROOT_TEMP=""
+  run_process_inspector_root /usr/bin/sync -- "$VERSION_DIRECTORY" || return 1
   validate_process_inspector_file "$DESTINATION" "$EXPECTED_SHA256" "$GETCAP_BIN" || return 1
   validate_process_inspector_protocol "$DESTINATION" "$PROBE_DIRECTORY" || return 1
   echo "  ✓ Installed the authenticated process inspector for v$RELEASE_VERSION"
@@ -743,6 +799,39 @@ if [ "${SYNTAUR_INSTALL_TEST_LIBRARY_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
 
+# Resolve platform authority before any user-state mutation. Managed Linux
+# installs must run as the target account and elevate only the narrow helper.
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
+
+case "$OS" in
+  linux)  PLATFORM="linux" ;;
+  darwin) PLATFORM="macos" ;;
+  *)      echo "Error: Unsupported OS: $OS"; exit 1 ;;
+esac
+
+case "$ARCH" in
+  x86_64|amd64) ARCH="x86_64" ;;
+  aarch64|arm64)
+    if [ "$PLATFORM" = "macos" ]; then
+      ARCH="arm64"
+    else
+      ARCH="aarch64"
+    fi
+    ;;
+  *) echo "Error: Unsupported architecture: $ARCH"; exit 1 ;;
+esac
+
+MANAGED_RUNTIME="0"
+if [ "$PLATFORM" = "linux" ] && [ "$ARCH" = "x86_64" ]; then
+  MANAGED_RUNTIME="1"
+fi
+if [ "$MANAGED_RUNTIME" = "1" ] && [ "$(id -u)" = 0 ]; then
+  echo "  Error: run this installer as your ordinary account, not root."
+  echo "  It requests sudo only for the narrow system helper and required packages."
+  exit 1
+fi
+
 echo ""
 echo "  ♞ $BRAND v$VERSION"
 echo "  Your personal AI platform"
@@ -772,28 +861,6 @@ if [ -z "$MODE" ]; then
   echo ""
 fi
 
-# Detect OS and architecture
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-ARCH=$(uname -m)
-
-case "$OS" in
-  linux)  PLATFORM="linux" ;;
-  darwin) PLATFORM="macos" ;;
-  *)      echo "Error: Unsupported OS: $OS"; exit 1 ;;
-esac
-
-case "$ARCH" in
-  x86_64|amd64) ARCH="x86_64" ;;
-  aarch64|arm64)
-    if [ "$PLATFORM" = "macos" ]; then
-      ARCH="arm64"
-    else
-      ARCH="aarch64"
-    fi
-    ;;
-  *) echo "Error: Unsupported architecture: $ARCH"; exit 1 ;;
-esac
-
 echo "  Platform: $PLATFORM-$ARCH"
 echo ""
 
@@ -801,13 +868,12 @@ echo ""
 mkdir -p "$INSTALL_DIR"
 DASHBOARD_URL="${SYNTAUR_URL:-http://localhost:18789}"
 
-MANAGED_RUNTIME="0"
-if [ "$PLATFORM" = "linux" ] && [ "$ARCH" = "x86_64" ]; then
-  MANAGED_RUNTIME="1"
-fi
-
 APP_LAUNCHER="$INSTALL_DIR/syntaur-open"
 if [ "$MANAGED_RUNTIME" = "1" ]; then
+  if ! ensure_process_inspector_cap_tools; then
+    echo "  Error: the managed runtime requires Linux capability tools."
+    exit 1
+  fi
   echo "  Installing the signed managed runtime..."
   RUNTIME_STAGE=$(mktemp -d "/tmp/syntaur-install-${VERSION}.XXXXXX")
   chmod 700 "$RUNTIME_STAGE"
@@ -904,12 +970,25 @@ if [ "$MANAGED_RUNTIME" = "1" ]; then
   fi
   rm -f "$RUNTIME_STAGE/$PROCESS_INSPECTOR_ASSET"
 
+  RUNTIME_INSTALL_OK=0
   if [ "$MODE" = "server" ]; then
-    "$RUNTIME_BOOTSTRAP" install-release "$RUNTIME_STAGE" "$MODE" "$DASHBOARD_URL"
+    if "$RUNTIME_BOOTSTRAP" install-release "$RUNTIME_STAGE" "$MODE" "$DASHBOARD_URL"; then
+      RUNTIME_INSTALL_OK=1
+    fi
   elif [ -n "${SYNTAUR_URL:-}" ]; then
-    "$RUNTIME_BOOTSTRAP" install-release "$RUNTIME_STAGE" "$MODE" "$SYNTAUR_URL"
+    if "$RUNTIME_BOOTSTRAP" install-release "$RUNTIME_STAGE" "$MODE" "$SYNTAUR_URL"; then
+      RUNTIME_INSTALL_OK=1
+    fi
   else
-    "$RUNTIME_BOOTSTRAP" install-release "$RUNTIME_STAGE" "$MODE"
+    if "$RUNTIME_BOOTSTRAP" install-release "$RUNTIME_STAGE" "$MODE"; then
+      RUNTIME_INSTALL_OK=1
+    fi
+  fi
+  if [ "$RUNTIME_INSTALL_OK" -ne 1 ]; then
+    # The helper is signed, immutable, and version-addressed. Retaining it is
+    # race-safe; a later retry can authenticate and reuse the exact file.
+    echo "  Error: managed runtime installation failed."
+    exit 1
   fi
   if [ ! -x "$APP_LAUNCHER" ]; then
     echo "  Error: managed runtime installation did not publish syntaur-open"

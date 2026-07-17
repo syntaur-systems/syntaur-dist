@@ -76,6 +76,10 @@ try {
     $env:SYNTAUR_INSTALL_TEST_LIBRARY_ONLY = "1"
     . (Join-Path $Repository "install.ps1")
     Assert-True ($EulaSha256 -eq $ExpectedHash) "installer EULA hash is stale"
+    $ExpectedUrl = "https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/$EulaSourceCommit/EULA.md"
+    Assert-True ($EulaUrl -eq $ExpectedUrl) "installer EULA URL is not commit-pinned"
+    git -C $Repository diff --quiet $EulaSourceCommit -- EULA.md
+    Assert-True ($LASTEXITCODE -eq 0) "commit-pinned EULA bytes do not match the accepted hash"
 
     $env:USERPROFILE = Join-Path $Temporary "legacy"
     $Legacy = Join-Path (Join-Path $env:USERPROFILE ".syntaur") "eula-accepted"
@@ -86,6 +90,10 @@ try {
     $After = (Get-FileHash -Algorithm SHA256 -LiteralPath $Legacy).Hash
     Assert-True ($Before -ne $After) "legacy record was not replaced with hash-bound evidence"
     Assert-True (Test-CurrentEulaRecord -LiteralPath $Legacy) "upgraded record was rejected"
+    $Residue = @(Get-ChildItem -LiteralPath (Split-Path -Parent $Legacy) -Filter ".eula-accepted.tmp.*")
+    Assert-True ($Residue.Count -eq 0) "legacy upgrade left temporary files"
+    $Residue = @(Get-ChildItem -LiteralPath (Split-Path -Parent $Legacy) -Filter ".eula-accepted.backup.*")
+    Assert-True ($Residue.Count -eq 0) "legacy upgrade left backup files"
 
     $env:USERPROFILE = Join-Path $Temporary "current"
     New-Item -ItemType Directory -Path $env:USERPROFILE | Out-Null
@@ -96,6 +104,14 @@ try {
     Assert-True (Confirm-EulaAcceptance -AcceptByFlag $false) "current record was not reused"
     $AfterCurrentReuse = (Get-FileHash -Algorithm SHA256 -LiteralPath $Current).Hash
     Assert-True ($BeforeCurrentReuse -eq $AfterCurrentReuse) "current reuse rewrote its evidence"
+    $OriginalDistWorkflowCommit = $DistWorkflowCommit
+    $DistWorkflowCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    Assert-True ($EulaUrl -eq $ExpectedUrl) "dist commit rotation changed EULA authority"
+    $BeforeNewDistReuse = (Get-FileHash -Algorithm SHA256 -LiteralPath $Current).Hash
+    Assert-True (Confirm-EulaAcceptance -AcceptByFlag $false) "same EULA was rejected after the dist commit changed"
+    $AfterNewDistReuse = (Get-FileHash -Algorithm SHA256 -LiteralPath $Current).Hash
+    Assert-True ($BeforeNewDistReuse -eq $AfterNewDistReuse) "same-EULA reuse rewrote its evidence"
+    $DistWorkflowCommit = $OriginalDistWorkflowCommit
     $Residue = @(Get-ChildItem -LiteralPath (Split-Path -Parent $Current) -Filter ".eula-accepted.tmp.*")
     Assert-True ($Residue.Count -eq 0) "atomic record write left temporary files"
     $Residue = @(Get-ChildItem -LiteralPath (Split-Path -Parent $Current) -Filter ".eula-accepted.backup.*")
@@ -118,9 +134,19 @@ try {
     Assert-True (-not (Test-CurrentEulaRecord -LiteralPath $Current)) "malformed acceptance time was accepted"
     Assert-True (Save-EulaAcceptance -Method "flag") "malformed record was not replaced"
 
+    $BadLines = [IO.File]::ReadAllLines($Current)
+    $BadLines[3] = "eula_url=https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/main/EULA.md"
+    [IO.File]::WriteAllLines($Current, $BadLines)
+    Assert-True (-not (Test-CurrentEulaRecord -LiteralPath $Current)) "unpinned EULA provenance was accepted"
+    Assert-True (Save-EulaAcceptance -Method "flag") "unpinned EULA provenance was not replaced"
+
     [IO.File]::WriteAllText($Current, (("x" * ($EulaRecordMaxBytes + 1)) -join ""))
     Assert-True (-not (Test-CurrentEulaRecord -LiteralPath $Current)) "oversized record was accepted"
     Assert-True (Save-EulaAcceptance -Method "flag") "oversized record was not replaced"
+    $Residue = @(Get-ChildItem -LiteralPath (Split-Path -Parent $Current) -Filter ".eula-accepted.tmp.*")
+    Assert-True ($Residue.Count -eq 0) "record repairs left temporary files"
+    $Residue = @(Get-ChildItem -LiteralPath (Split-Path -Parent $Current) -Filter ".eula-accepted.backup.*")
+    Assert-True ($Residue.Count -eq 0) "record repairs left backup files"
 
     $FileSddl = (Get-Acl -LiteralPath $Current).Sddl
     Add-EveryoneWriteRule -LiteralPath $Current

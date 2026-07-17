@@ -211,4 +211,45 @@ fi
 unset -f awk
 [[ ! -e $root/$fixed_tool_version ]]
 
+stale_version=$(version_for 12)
+remember_version "$stale_version"
+sudo -n install -d -m 0755 -o root -g root -- "$root/$stale_version"
+stale_temp="$root/$stale_version/.syntaur-process-inspector.interrupted"
+sudo -n install -m 0755 -o root -g root -- "$staged" "$stale_temp"
+sudo -n setcap cap_sys_ptrace=ep "$stale_temp"
+provision "$stale_version" >/dev/null
+[[ ! -e $stale_temp ]]
+[[ -e $(destination_for "$stale_version") ]]
+
+root_version=$(version_for 13)
+remember_version "$root_version"
+if sudo -n env \
+    SYNTAUR_INSTALL_TEST_LIBRARY_ONLY=1 \
+    REPOSITORY="$repository" \
+    STAGED_INSPECTOR="$staged" \
+    EXPECTED_SHA256="$expected" \
+    RELEASE_VERSION="$root_version" \
+    INSPECTOR_ROOT="$root" \
+    PROBE_DIRECTORY="$probe" \
+    /bin/sh -c '
+      . "$REPOSITORY/install.sh"
+      provision_process_inspector \
+        "$STAGED_INSPECTOR" "$EXPECTED_SHA256" "$RELEASE_VERSION" \
+        "$INSPECTOR_ROOT" "$PROBE_DIRECTORY"
+    ' >/dev/null 2>&1; then
+  echo 'root process inspector installation was accepted' >&2
+  exit 1
+fi
+[[ ! -e $root/$root_version ]]
+
+root_home="$temporary/root-home"
+mkdir -m 700 "$root_home"
+if sudo -n env -u SYNTAUR_INSTALL_TEST_LIBRARY_ONLY HOME="$root_home" \
+    /bin/sh "$repository/install.sh" --server --accept-eula >/dev/null 2>&1; then
+  echo 'root managed-runtime installer invocation was accepted' >&2
+  exit 1
+fi
+[[ ! -e $root_home/.syntaur ]]
+[[ ! -e $root_home/.local ]]
+
 echo 'process inspector installer tests passed'

@@ -9,6 +9,14 @@ expected_eula_sha=3e417ea33bc2d6296070222df816a6d145846743c1d98e7e4d20c7c2c8e9a7
 actual_eula_sha=$(sha256sum "$repository/EULA.md" | awk '{print $1}')
 [ "$actual_eula_sha" = "$expected_eula_sha" ]
 grep -Fxq "EULA_SHA256=\"$expected_eula_sha\"" "$repository/install.sh"
+dist_commit=$(sed -nE 's/^DIST_WORKFLOW_COMMIT="([0-9a-f]{40})"$/\1/p' "$repository/install.sh")
+[ "${#dist_commit}" -eq 40 ]
+eula_source_commit=$(sed -nE 's/^EULA_SOURCE_COMMIT="([0-9a-f]{40})"$/\1/p' "$repository/install.sh")
+[ "${#eula_source_commit}" -eq 40 ]
+expected_eula_url="https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/$eula_source_commit/EULA.md"
+grep -Fxq 'EULA_URL="https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/$EULA_SOURCE_COMMIT/EULA.md"' "$repository/install.sh"
+pinned_eula_sha=$(git -C "$repository" show "$eula_source_commit:EULA.md" | sha256sum | awk '{print $1}')
+[ "$pinned_eula_sha" = "$expected_eula_sha" ]
 
 load_installer_library() {
   export SYNTAUR_INSTALL_TEST_LIBRARY_ONLY=1
@@ -53,6 +61,7 @@ EOF
   [ "$before" != "$after" ]
   printf '%s\n' "$output" | grep -Fq 'EULA v1.0 accepted (via flag).'
   eula_record_is_current "$record"
+  grep -Fxq "eula_url=$expected_eula_url" "$record"
 )
 
 (
@@ -65,6 +74,24 @@ EOF
   eula_record_is_current "$record"
   [ "$(portable_stat_mode "$record")" = 600 ]
   [ "$(find "$HOME/.syntaur" -maxdepth 1 -name '.eula-accepted.tmp.*' | wc -l)" -eq 0 ]
+)
+
+(
+  HOME="$temporary/new-dist-commit"
+  export HOME
+  load_installer_library
+  mkdir -p "$HOME"
+  persist_eula_acceptance flag
+  record="$HOME/.syntaur/eula-accepted"
+  before=$(sha256sum "$record" | awk '{print $1}')
+  DIST_WORKFLOW_COMMIT=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  [ "$DIST_WORKFLOW_COMMIT" = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ]
+  [ "$EULA_URL" = "$expected_eula_url" ]
+  eula_record_is_current "$record"
+  output=$(ensure_eula_acceptance </dev/null)
+  after=$(sha256sum "$record" | awk '{print $1}')
+  [ "$before" = "$after" ]
+  printf '%s\n' "$output" | grep -Fq 'EULA v1.0 previously accepted; continuing.'
 )
 
 sh_home="$temporary/posix-sh"
@@ -120,6 +147,9 @@ EOF
   printf 'method=flag\n' >>"$record"
   assert_rejected eula_record_is_current "$record"
   sed -i 's|^accepted_at=.*$|accepted_at=not-a-time|' "$record"
+  assert_rejected eula_record_is_current "$record"
+  persist_eula_acceptance flag
+  sed -i 's|^eula_url=.*$|eula_url=https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/main/EULA.md|' "$record"
   assert_rejected eula_record_is_current "$record"
   dd if=/dev/zero of="$record" bs=4097 count=1 status=none
   assert_rejected eula_record_is_current "$record"

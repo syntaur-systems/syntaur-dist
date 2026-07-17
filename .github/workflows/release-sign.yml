@@ -621,6 +621,7 @@ jobs:
         with:
           ref: ${{ env.DIST_COMMIT }}
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Verify exact public workflow checkout
         run: |
@@ -634,6 +635,15 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Verify shipped Rust process inspector installation
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends acl libcap2-bin
+          chmod +x dist/syntaur-process-inspector-linux-x86_64
+          SYNTAUR_TEST_PROCESS_INSPECTOR="$PWD/dist/syntaur-process-inspector-linux-x86_64" \
+            bash scripts/test-process-inspector-install.sh
+
       - name: Stage install scripts into dist
         run: |
           set -euo pipefail
@@ -642,6 +652,7 @@ jobs:
           # hardcoded VERSION (and the signed bundle matches the shipped file).
           sed -i -E "s/^(VERSION=\")[^\"]+(\")/\1${REL_VERSION}\2/" install.sh
           sed -i -E "s/^(\\\$Version[[:space:]]*=[[:space:]]*\")[^\"]+(\")/\1${REL_VERSION}\2/" install.ps1
+          sed -i -E "s/^(\\\$DistWorkflowCommit[[:space:]]*=[[:space:]]*\")[^\"]+(\")/\1${DIST_COMMIT}\2/" install.ps1
           runtime_sha256=$(sha256sum dist/syntaur-runtime-linux-x86_64 | awk '{print $1}')
           process_inspector_sha256=$(sha256sum dist/syntaur-process-inspector-linux-x86_64 | awk '{print $1}')
           sed -i -E "s/^(RUNTIME_BOOTSTRAP_SHA256=\")[^\"]*(\")/\1${runtime_sha256}\2/" install.sh
@@ -651,9 +662,19 @@ jobs:
           # issue #27 must NEVER silently reintroduce a stale install-script version).
           grep -qE "^VERSION=\"${REL_VERSION}\"" install.sh || { echo "::error::install.sh VERSION not stamped to ${REL_VERSION} (sed matched nothing — check the VERSION= line format)"; exit 1; }
           grep -qE "^\\\$Version[[:space:]]*=[[:space:]]*\"${REL_VERSION}\"" install.ps1 || { echo "::error::install.ps1 \$Version not stamped to ${REL_VERSION} (sed matched nothing — check the \$Version line format)"; exit 1; }
+          grep -qE "^\\\$DistWorkflowCommit[[:space:]]*=[[:space:]]*\"${DIST_COMMIT}\"" install.ps1 || { echo "::error::install.ps1 public commit was not stamped"; exit 1; }
           grep -qE "^RUNTIME_BOOTSTRAP_SHA256=\"[0-9a-f]{64}\"$" install.sh || { echo "::error::install.sh runtime bootstrap hash was not stamped"; exit 1; }
           grep -qE "^PROCESS_INSPECTOR_SHA256=\"[0-9a-f]{64}\"$" install.sh || { echo "::error::install.sh process inspector hash was not stamped"; exit 1; }
           grep -qE "^DIST_WORKFLOW_COMMIT=\"${DIST_COMMIT}\"$" install.sh || { echo "::error::install.sh workflow commit was not stamped"; exit 1; }
+          eula_sha256=$(sha256sum EULA.md | awk '{print $1}')
+          grep -qE "^EULA_SHA256=\"${eula_sha256}\"$" install.sh || { echo "::error::install.sh EULA hash is stale"; exit 1; }
+          grep -qE "^\\\$EulaSha256[[:space:]]*=[[:space:]]*\"${eula_sha256}\"$" install.ps1 || { echo "::error::install.ps1 EULA hash is stale"; exit 1; }
+          eula_source_commit=$(sed -nE 's/^EULA_SOURCE_COMMIT="([0-9a-f]{40})"$/\1/p' install.sh)
+          powershell_eula_source_commit=$(sed -nE 's/^\$EulaSourceCommit[[:space:]]*=[[:space:]]*"([0-9a-f]{40})"$/\1/p' install.ps1)
+          test "${#eula_source_commit}" -eq 40 || { echo "::error::install.sh EULA source commit is invalid"; exit 1; }
+          test "$powershell_eula_source_commit" = "$eula_source_commit" || { echo "::error::installer EULA source commits disagree"; exit 1; }
+          pinned_eula_sha256=$(git show "${eula_source_commit}:EULA.md" | sha256sum | awk '{print $1}')
+          test "$pinned_eula_sha256" = "$eula_sha256" || { echo "::error::pinned EULA source bytes do not match EULA_SHA256"; exit 1; }
           cp install.sh   dist/install.sh
           cp install.ps1  dist/install.ps1
           cp assets/syntaur-icon.png  dist/syntaur-icon.png

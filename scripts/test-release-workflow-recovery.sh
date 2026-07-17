@@ -74,12 +74,10 @@ if env \
 fi
 
 stage_case="$temporary/stage-installers"
-mkdir -p "$stage_case/dist" "$stage_case/assets"
+git clone --quiet --no-hardlinks "$repository" "$stage_case"
+mkdir -p "$stage_case/dist"
 cp "$repository/install.sh" "$repository/install.ps1" "$stage_case/"
-cp "$repository/assets/syntaur-icon.png" \
-  "$repository/assets/syntaur-icon.icns" \
-  "$repository/assets/syntaur-icon.ico" \
-  "$stage_case/assets/"
+cp "$repository/EULA.md" "$stage_case/EULA.md"
 printf 'runtime payload\n' >"$stage_case/dist/syntaur-runtime-linux-x86_64"
 printf 'process inspector payload\n' >"$stage_case/dist/syntaur-process-inspector-linux-x86_64"
 (

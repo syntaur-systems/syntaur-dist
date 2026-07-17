@@ -6,8 +6,8 @@
 #   & ([scriptblock]::Create((irm https://github.com/syntaur-systems/syntaur-dist/releases/latest/download/install.ps1))) --server
 #   & ([scriptblock]::Create((irm https://github.com/syntaur-systems/syntaur-dist/releases/latest/download/install.ps1))) --connect
 #
-# Pass --accept-eula to accept the EULA non-interactively:
-#   https://github.com/syntaur-systems/syntaur-dist/blob/main/EULA.md
+# Pass --accept-eula to accept the EULA non-interactively after reading the
+# immutable commit-pinned URL printed by this installer.
 #Requires -Version 5.1
 $ErrorActionPreference = "Stop"
 
@@ -16,11 +16,13 @@ $Brand = "Syntaur"
 # before tagging a release so this and install.sh stay in sync with the
 # workspace version in Cargo.toml. install.ps1 ships standalone.
 $Version = "0.7.114"
+$DistWorkflowCommit = "8811aa006673caa5082a7c9343e83c0b7ac51d16"
+$EulaSourceCommit = "8811aa006673caa5082a7c9343e83c0b7ac51d16"
 $Binary = "syntaur.exe"
 $InstallDir = "$env:LOCALAPPDATA\Syntaur"
 $DashboardUrl = "http://localhost:18789"
 $EulaVersion = "1.0"
-$EulaUrl = "https://github.com/syntaur-systems/syntaur-dist/blob/main/EULA.md"
+$EulaUrl = "https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/$EulaSourceCommit/EULA.md"
 $EulaSha256 = "3e417ea33bc2d6296070222df816a6d145846743c1d98e7e4d20c7c2c8e9a720"
 $EulaRecordFormat = "1"
 $EulaRecordMaxBytes = 4096
@@ -146,6 +148,7 @@ function Save-EulaAcceptance {
     $Record = Join-Path $SyntaurDirectory "eula-accepted"
     $Temporary = $null
     $Backup = $null
+    $Committed = $false
     try {
         if (Test-Path -LiteralPath $SyntaurDirectory) {
             if (-not (Test-SafeEulaEntry -LiteralPath $SyntaurDirectory -Container $true)) {
@@ -177,21 +180,37 @@ function Save-EulaAcceptance {
         if (Test-Path -LiteralPath $Record) {
             $Backup = Join-Path $SyntaurDirectory (".eula-accepted.backup." + [Guid]::NewGuid().ToString("N"))
             [IO.File]::Replace($Temporary, $Record, $Backup, $true)
-            Remove-Item -LiteralPath $Backup -Force
+            $Committed = $true
+            Remove-Item -LiteralPath $Backup -Force -ErrorAction Stop
             $Backup = $null
         } else {
             [IO.File]::Move($Temporary, $Record)
+            $Committed = $true
         }
-        return Test-SafeEulaEntry -LiteralPath $Record -Container $false
+        return Test-CurrentEulaRecord -LiteralPath $Record
     } catch {
+        $Failure = $_
+        $CleanupFailed = $false
         if ($Temporary -and (Test-Path -LiteralPath $Temporary)) {
-            Remove-Item -LiteralPath $Temporary -Force -ErrorAction SilentlyContinue
+            try {
+                Remove-Item -LiteralPath $Temporary -Force -ErrorAction Stop
+            } catch {
+                $CleanupFailed = $true
+            }
         }
         if ($Backup -and (Test-Path -LiteralPath $Backup)) {
-            Remove-Item -LiteralPath $Backup -Force -ErrorAction SilentlyContinue
+            try {
+                Remove-Item -LiteralPath $Backup -Force -ErrorAction Stop
+                $Backup = $null
+            } catch {
+                $CleanupFailed = $true
+            }
+        }
+        if ($Committed -and (-not $CleanupFailed) -and (Test-CurrentEulaRecord -LiteralPath $Record)) {
+            return $true
         }
         if ($env:SYNTAUR_INSTALL_TEST_LIBRARY_ONLY -eq "1") {
-            throw
+            throw $Failure
         }
         return $false
     }
