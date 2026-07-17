@@ -21,13 +21,13 @@ BRAND="Syntaur"
 # before tagging a release so this string and install.ps1 stay in sync with
 # the workspace version in Cargo.toml. install.sh ships standalone (users
 # curl|sh it), so it can't read the VERSION file at runtime.
-VERSION="0.7.111"
+VERSION="0.7.114"
 # Stamped from the built runtime artifact by release-sign.yml before this
 # installer is signed. Managed installs enforce it regardless of --skip-verify.
-RUNTIME_BOOTSTRAP_SHA256=""
+RUNTIME_BOOTSTRAP_SHA256="44ee248a5eda3f35988df61a323dfca52c9612ee6a712db6be853594917b5cdc"
 # Stamped from the exact public workflow checkout before this installer is
 # signed. Cosign verification binds the manifest to this immutable commit.
-DIST_WORKFLOW_COMMIT=""
+DIST_WORKFLOW_COMMIT="8811aa006673caa5082a7c9343e83c0b7ac51d16"
 BINARY="syntaur"
 INSTALL_DIR="$HOME/.local/bin"
 MODE=""
