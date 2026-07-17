@@ -670,7 +670,7 @@ jobs:
           grep -qE "^EULA_SHA256=\"${eula_sha256}\"$" install.sh || { echo "::error::install.sh EULA hash is stale"; exit 1; }
           grep -qE "^\\\$EulaSha256[[:space:]]*=[[:space:]]*\"${eula_sha256}\"$" install.ps1 || { echo "::error::install.ps1 EULA hash is stale"; exit 1; }
           eula_source_commit=$(sed -nE 's/^EULA_SOURCE_COMMIT="([0-9a-f]{40})"$/\1/p' install.sh)
-          powershell_eula_source_commit=$(sed -nE 's/^\$EulaSourceCommit[[:space:]]*=[[:space:]]*"([0-9a-f]{40})"$/\1/p' install.ps1)
+          powershell_eula_source_commit=$(sed -nE 's/^[$]EulaSourceCommit[[:space:]]*=[[:space:]]*"([0-9a-f]{40})"$/\1/p' install.ps1)
           test "${#eula_source_commit}" -eq 40 || { echo "::error::install.sh EULA source commit is invalid"; exit 1; }
           test "$powershell_eula_source_commit" = "$eula_source_commit" || { echo "::error::installer EULA source commits disagree"; exit 1; }
           pinned_eula_sha256=$(git show "${eula_source_commit}:EULA.md" | sha256sum | awk '{print $1}')
