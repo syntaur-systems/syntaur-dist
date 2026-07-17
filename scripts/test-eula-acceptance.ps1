@@ -75,7 +75,6 @@ try {
 
     $env:SYNTAUR_INSTALL_TEST_LIBRARY_ONLY = "1"
     . (Join-Path $Repository "install.ps1")
-    $env:SYNTAUR_INSTALL_TEST_LIBRARY_ONLY = $null
     Assert-True ($EulaSha256 -eq $ExpectedHash) "installer EULA hash is stale"
 
     $env:USERPROFILE = Join-Path $Temporary "legacy"

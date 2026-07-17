@@ -148,17 +148,17 @@ function Save-EulaAcceptance {
     try {
         if (Test-Path -LiteralPath $SyntaurDirectory) {
             if (-not (Test-SafeEulaEntry -LiteralPath $SyntaurDirectory -Container $true)) {
-                return $false
+                throw "EULA acceptance directory authority is unsafe"
             }
         } else {
             New-Item -ItemType Directory -Path $SyntaurDirectory | Out-Null
             if (-not (Test-SafeEulaEntry -LiteralPath $SyntaurDirectory -Container $true)) {
-                return $false
+                throw "new EULA acceptance directory authority is unsafe"
             }
         }
         if (Test-Path -LiteralPath $Record) {
             if (-not (Test-SafeEulaEntry -LiteralPath $Record -Container $false)) {
-                return $false
+                throw "existing EULA acceptance record authority is unsafe"
             }
         }
         $Temporary = Join-Path $SyntaurDirectory (".eula-accepted.tmp." + [Guid]::NewGuid().ToString("N"))
@@ -182,6 +182,9 @@ function Save-EulaAcceptance {
     } catch {
         if ($Temporary -and (Test-Path -LiteralPath $Temporary)) {
             Remove-Item -LiteralPath $Temporary -Force -ErrorAction SilentlyContinue
+        }
+        if ($env:SYNTAUR_INSTALL_TEST_LIBRARY_ONLY -eq "1") {
+            throw
         }
         return $false
     }
