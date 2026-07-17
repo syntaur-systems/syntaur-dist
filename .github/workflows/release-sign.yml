@@ -68,6 +68,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  SYNTAUR_ARTIFACT_KIND: public-release
   # Normalize the two trigger shapes into one set of values the jobs use.
   REL_VERSION: ${{ github.event.inputs.version || github.event.client_payload.version }}
   SRC_REF: ${{ github.event.inputs.source_ref || github.event.client_payload.source_ref }}
@@ -305,6 +306,57 @@ jobs:
         run: |
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.artifact_name }}"
+
+      - name: Verify public gateway build identity
+        if: matrix.package == 'syntaur-gateway'
+        shell: bash
+        env:
+          GATEWAY_ARTIFACT: dist/${{ matrix.artifact_name }}
+          EXPECTED_CARGO_FEATURES: ${{ matrix.features || '' }}
+        run: |
+          set -euo pipefail
+          capabilities_json=$("./${GATEWAY_ARTIFACT}" --syntaur-build-capabilities)
+          if (( ${#capabilities_json} == 0 || ${#capabilities_json} > 4096 )); then
+            echo "::error::gateway capability report is empty or oversized"
+            exit 1
+          fi
+
+          python_cmd=python3
+          command -v "$python_cmd" >/dev/null 2>&1 || python_cmd=python
+          command -v "$python_cmd" >/dev/null 2>&1
+
+          CAPABILITIES_JSON="$capabilities_json" "$python_cmd" - <<'PY'
+          import json
+          import os
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(f"gateway capability verification failed: {message}")
+
+          record = json.loads(os.environ["CAPABILITIES_JSON"])
+          require(record.get("schema") == "syntaur.gateway-build-capabilities.v1", "schema")
+          require(record.get("version") == os.environ["REL_VERSION"], "version")
+          require(record.get("git_commit") == os.environ["SRC_COMMIT"], "source commit")
+          require(record.get("artifact_kind") == "public-release", "artifact kind")
+          require(record.get("media") is False, "media must be disabled")
+          require(record.get("personal_peter") is False, "personal-peter must be disabled")
+
+          features = record.get("features")
+          require(
+              isinstance(features, list)
+              and all(isinstance(value, str) for value in features),
+              "features must be a string array",
+          )
+          expected = [
+              feature.strip()
+              for feature in os.environ["EXPECTED_CARGO_FEATURES"].split(",")
+              if feature.strip()
+          ]
+          require(len(features) == len(set(features)), "duplicate features")
+          require(sorted(features) == sorted(expected), "unexpected feature set")
+          require("media" not in features, "media listed")
+          require("personal-peter" not in features, "personal-peter listed")
+          PY
 
       - name: Stage auxiliary runtime artifact
         if: matrix.extra_binary != ''

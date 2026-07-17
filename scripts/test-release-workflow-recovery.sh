@@ -21,10 +21,12 @@ validate_step="$temporary/validate-inputs.sh"
 prepare_step="$temporary/prepare-operation.sh"
 publish_step="$temporary/publish-draft.sh"
 stage_installers_step="$temporary/stage-installers.sh"
+verify_gateway_identity_step="$temporary/verify-gateway-identity.sh"
 extract_step 'Validate inputs' "$validate_step"
 extract_step 'Prepare canonical release operation metadata' "$prepare_step"
 extract_step 'Create draft release + upload assets (with retry + verification)' "$publish_step"
 extract_step 'Stage install scripts into dist' "$stage_installers_step"
+extract_step 'Verify public gateway build identity' "$verify_gateway_identity_step"
 
 version=0.7.112
 tag=v${version}
@@ -70,6 +72,65 @@ if env \
   GITHUB_RUN_ATTEMPT_IN=1 \
   bash "$validate_step" >/dev/null 2>&1; then
   echo 'mismatched release tag passed validation' >&2
+  exit 1
+fi
+
+identity_case="$temporary/gateway-identity"
+mkdir -p "$identity_case/dist"
+cat >"$identity_case/dist/syntaur-gateway" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+test "${1:-}" = --syntaur-build-capabilities
+test "$#" = 1
+printf '%s\n' "$FAKE_CAPABILITIES_JSON"
+EOF
+chmod +x "$identity_case/dist/syntaur-gateway"
+
+gateway_identity_json() {
+  local report_version=$1 report_source=$2 kind=$3 media=$4 personal_peter=$5 features=$6
+  jq -cn \
+    --arg version "$report_version" \
+    --arg source "$report_source" \
+    --arg kind "$kind" \
+    --argjson media "$media" \
+    --argjson personal_peter "$personal_peter" \
+    --argjson features "$features" \
+    '{schema:"syntaur.gateway-build-capabilities.v1",version:$version,git_commit:$source,artifact_kind:$kind,features:$features,media:$media,personal_peter:$personal_peter}'
+}
+
+run_gateway_identity() {
+  local report=$1 expected_features=${2:-}
+  (
+    cd "$identity_case"
+    env \
+      PATH="$system_path" \
+      REL_VERSION="$version" \
+      SRC_COMMIT="$source_commit" \
+      GATEWAY_ARTIFACT=dist/syntaur-gateway \
+      EXPECTED_CARGO_FEATURES="$expected_features" \
+      FAKE_CAPABILITIES_JSON="$report" \
+      bash "$verify_gateway_identity_step"
+  )
+}
+
+plain_identity=$(gateway_identity_json "$version" "$source_commit" public-release false false '[]')
+managed_identity=$(gateway_identity_json "$version" "$source_commit" public-release false false '["managed-runtime"]')
+run_gateway_identity "$plain_identity"
+run_gateway_identity "$managed_identity" managed-runtime
+
+for invalid_identity in \
+  "$(gateway_identity_json 0.7.999 "$source_commit" public-release false false '[]')" \
+  "$(gateway_identity_json "$version" "$(printf 'd%.0s' {1..40})" public-release false false '[]')" \
+  "$(gateway_identity_json "$version" "$source_commit" development false false '[]')" \
+  "$(gateway_identity_json "$version" "$source_commit" public-release true false '["media"]')" \
+  "$(gateway_identity_json "$version" "$source_commit" public-release false true '["personal-peter"]')"; do
+  if run_gateway_identity "$invalid_identity" >/dev/null 2>&1; then
+    echo 'public gateway identity accepted an invalid capability record' >&2
+    exit 1
+  fi
+done
+if run_gateway_identity "$plain_identity" managed-runtime >/dev/null 2>&1; then
+  echo 'public gateway identity accepted the wrong feature set' >&2
   exit 1
 fi
 
