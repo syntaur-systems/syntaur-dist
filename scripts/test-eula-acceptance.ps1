@@ -26,6 +26,24 @@ function Write-LegacyRecord {
     )
 }
 
+function Write-HistoricalRecord {
+    param([string]$Record, [string]$EulaHash)
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Record) | Out-Null
+    [IO.File]::WriteAllLines(
+        $Record,
+        @(
+            "record_format=1",
+            "eula_version=1.0",
+            "eula_sha256=$EulaHash",
+            "eula_url=https://github.com/syntaur-systems/syntaur-dist/blob/main/EULA.md",
+            "accepted_at=2026-07-17T13:58:33Z",
+            "method=prompt",
+            "installer_version=0.7.114"
+        ),
+        (New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false))
+    )
+}
+
 function Add-EveryoneWriteRule {
     param([string]$LiteralPath)
     $Acl = Get-Acl -LiteralPath $LiteralPath
@@ -81,11 +99,32 @@ try {
     git -C $Repository diff --quiet $EulaSourceCommit -- EULA.md
     Assert-True ($LASTEXITCODE -eq 0) "commit-pinned EULA bytes do not match the accepted hash"
 
+    $env:USERPROFILE = Join-Path $Temporary "historical"
+    $Historical = Join-Path (Join-Path $env:USERPROFILE ".syntaur") "eula-accepted"
+    Write-HistoricalRecord -Record $Historical -EulaHash $ExpectedHash
+    $BeforeLines = [IO.File]::ReadAllLines($Historical)
+    Assert-True (Confirm-EulaAcceptance -AcceptByFlag $true) "historical record was not migrated"
+    $AfterLines = [IO.File]::ReadAllLines($Historical)
+    Assert-True ($AfterLines[3] -eq "eula_url=$ExpectedUrl") "historical URL was not migrated"
+    foreach ($Index in @(0, 1, 2, 4, 5, 6)) {
+        Assert-True ($AfterLines[$Index] -eq $BeforeLines[$Index]) "migration changed evidence line $Index"
+    }
+    $FirstMigrationHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Historical).Hash
+    Assert-True (Confirm-EulaAcceptance -AcceptByFlag $false) "migrated record was not reused"
+    $SecondMigrationHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Historical).Hash
+    Assert-True ($FirstMigrationHash -eq $SecondMigrationHash) "second migration rewrote evidence"
+    $Residue = @(Get-ChildItem -LiteralPath (Split-Path -Parent $Historical) -Filter ".eula-accepted.tmp.*")
+    Assert-True ($Residue.Count -eq 0) "migration left temporary files"
+    $Residue = @(Get-ChildItem -LiteralPath (Split-Path -Parent $Historical) -Filter ".eula-accepted.backup.*")
+    Assert-True ($Residue.Count -eq 0) "migration left backup files"
+
     $env:USERPROFILE = Join-Path $Temporary "legacy"
     $Legacy = Join-Path (Join-Path $env:USERPROFILE ".syntaur") "eula-accepted"
     Write-LegacyRecord -Record $Legacy
     $Before = (Get-FileHash -Algorithm SHA256 -LiteralPath $Legacy).Hash
     Assert-True (-not (Test-CurrentEulaRecord -LiteralPath $Legacy)) "hashless legacy record was accepted"
+    Assert-True (-not (Move-HistoricalEulaRecord -LiteralPath $Legacy)) "hashless legacy record was migrated"
+    Assert-True ((Get-FileHash -Algorithm SHA256 -LiteralPath $Legacy).Hash -eq $Before) "legacy rejection rewrote evidence"
     Assert-True (Confirm-EulaAcceptance -AcceptByFlag $true) "legacy record was not upgraded"
     $After = (Get-FileHash -Algorithm SHA256 -LiteralPath $Legacy).Hash
     Assert-True ($Before -ne $After) "legacy record was not replaced with hash-bound evidence"
@@ -116,6 +155,45 @@ try {
     Assert-True ($Residue.Count -eq 0) "atomic record write left temporary files"
     $Residue = @(Get-ChildItem -LiteralPath (Split-Path -Parent $Current) -Filter ".eula-accepted.backup.*")
     Assert-True ($Residue.Count -eq 0) "atomic record replacement left backup files"
+
+    $InvalidHistoricalCases = @(
+        @{ Name = "raw-main"; Index = 3; Value = "eula_url=https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/main/EULA.md" },
+        @{ Name = "url-case"; Index = 3; Value = "eula_url=https://github.com/syntaur-systems/syntaur-dist/blob/main/eula.md" },
+        @{ Name = "url-query"; Index = 3; Value = "eula_url=https://github.com/syntaur-systems/syntaur-dist/blob/main/EULA.md?download=1" },
+        @{ Name = "schema"; Index = 0; Value = "record_format=2" },
+        @{ Name = "version"; Index = 1; Value = "eula_version=2.0" },
+        @{ Name = "hash"; Index = 2; Value = ("eula_sha256=" + ("a" * 64)) },
+        @{ Name = "time"; Index = 4; Value = "accepted_at=not-a-time" },
+        @{ Name = "method"; Index = 5; Value = "method=automatic" },
+        @{ Name = "installer"; Index = 6; Value = "installer_version=01.7.114" }
+    )
+    foreach ($Case in $InvalidHistoricalCases) {
+        $env:USERPROFILE = Join-Path $Temporary ("historical-" + $Case.Name)
+        $Record = Join-Path (Join-Path $env:USERPROFILE ".syntaur") "eula-accepted"
+        Write-HistoricalRecord -Record $Record -EulaHash $ExpectedHash
+        $Lines = [IO.File]::ReadAllLines($Record)
+        $Lines[$Case.Index] = $Case.Value
+        [IO.File]::WriteAllLines($Record, $Lines)
+        $BeforeRejectedMigration = (Get-FileHash -Algorithm SHA256 -LiteralPath $Record).Hash
+        Assert-True (-not (Move-HistoricalEulaRecord -LiteralPath $Record)) ("invalid historical record was migrated: " + $Case.Name)
+        Assert-True ((Get-FileHash -Algorithm SHA256 -LiteralPath $Record).Hash -eq $BeforeRejectedMigration) ("invalid migration rewrote evidence: " + $Case.Name)
+    }
+
+    $env:USERPROFILE = Join-Path $Temporary "historical-unsafe"
+    $UnsafeHistorical = Join-Path (Join-Path $env:USERPROFILE ".syntaur") "eula-accepted"
+    Write-HistoricalRecord -Record $UnsafeHistorical -EulaHash $ExpectedHash
+    $UnsafeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $UnsafeHistorical).Hash
+    $UnsafeFileSddl = (Get-Acl -LiteralPath $UnsafeHistorical).Sddl
+    Add-EveryoneWriteRule -LiteralPath $UnsafeHistorical
+    Assert-True (-not (Move-HistoricalEulaRecord -LiteralPath $UnsafeHistorical)) "unsafe historical record was migrated"
+    Assert-True ((Get-FileHash -Algorithm SHA256 -LiteralPath $UnsafeHistorical).Hash -eq $UnsafeHash) "unsafe migration rewrote evidence"
+    Restore-Sddl -LiteralPath $UnsafeHistorical -Sddl $UnsafeFileSddl
+    $UnsafeDirectory = Split-Path -Parent $UnsafeHistorical
+    $UnsafeDirectorySddl = (Get-Acl -LiteralPath $UnsafeDirectory).Sddl
+    Add-EveryoneWriteRule -LiteralPath $UnsafeDirectory
+    Assert-True (-not (Move-HistoricalEulaRecord -LiteralPath $UnsafeHistorical)) "historical record in unsafe directory was migrated"
+    Assert-True ((Get-FileHash -Algorithm SHA256 -LiteralPath $UnsafeHistorical).Hash -eq $UnsafeHash) "unsafe-directory migration rewrote evidence"
+    Restore-Sddl -LiteralPath $UnsafeDirectory -Sddl $UnsafeDirectorySddl
 
     $BadLines = [IO.File]::ReadAllLines($Current)
     $BadLines[2] = "eula_sha256=" + ("a" * 64)
@@ -166,9 +244,13 @@ try {
     $ReparseTarget = Join-Path $Temporary "reparse-target"
     $ReparseDirectory = Join-Path $ReparseTarget ".syntaur"
     New-Item -ItemType Directory -Path $ReparseDirectory -Force | Out-Null
-    Write-LegacyRecord -Record (Join-Path $ReparseDirectory "eula-accepted")
+    Write-HistoricalRecord -Record (Join-Path $ReparseDirectory "eula-accepted") -EulaHash $ExpectedHash
     New-Item -ItemType Junction -Path (Join-Path $env:USERPROFILE ".syntaur") -Target $ReparseDirectory | Out-Null
-    Assert-True (-not (Test-CurrentEulaRecord -LiteralPath (Join-Path (Join-Path $env:USERPROFILE ".syntaur") "eula-accepted"))) "reparse-point acceptance directory was trusted"
+    $ReparseRecord = Join-Path (Join-Path $env:USERPROFILE ".syntaur") "eula-accepted"
+    $ReparseHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $ReparseRecord).Hash
+    Assert-True (-not (Test-CurrentEulaRecord -LiteralPath $ReparseRecord)) "reparse-point acceptance directory was trusted"
+    Assert-True (-not (Move-HistoricalEulaRecord -LiteralPath $ReparseRecord)) "reparse-point historical record was migrated"
+    Assert-True ((Get-FileHash -Algorithm SHA256 -LiteralPath $ReparseRecord).Hash -eq $ReparseHash) "reparse rejection rewrote evidence"
 
     $env:USERPROFILE = Join-Path $Temporary "future"
     New-Item -ItemType Directory -Path $env:USERPROFILE | Out-Null
