@@ -195,6 +195,16 @@ jobs:
             package: syntaur-isolation-tests
             binary: syntaur-isolation-tests
             artifact_name: syntaur-isolation-tests-linux-x86_64
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            package: syntaur-ship
+            binary: syntaur-ship
+            artifact_name: syntaur-ship-linux-x86_64
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            package: syntaur-verify
+            binary: syntaur-verify
+            artifact_name: syntaur-verify-linux-x86_64
           - os: macos-14
             target: aarch64-apple-darwin
             package: syntaur-gateway
@@ -749,6 +759,8 @@ jobs:
             syntaur-runtime-linux-x86_64
             syntaur-process-inspector-linux-x86_64
             syntaur-isolation-tests-linux-x86_64
+            syntaur-ship-linux-x86_64
+            syntaur-verify-linux-x86_64
             syntaur-gateway-macos-arm64
             syntaur-viewer-macos-arm64
             syntaur-gateway-macos-x86_64
@@ -815,6 +827,8 @@ jobs:
             syntaur-icon.ico \
             syntaur-icon.png \
             syntaur-isolation-tests-linux-x86_64 \
+            syntaur-ship-linux-x86_64 \
+            syntaur-verify-linux-x86_64 \
             syntaur-release-operation.json \
             syntaur-runtime-linux-x86_64 \
             syntaur-process-inspector-linux-x86_64 \
@@ -1211,6 +1225,8 @@ jobs:
             syntaur-icon.ico
             syntaur-icon.png
             syntaur-isolation-tests-linux-x86_64
+            syntaur-ship-linux-x86_64
+            syntaur-verify-linux-x86_64
             syntaur-release-operation.json
             syntaur-runtime-linux-x86_64
             syntaur-process-inspector-linux-x86_64
