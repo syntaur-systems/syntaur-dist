@@ -26,10 +26,15 @@ release. This cannot replace the product release selected by
 advance the authority generation. Promotions are serialized and hash-chain
 each successful generation to the preceding manifest.
 
-As of 2026-07-21, the `release-authority` Environment and repository immutable
-release protection are not configured. The workflow is intentionally unusable
-until an administrator completes those human trust-anchor prerequisites,
-including the read-only policy-inspection secret.
+As of 2026-07-23, repository immutable releases are enabled and the
+`release-authority` Environment is restricted to `main`, prevents self-review,
+and disables administrator bypass. The organization currently has only one
+member, who is also the required reviewer. The workflow therefore cannot be
+approved until a distinct trusted reviewer with repository read access is
+added. The environment also still needs
+`SYNTAUR_RELEASE_AUTHORITY_ADMIN_READ_TOKEN`, issued with repository
+Administration read-only permission. Do not substitute a broad personal access
+token or weaken the environment rules to bootstrap the first promotion.
 
 ## First checkpoint and later promotions
 
