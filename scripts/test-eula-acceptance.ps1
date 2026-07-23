@@ -134,7 +134,8 @@ try {
     $Residue = @(Get-ChildItem -LiteralPath (Split-Path -Parent $Legacy) -Filter ".eula-accepted.backup.*")
     Assert-True ($Residue.Count -eq 0) "legacy upgrade left backup files"
 
-    $env:USERPROFILE = Join-Path $Temporary "current"
+    $CurrentProfile = Join-Path $Temporary "current"
+    $env:USERPROFILE = $CurrentProfile
     New-Item -ItemType Directory -Path $env:USERPROFILE | Out-Null
     Assert-True (Save-EulaAcceptance -Method "prompt") "current record was not stored"
     $Current = Join-Path (Join-Path $env:USERPROFILE ".syntaur") "eula-accepted"
@@ -199,6 +200,7 @@ try {
     Assert-True ((Get-FileHash -Algorithm SHA256 -LiteralPath $UnsafeHistorical).Hash -eq $UnsafeHash) "unsafe-directory migration rewrote evidence"
     Restore-Sddl -LiteralPath $UnsafeDirectory -Sddl $UnsafeDirectorySddl
 
+    $env:USERPROFILE = $CurrentProfile
     $BadLines = [IO.File]::ReadAllLines($Current)
     $BadLines[2] = "eula_sha256=" + ("a" * 64)
     [IO.File]::WriteAllLines($Current, $BadLines)
