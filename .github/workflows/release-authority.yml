@@ -1,0 +1,366 @@
+name: Promote frozen release authority
+
+# This is deliberately separate from the automatic product release. The
+# `release-authority` GitHub Environment must have required reviewers. A
+# candidate commit cannot approve its own shipper/verifier or baseline.
+on:
+  workflow_dispatch:
+    inputs:
+      previous_manifest_sha256:
+        description: Reviewed predecessor manifest SHA-256, or 64 zeroes when none exists
+        required: true
+      authority_version:
+        description: Exact X.Y.Z version at the reviewed tooling checkpoint
+        required: true
+      authority_commit:
+        description: Exact 40-hex private-source commit to freeze
+        required: true
+      baseline_profile:
+        description: Independently reviewed baseline profile
+        required: true
+        default: mac-isolated-v1
+      baseline_generation:
+        description: Exact independently reviewed baseline generation
+        required: true
+      baseline_tree_sha256:
+        description: Exact lowercase SHA-256 of the reviewed baseline tree
+        required: true
+      browser_bundle_sha256:
+        description: Exact lowercase SHA-256 of the reviewed Chrome bundle tree
+        required: true
+      browser_version:
+        description: Exact reviewed Chrome-for-Testing version output
+        required: true
+      browser_launch_profile_sha256:
+        description: Exact lowercase SHA-256 of the reviewed launch policy
+        required: true
+      verifier_schema:
+        description: Exact verifier attestation schema at the checkpoint
+        required: true
+
+permissions:
+  contents: write
+  id-token: write
+
+# One authority promotion may run at a time so each unique run-id generation
+# resolves and verifies one unambiguous latest predecessor.
+concurrency:
+  group: syntaur-release-authority
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: release-authority
+    steps:
+      - name: Validate approval inputs
+        shell: bash
+        env:
+          GENERATION: ${{ github.run_id }}
+          PREVIOUS_MANIFEST_SHA256: ${{ inputs.previous_manifest_sha256 }}
+          AUTHORITY_VERSION: ${{ inputs.authority_version }}
+          AUTHORITY_COMMIT: ${{ inputs.authority_commit }}
+          BASELINE_PROFILE: ${{ inputs.baseline_profile }}
+          BASELINE_GENERATION: ${{ inputs.baseline_generation }}
+          BASELINE_TREE_SHA256: ${{ inputs.baseline_tree_sha256 }}
+          BROWSER_BUNDLE_SHA256: ${{ inputs.browser_bundle_sha256 }}
+          BROWSER_VERSION: ${{ inputs.browser_version }}
+          BROWSER_LAUNCH_PROFILE_SHA256: ${{ inputs.browser_launch_profile_sha256 }}
+          VERIFIER_SCHEMA: ${{ inputs.verifier_schema }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GENERATION" = "$GITHUB_RUN_ID"
+          test "${#GENERATION}" -le 18
+          printf '%s' "$GENERATION" | grep -Eq '^[1-9][0-9]{0,17}$'
+          for value in "$AUTHORITY_VERSION" "$AUTHORITY_COMMIT" "$VERIFIER_SCHEMA"; do
+            test "$(printf '%s' "$value" | wc -l)" -eq 0
+          done
+          test "${#AUTHORITY_VERSION}" -le 32
+          test "${#AUTHORITY_COMMIT}" -eq 40
+          test "${#VERIFIER_SCHEMA}" -le 9
+          printf '%s' "$AUTHORITY_VERSION" | grep -Eq '^(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})$'
+          printf '%s' "$AUTHORITY_COMMIT" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$VERIFIER_SCHEMA" | grep -Eq '^[1-9][0-9]{0,8}$'
+          for digest in "$PREVIOUS_MANIFEST_SHA256" "$BASELINE_TREE_SHA256" "$BROWSER_BUNDLE_SHA256" "$BROWSER_LAUNCH_PROFILE_SHA256"; do
+            test "${#digest}" -eq 64
+            printf '%s' "$digest" | grep -Eq '^[0-9a-f]{64}$'
+          done
+          for value in "$BASELINE_PROFILE" "$BASELINE_GENERATION" "$BROWSER_VERSION"; do
+            test -n "$value"
+            test "${#value}" -le 256
+            test "$(printf '%s' "$value" | wc -l)" -eq 0
+          done
+          printf '%s' "$BASELINE_PROFILE" | grep -Eq '^[A-Za-z0-9._-]+$'
+          printf '%s' "$BASELINE_GENERATION" | grep -Eq '^[A-Za-z0-9._-]+$'
+          printf '%s' "$BROWSER_VERSION" | grep -Eq '^Google Chrome for Testing [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'
+
+      - name: Require independent environment approval policy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SYNTAUR_RELEASE_AUTHORITY_ADMIN_READ_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          environment=$(gh api "/repos/${GITHUB_REPOSITORY}/environments/release-authority")
+          test "$(jq -r '.can_admins_bypass' <<<"$environment")" = false
+          test "$(jq '[.protection_rules[] | select(.type == "required_reviewers") | .reviewers[]] | length' <<<"$environment")" -gt 0
+          test "$(jq -r '[.protection_rules[] | select(.type == "required_reviewers") | .prevent_self_review] | all' <<<"$environment")" = true
+
+      - name: Require immutable release protection
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SYNTAUR_RELEASE_AUTHORITY_ADMIN_READ_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          test "$(gh api "/repos/${GITHUB_REPOSITORY}/immutable-releases" --jq '.enabled')" = true
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+        with:
+          cosign-release: v2.5.2
+
+      - name: Enforce monotonic authority generation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GENERATION: ${{ github.run_id }}
+          EXPECTED_PREVIOUS_MANIFEST_SHA256: ${{ inputs.previous_manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          generations=$(gh api --paginate "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | select(.draft == false and .immutable == true) | .tag_name' \
+            | sed -nE 's/^authority-v1-g([1-9][0-9]*)$/\1/p')
+          previous=0
+          if [ -n "$generations" ]; then
+            previous=$(printf '%s\n' "$generations" | sort -n | sed -n '$p')
+          fi
+          test "$GENERATION" -gt "$previous"
+          if gh release view "authority-v1-g${GENERATION}" >/dev/null 2>&1; then
+            echo "::error::authority generation tag already exists"
+            exit 1
+          fi
+          if gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/authority-v1-g${GENERATION}" >/dev/null 2>&1; then
+            echo "::error::authority generation Git ref already exists"
+            exit 1
+          fi
+          previous_manifest_sha256=$(printf '0%.0s' {1..64})
+          if [ "$previous" -gt 0 ]; then
+            previous_tag="authority-v1-g${previous}"
+            previous_release=$(gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/${previous_tag}")
+            test "$(jq -r '.draft' <<<"$previous_release")" = false
+            test "$(jq -r '.prerelease' <<<"$previous_release")" = false
+            test "$(jq -r '.immutable' <<<"$previous_release")" = true
+            actual_assets=$(jq -r '.assets[].name' <<<"$previous_release" | LC_ALL=C sort)
+            expected_assets=$(printf '%s\n' \
+              release-authority-v1.json \
+              release-authority-v1.json.cosign.bundle \
+              syntaur-ship-linux-x86_64 \
+              syntaur-verify-linux-x86_64 | LC_ALL=C sort)
+            test "$actual_assets" = "$expected_assets"
+            test "$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${previous_tag}" --jq '.object.type')" = commit
+            previous_dir="$RUNNER_TEMP/previous-authority"
+            mkdir -p "$previous_dir"
+            gh release download "$previous_tag" \
+              --pattern release-authority-v1.json \
+              --pattern release-authority-v1.json.cosign.bundle \
+              --dir "$previous_dir"
+            gh release verify "$previous_tag" >/dev/null
+            gh release verify-asset "$previous_tag" "$previous_dir/release-authority-v1.json" >/dev/null
+            gh release verify-asset "$previous_tag" "$previous_dir/release-authority-v1.json.cosign.bundle" >/dev/null
+            previous_workflow_commit=$(jq -er '.workflow_commit' "$previous_dir/release-authority-v1.json")
+            printf '%s' "$previous_workflow_commit" | grep -Eq '^[0-9a-f]{40}$'
+            test "$(jq -er '.generation' "$previous_dir/release-authority-v1.json")" = "$previous"
+            test "$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${previous_tag}" --jq '.object.sha')" = "$previous_workflow_commit"
+            cosign verify-blob \
+              --bundle "$previous_dir/release-authority-v1.json.cosign.bundle" \
+              --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-authority.yml@refs/heads/main" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              --certificate-github-workflow-sha "$previous_workflow_commit" \
+              "$previous_dir/release-authority-v1.json"
+            previous_manifest_sha256=$(sha256sum "$previous_dir/release-authority-v1.json" | awk '{print $1}')
+          fi
+          test "$previous_manifest_sha256" = "$EXPECTED_PREVIOUS_MANIFEST_SHA256"
+          tag="authority-v1-g${GENERATION}"
+          gh api --method POST "/repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/tags/${tag}" \
+            -f sha="$GITHUB_SHA" >/dev/null
+          test "$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.type')" = commit
+          test "$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.sha')" = "$GITHUB_SHA"
+          {
+            printf 'AUTHORITY_GENERATION=%s\n' "$GENERATION"
+            printf 'PREVIOUS_AUTHORITY_GENERATION=%s\n' "$previous"
+            printf 'PREVIOUS_AUTHORITY_MANIFEST_SHA256=%s\n' "$previous_manifest_sha256"
+          } >> "$GITHUB_ENV"
+
+      - name: Checkout private source at exact authority commit
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          repository: buddyholly007/syntaur
+          ref: ${{ inputs.authority_commit }}
+          ssh-key: ${{ secrets.SYNTAUR_SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - name: Verify exact source and policy schema
+        shell: bash
+        env:
+          AUTHORITY_COMMIT: ${{ inputs.authority_commit }}
+          AUTHORITY_VERSION: ${{ inputs.authority_version }}
+          VERIFIER_SCHEMA: ${{ inputs.verifier_schema }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$AUTHORITY_COMMIT"
+          test "$(tr -d '\r\n' < VERSION)" = "$AUTHORITY_VERSION"
+          source_schema=$(sed -nE 's/^pub const VERIFICATION_ATTESTATION_SCHEMA_VERSION: u32 = ([0-9]+);$/\1/p' crates/syntaur-verify/src/run.rs)
+          test "$source_schema" = "$VERIFIER_SCHEMA"
+
+      - name: Install Rust 1.94.1
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: 1.94.1
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          timeout 15m sudo -E apt-get -o Acquire::Retries=4 update
+          timeout 15m sudo -E apt-get -o Acquire::Retries=4 install -y --no-install-recommends libdbus-1-dev pkg-config
+
+      - name: Build frozen shipper and verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target x86_64-unknown-linux-gnu \
+            -p syntaur-ship -p syntaur-verify
+
+      - name: Create strict authority bundle
+        shell: bash
+        env:
+          GENERATION: ${{ github.run_id }}
+          AUTHORITY_VERSION: ${{ inputs.authority_version }}
+          AUTHORITY_COMMIT: ${{ inputs.authority_commit }}
+          BASELINE_PROFILE: ${{ inputs.baseline_profile }}
+          BASELINE_GENERATION: ${{ inputs.baseline_generation }}
+          BASELINE_TREE_SHA256: ${{ inputs.baseline_tree_sha256 }}
+          BROWSER_BUNDLE_SHA256: ${{ inputs.browser_bundle_sha256 }}
+          BROWSER_VERSION: ${{ inputs.browser_version }}
+          BROWSER_LAUNCH_PROFILE_SHA256: ${{ inputs.browser_launch_profile_sha256 }}
+          VERIFIER_SCHEMA: ${{ inputs.verifier_schema }}
+        run: |
+          set -euo pipefail
+          artifact_root="authority/release-authority/generation-${GENERATION}"
+          mkdir -p "$artifact_root"
+          install -m 0500 target/x86_64-unknown-linux-gnu/release/syntaur-ship \
+            "$artifact_root/syntaur-ship-linux-x86_64"
+          install -m 0500 target/x86_64-unknown-linux-gnu/release/syntaur-verify \
+            "$artifact_root/syntaur-verify-linux-x86_64"
+          shipper_sha256=$(sha256sum "$artifact_root/syntaur-ship-linux-x86_64" | awk '{print $1}')
+          verifier_sha256=$(sha256sum "$artifact_root/syntaur-verify-linux-x86_64" | awk '{print $1}')
+          toolchain_root=$(rustc --print sysroot)
+          cargo_sha256=$(sha256sum "$toolchain_root/bin/cargo" | awk '{print $1}')
+          rustc_sha256=$(sha256sum "$toolchain_root/bin/rustc" | awk '{print $1}')
+          rustdoc_sha256=$(sha256sum "$toolchain_root/bin/rustdoc" | awk '{print $1}')
+          toolchain_id="rust-$(rustc --version --verbose | sed -nE 's/^release: (.+)$/\1/p')-x86_64-unknown-linux-gnu"
+          AUTHORITY_TREE_SHA256=$(python3 - <<'PY'
+          import hashlib, subprocess
+          listing = subprocess.check_output(["git", "ls-tree", "-r", "-z", "--full-tree", "HEAD", "--"])
+          h = hashlib.sha256()
+          h.update(b"syntaur-source-tree-v1\0")
+          h.update(len(listing).to_bytes(8, "big"))
+          h.update(listing)
+          print(h.hexdigest())
+          PY
+          )
+          export AUTHORITY_TREE_SHA256 shipper_sha256 verifier_sha256 toolchain_id cargo_sha256 rustc_sha256 rustdoc_sha256
+          python3 - <<'PY'
+          import json, os
+          manifest = {
+              "schema": 1,
+              "generation": int(os.environ["AUTHORITY_GENERATION"]),
+              "previous_generation": int(os.environ["PREVIOUS_AUTHORITY_GENERATION"]),
+              "previous_manifest_sha256": os.environ["PREVIOUS_AUTHORITY_MANIFEST_SHA256"],
+              "authority_version": os.environ["AUTHORITY_VERSION"],
+              "authority_commit": os.environ["AUTHORITY_COMMIT"],
+              "authority_tree_sha256": os.environ["AUTHORITY_TREE_SHA256"],
+              "verification_policy_revision": os.environ["AUTHORITY_COMMIT"],
+              "shipper_sha256": os.environ["shipper_sha256"],
+              "verifier_sha256": os.environ["verifier_sha256"],
+              "verifier_toolchain_id": os.environ["toolchain_id"],
+              "verifier_cargo_sha256": os.environ["cargo_sha256"],
+              "verifier_rustc_sha256": os.environ["rustc_sha256"],
+              "verifier_rustdoc_sha256": os.environ["rustdoc_sha256"],
+              "approved_baseline_profile": os.environ["BASELINE_PROFILE"],
+              "approved_baseline_generation": os.environ["BASELINE_GENERATION"],
+              "approved_baseline_tree_sha256": os.environ["BASELINE_TREE_SHA256"],
+              "approved_browser_bundle_sha256": os.environ["BROWSER_BUNDLE_SHA256"],
+              "approved_browser_version": os.environ["BROWSER_VERSION"],
+              "approved_browser_launch_profile_sha256": os.environ["BROWSER_LAUNCH_PROFILE_SHA256"],
+              "verifier_schema": int(os.environ["VERIFIER_SCHEMA"]),
+              "workflow_commit": os.environ["GITHUB_SHA"],
+          }
+          with open("authority/release-authority-v1.json", "wb") as output:
+              output.write(json.dumps(manifest, separators=(",", ":")).encode())
+          PY
+          sha256sum authority/release-authority-v1.json "$artifact_root"/*
+
+      - name: Sign exact authority manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --bundle authority/release-authority-v1.json.cosign.bundle \
+            authority/release-authority-v1.json
+          cosign verify-blob \
+            --bundle authority/release-authority-v1.json.cosign.bundle \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-authority.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-github-workflow-sha "$GITHUB_SHA" \
+            authority/release-authority-v1.json
+
+      - name: Publish immutable authority generation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GENERATION: ${{ github.run_id }}
+          AUTHORITY_COMMIT: ${{ inputs.authority_commit }}
+        run: |
+          set -euo pipefail
+          artifact_root="authority/release-authority/generation-${GENERATION}"
+          gh release create "authority-v1-g${GENERATION}" \
+            --verify-tag \
+            --latest=false \
+            --title "Syntaur release authority generation ${GENERATION}" \
+            --notes "Human-approved frozen N-1 authority source ${AUTHORITY_COMMIT}. This trust artifact is independent of product releases and is immutable." \
+            authority/release-authority-v1.json \
+            authority/release-authority-v1.json.cosign.bundle \
+            "$artifact_root/syntaur-ship-linux-x86_64" \
+            "$artifact_root/syntaur-verify-linux-x86_64"
+          test "$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/authority-v1-g${GENERATION}" --jq '.object.type')" = commit
+          test "$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/authority-v1-g${GENERATION}" --jq '.object.sha')" = "$GITHUB_SHA"
+          release=$(gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/authority-v1-g${GENERATION}")
+          test "$(jq -r '.draft' <<<"$release")" = false
+          test "$(jq -r '.prerelease' <<<"$release")" = false
+          test "$(jq -r '.immutable' <<<"$release")" = true
+          actual_assets=$(jq -r '.assets[].name' <<<"$release" | LC_ALL=C sort)
+          expected_assets=$(printf '%s\n' \
+            release-authority-v1.json \
+            release-authority-v1.json.cosign.bundle \
+            syntaur-ship-linux-x86_64 \
+            syntaur-verify-linux-x86_64 | LC_ALL=C sort)
+          test "$actual_assets" = "$expected_assets"
+          gh release verify "authority-v1-g${GENERATION}" >/dev/null
+          for asset in \
+            authority/release-authority-v1.json \
+            authority/release-authority-v1.json.cosign.bundle \
+            "$artifact_root/syntaur-ship-linux-x86_64" \
+            "$artifact_root/syntaur-verify-linux-x86_64"; do
+            gh release verify-asset "authority-v1-g${GENERATION}" "$asset" >/dev/null
+          done
+          test "$(gh api "/repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')" != "authority-v1-g${GENERATION}"
