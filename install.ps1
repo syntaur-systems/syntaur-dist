@@ -23,6 +23,7 @@ $InstallDir = "$env:LOCALAPPDATA\Syntaur"
 $DashboardUrl = "http://localhost:18789"
 $EulaVersion = "1.0"
 $EulaUrl = "https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/$EulaSourceCommit/EULA.md"
+$EulaHistoricalUrl = "https://github.com/syntaur-systems/syntaur-dist/blob/main/EULA.md"
 $EulaSha256 = "3e417ea33bc2d6296070222df816a6d145846743c1d98e7e4d20c7c2c8e9a720"
 $EulaRecordFormat = "1"
 $EulaRecordMaxBytes = 4096
@@ -104,8 +105,13 @@ function Test-SafeEulaEntry {
     }
 }
 
-function Test-CurrentEulaRecord {
-    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+function Test-EulaRecordForUrl {
+    param(
+        [Parameter(Mandatory = $true)][string]$LiteralPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedUrl,
+        [ref]$ValidatedValues
+    )
+    if ($null -ne $ValidatedValues) { $ValidatedValues.Value = $null }
     $Directory = Split-Path -Parent $LiteralPath
     if (-not (Test-SafeEulaEntry -LiteralPath $Directory -Container $true)) { return $false }
     if (-not (Test-SafeEulaEntry -LiteralPath $LiteralPath -Container $false)) { return $false }
@@ -128,22 +134,48 @@ function Test-CurrentEulaRecord {
         $Separator = $Lines[$Index].IndexOf("=")
         if ($Separator -le 0) { return $false }
         $Key = $Lines[$Index].Substring(0, $Separator)
-        if ($Key -ne $ExpectedKeys[$Index] -or $Values.ContainsKey($Key)) { return $false }
+        if ($Key -cne $ExpectedKeys[$Index] -or $Values.ContainsKey($Key)) { return $false }
         $Values[$Key] = $Lines[$Index].Substring($Separator + 1)
     }
-    if ($Values["record_format"] -ne $EulaRecordFormat) { return $false }
-    if ($Values["eula_sha256"] -ne $EulaSha256) { return $false }
-    if ($Values["eula_version"] -ne $EulaVersion) { return $false }
-    if ($Values["eula_url"] -ne $EulaUrl) { return $false }
-    if ($Values["accepted_at"] -notmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$') {
+    if ($Values["record_format"] -cne $EulaRecordFormat) { return $false }
+    if ($Values["eula_sha256"] -cne $EulaSha256) { return $false }
+    if ($Values["eula_version"] -cne $EulaVersion) { return $false }
+    if ($Values["eula_url"] -cne $ExpectedUrl) { return $false }
+    if ($Values["accepted_at"] -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$') {
         return $false
     }
-    if ($Values["method"] -notin @("flag", "prompt")) { return $false }
-    return $Values["installer_version"] -match '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+    if ($Values["method"] -cnotin @("flag", "prompt")) { return $false }
+    if ($Values["installer_version"] -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+        return $false
+    }
+    if ($null -ne $ValidatedValues) { $ValidatedValues.Value = $Values }
+    return $true
+}
+
+function Test-CurrentEulaRecord {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+    return Test-EulaRecordForUrl -LiteralPath $LiteralPath -ExpectedUrl $EulaUrl
 }
 
 function Save-EulaAcceptance {
-    param([Parameter(Mandatory = $true)][ValidateSet("flag", "prompt")][string]$Method)
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet("flag", "prompt")][string]$Method,
+        [string]$AcceptedAt = "",
+        [string]$InstallerVersion = ""
+    )
+    if (($AcceptedAt -eq "") -xor ($InstallerVersion -eq "")) {
+        throw "preserved EULA evidence must include both accepted_at and installer_version"
+    }
+    if ($AcceptedAt -eq "") {
+        $AcceptedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $InstallerVersion = $Version
+    }
+    if ($AcceptedAt -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$') {
+        throw "preserved EULA acceptance time is invalid"
+    }
+    if ($InstallerVersion -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+        throw "preserved EULA installer version is invalid"
+    }
     $SyntaurDirectory = Join-Path $env:USERPROFILE ".syntaur"
     $Record = Join-Path $SyntaurDirectory "eula-accepted"
     $Temporary = $null
@@ -171,9 +203,9 @@ function Save-EulaAcceptance {
             "eula_version=$EulaVersion"
             "eula_sha256=$EulaSha256"
             "eula_url=$EulaUrl"
-            "accepted_at=$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
+            "accepted_at=$AcceptedAt"
             "method=$Method"
-            "installer_version=$Version"
+            "installer_version=$InstallerVersion"
         )
         $Encoding = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
         [IO.File]::WriteAllLines($Temporary, $Lines, $Encoding)
@@ -216,10 +248,31 @@ function Save-EulaAcceptance {
     }
 }
 
+function Move-HistoricalEulaRecord {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+    $ExpectedPath = Join-Path (Join-Path $env:USERPROFILE ".syntaur") "eula-accepted"
+    if ($LiteralPath -ne $ExpectedPath) { return $false }
+    $ValidatedValues = $null
+    if (-not (Test-EulaRecordForUrl `
+        -LiteralPath $LiteralPath `
+        -ExpectedUrl $EulaHistoricalUrl `
+        -ValidatedValues ([ref]$ValidatedValues))) {
+        return $false
+    }
+    if (-not (Save-EulaAcceptance `
+        -Method $ValidatedValues["method"] `
+        -AcceptedAt $ValidatedValues["accepted_at"] `
+        -InstallerVersion $ValidatedValues["installer_version"])) {
+        return $false
+    }
+    return Test-CurrentEulaRecord -LiteralPath $LiteralPath
+}
+
 function Confirm-EulaAcceptance {
     param([Parameter(Mandatory = $true)][bool]$AcceptByFlag)
     $Record = Join-Path (Join-Path $env:USERPROFILE ".syntaur") "eula-accepted"
-    if (Test-CurrentEulaRecord -LiteralPath $Record) {
+    if ((Test-CurrentEulaRecord -LiteralPath $Record) -or
+        (Move-HistoricalEulaRecord -LiteralPath $Record)) {
         Write-Host "  EULA v$EulaVersion previously accepted; continuing."
         Write-Host ""
         return $true

@@ -42,6 +42,7 @@ AUTOSUDO="1"
 ACCEPT_EULA="0"
 EULA_VERSION="1.0"
 EULA_URL="https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/$EULA_SOURCE_COMMIT/EULA.md"
+EULA_HISTORICAL_URL="https://github.com/syntaur-systems/syntaur-dist/blob/main/EULA.md"
 EULA_SHA256="3e417ea33bc2d6296070222df816a6d145846743c1d98e7e4d20c7c2c8e9a720"
 EULA_RECORD_FORMAT="1"
 EULA_RECORD_MAX_BYTES="4096"
@@ -664,8 +665,9 @@ canonical_installer_version() {
   done
 }
 
-eula_record_is_current() {
+eula_record_matches_url() {
   EULA_RECORD_PATH="$1"
+  EULA_RECORD_EXPECTED_URL="$2"
   EULA_RECORD_DIR=${EULA_RECORD_PATH%/*}
   safe_eula_entry "$EULA_RECORD_DIR" directory || return 1
   safe_eula_entry "$EULA_RECORD_PATH" file || return 1
@@ -699,14 +701,30 @@ eula_record_is_current() {
   [ "$EULA_RECORD_SCHEMA" = "$EULA_RECORD_FORMAT" ] || return 1
   [ "$EULA_RECORD_SHA256" = "$EULA_SHA256" ] || return 1
   [ "$EULA_RECORD_VERSION" = "$EULA_VERSION" ] || return 1
-  [ "$EULA_RECORD_URL" = "$EULA_URL" ] || return 1
+  [ "$EULA_RECORD_URL" = "$EULA_RECORD_EXPECTED_URL" ] || return 1
   canonical_eula_timestamp "$EULA_RECORD_ACCEPTED_AT" || return 1
   case "$EULA_RECORD_METHOD" in flag|prompt) ;; *) return 1 ;; esac
   canonical_installer_version "$EULA_RECORD_INSTALLER_VERSION"
 }
 
+eula_record_is_current() {
+  eula_record_matches_url "$1" "$EULA_URL"
+}
+
 persist_eula_acceptance() {
   EULA_METHOD_TO_RECORD="$1"
+  EULA_ACCEPTED_AT_TO_RECORD=${2:-}
+  EULA_INSTALLER_VERSION_TO_RECORD=${3:-}
+  case "$EULA_METHOD_TO_RECORD" in flag|prompt) ;; *) return 1 ;; esac
+  if [ -n "$EULA_ACCEPTED_AT_TO_RECORD" ] || [ -n "$EULA_INSTALLER_VERSION_TO_RECORD" ]; then
+    [ -n "$EULA_ACCEPTED_AT_TO_RECORD" ] && [ -n "$EULA_INSTALLER_VERSION_TO_RECORD" ] || return 1
+    canonical_eula_timestamp "$EULA_ACCEPTED_AT_TO_RECORD" || return 1
+    canonical_installer_version "$EULA_INSTALLER_VERSION_TO_RECORD" || return 1
+  else
+    EULA_ACCEPTED_AT_TO_RECORD=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || return 1
+    EULA_INSTALLER_VERSION_TO_RECORD=$VERSION
+    canonical_installer_version "$EULA_INSTALLER_VERSION_TO_RECORD" || return 1
+  fi
   EULA_SYNTAUR_DIR="$HOME/.syntaur"
   EULA_ACCEPTANCE_RECORD="$EULA_SYNTAUR_DIR/eula-accepted"
   if [ -e "$EULA_SYNTAUR_DIR" ] || [ -L "$EULA_SYNTAUR_DIR" ]; then
@@ -731,18 +749,14 @@ persist_eula_acceptance() {
     rm -f "$EULA_RECORD_TEMP"
     return 1
   }
-  EULA_ACCEPTED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ') || {
-    rm -f "$EULA_RECORD_TEMP"
-    return 1
-  }
   if ! {
     printf 'record_format=%s\n' "$EULA_RECORD_FORMAT"
     printf 'eula_version=%s\n' "$EULA_VERSION"
     printf 'eula_sha256=%s\n' "$EULA_SHA256"
     printf 'eula_url=%s\n' "$EULA_URL"
-    printf 'accepted_at=%s\n' "$EULA_ACCEPTED_AT"
+    printf 'accepted_at=%s\n' "$EULA_ACCEPTED_AT_TO_RECORD"
     printf 'method=%s\n' "$EULA_METHOD_TO_RECORD"
-    printf 'installer_version=%s\n' "$VERSION"
+    printf 'installer_version=%s\n' "$EULA_INSTALLER_VERSION_TO_RECORD"
   } > "$EULA_RECORD_TEMP"; then
     rm -f "$EULA_RECORD_TEMP"
     return 1
@@ -754,9 +768,24 @@ persist_eula_acceptance() {
   safe_eula_entry "$EULA_ACCEPTANCE_RECORD" file
 }
 
+migrate_historical_eula_record() {
+  EULA_MIGRATION_RECORD="$1"
+  [ "$EULA_MIGRATION_RECORD" = "$HOME/.syntaur/eula-accepted" ] || return 1
+  eula_record_matches_url "$EULA_MIGRATION_RECORD" "$EULA_HISTORICAL_URL" || return 1
+  EULA_MIGRATION_ACCEPTED_AT=$EULA_RECORD_ACCEPTED_AT
+  EULA_MIGRATION_METHOD=$EULA_RECORD_METHOD
+  EULA_MIGRATION_INSTALLER_VERSION=$EULA_RECORD_INSTALLER_VERSION
+  persist_eula_acceptance \
+    "$EULA_MIGRATION_METHOD" \
+    "$EULA_MIGRATION_ACCEPTED_AT" \
+    "$EULA_MIGRATION_INSTALLER_VERSION" || return 1
+  eula_record_is_current "$EULA_MIGRATION_RECORD"
+}
+
 ensure_eula_acceptance() {
   EULA_ACCEPTANCE_RECORD="$HOME/.syntaur/eula-accepted"
-  if eula_record_is_current "$EULA_ACCEPTANCE_RECORD"; then
+  if eula_record_is_current "$EULA_ACCEPTANCE_RECORD" || \
+      migrate_historical_eula_record "$EULA_ACCEPTANCE_RECORD"; then
     echo "  EULA v$EULA_VERSION previously accepted; continuing."
     echo ""
     return 0
