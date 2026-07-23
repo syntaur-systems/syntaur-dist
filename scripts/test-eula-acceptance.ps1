@@ -160,11 +160,15 @@ try {
         @{ Name = "raw-main"; Index = 3; Value = "eula_url=https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/main/EULA.md" },
         @{ Name = "url-case"; Index = 3; Value = "eula_url=https://github.com/syntaur-systems/syntaur-dist/blob/main/eula.md" },
         @{ Name = "url-query"; Index = 3; Value = "eula_url=https://github.com/syntaur-systems/syntaur-dist/blob/main/EULA.md?download=1" },
+        @{ Name = "key-case"; Index = 1; Value = "Eula_version=1.0" },
         @{ Name = "schema"; Index = 0; Value = "record_format=2" },
         @{ Name = "version"; Index = 1; Value = "eula_version=2.0" },
         @{ Name = "hash"; Index = 2; Value = ("eula_sha256=" + ("a" * 64)) },
+        @{ Name = "hash-case"; Index = 2; Value = ("eula_sha256=" + $ExpectedHash.ToUpperInvariant()) },
         @{ Name = "time"; Index = 4; Value = "accepted_at=not-a-time" },
+        @{ Name = "time-case"; Index = 4; Value = "accepted_at=2026-07-17t13:58:33z" },
         @{ Name = "method"; Index = 5; Value = "method=automatic" },
+        @{ Name = "method-case"; Index = 5; Value = "method=Flag" },
         @{ Name = "installer"; Index = 6; Value = "installer_version=01.7.114" }
     )
     foreach ($Case in $InvalidHistoricalCases) {

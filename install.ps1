@@ -134,17 +134,17 @@ function Test-EulaRecordForUrl {
         $Separator = $Lines[$Index].IndexOf("=")
         if ($Separator -le 0) { return $false }
         $Key = $Lines[$Index].Substring(0, $Separator)
-        if ($Key -ne $ExpectedKeys[$Index] -or $Values.ContainsKey($Key)) { return $false }
+        if ($Key -cne $ExpectedKeys[$Index] -or $Values.ContainsKey($Key)) { return $false }
         $Values[$Key] = $Lines[$Index].Substring($Separator + 1)
     }
-    if ($Values["record_format"] -ne $EulaRecordFormat) { return $false }
-    if ($Values["eula_sha256"] -ne $EulaSha256) { return $false }
-    if ($Values["eula_version"] -ne $EulaVersion) { return $false }
-    if ($Values["eula_url"] -ne $ExpectedUrl) { return $false }
-    if ($Values["accepted_at"] -notmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$') {
+    if ($Values["record_format"] -cne $EulaRecordFormat) { return $false }
+    if ($Values["eula_sha256"] -cne $EulaSha256) { return $false }
+    if ($Values["eula_version"] -cne $EulaVersion) { return $false }
+    if ($Values["eula_url"] -cne $ExpectedUrl) { return $false }
+    if ($Values["accepted_at"] -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$') {
         return $false
     }
-    if ($Values["method"] -notin @("flag", "prompt")) { return $false }
+    if ($Values["method"] -cnotin @("flag", "prompt")) { return $false }
     if ($Values["installer_version"] -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
         return $false
     }
@@ -170,7 +170,7 @@ function Save-EulaAcceptance {
         $AcceptedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
         $InstallerVersion = $Version
     }
-    if ($AcceptedAt -notmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$') {
+    if ($AcceptedAt -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$') {
         throw "preserved EULA acceptance time is invalid"
     }
     if ($InstallerVersion -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
