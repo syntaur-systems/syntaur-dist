@@ -2,33 +2,7 @@ name: Workflow lint
 
 on:
   push:
-    paths:
-      - '.github/workflows/**'
-      - '.github/actionlint.yaml'
-      - '.gitattributes'
-      - 'EULA.md'
-      - 'install.sh'
-      - 'install.ps1'
-      - 'scripts/validate-release-workflow.sh'
-      - 'scripts/test-release-workflow-recovery.sh'
-      - 'scripts/test-eula-acceptance.sh'
-      - 'scripts/test-eula-acceptance.ps1'
-      - 'scripts/test-process-inspector-install.sh'
-      - 'scripts/fixtures/process_inspector_protocol.c'
   pull_request:
-    paths:
-      - '.github/workflows/**'
-      - '.github/actionlint.yaml'
-      - '.gitattributes'
-      - 'EULA.md'
-      - 'install.sh'
-      - 'install.ps1'
-      - 'scripts/validate-release-workflow.sh'
-      - 'scripts/test-release-workflow-recovery.sh'
-      - 'scripts/test-eula-acceptance.sh'
-      - 'scripts/test-eula-acceptance.ps1'
-      - 'scripts/test-process-inspector-install.sh'
-      - 'scripts/fixtures/process_inspector_protocol.c'
 
 permissions:
   contents: read
@@ -52,9 +26,17 @@ jobs:
           set -euo pipefail
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
           go install github.com/mikefarah/yq/v4@v4.47.2
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
 
       - name: Validate release workflow and embedded Bash
         run: bash scripts/validate-release-workflow.sh
+
+      - name: Verify strict release-authority schema transitions
+        run: bash scripts/test-release-authority-workflow.sh
+
+      - name: Verify V2 genesis bootstrap behavior
+        run: bash scripts/test-release-authority-bootstrap.sh
 
       - name: Verify POSIX EULA acceptance reuse
         run: bash scripts/test-eula-acceptance.sh
