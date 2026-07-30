@@ -1275,6 +1275,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      attestations: read
     steps:
       - name: Checkout exact public verification helpers
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -1282,22 +1283,11 @@ jobs:
           persist-credentials: false
           path: public-workflow
 
-      - name: Recheck policy before publisher credentials exist
+      - name: Recheck policy before publication
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.SYNTAUR_RELEASE_AUTHORITY_ADMIN_READ_TOKEN }}
         run: bash public-workflow/scripts/verify-release-authority-policy.sh
-
-      - name: Mint the protected dedicated publisher token
-        id: publisher-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ secrets.SYNTAUR_RELEASE_AUTHORITY_PUBLISHER_CLIENT_ID }}
-          private-key: ${{ secrets.SYNTAUR_RELEASE_AUTHORITY_PUBLISHER_PRIVATE_KEY }}
-          owner: syntaur-systems
-          repositories: syntaur-dist
-          permission-contents: write
-          permission-attestations: read
 
       - name: Download signed authority
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
@@ -1374,14 +1364,12 @@ jobs:
       - name: Recover draft and publish immutable exact successor
         shell: bash
         env:
-          GH_TOKEN: ${{ steps.publisher-token.outputs.token }}
-          PUBLISHER_APP_SLUG: ${{ steps.publisher-token.outputs.app-slug }}
+          GH_TOKEN: ${{ secrets.SYNTAUR_RELEASE_AUTHORITY_PUBLISH_TOKEN }}
           GENERATION: ${{ needs.predecessor.outputs.generation }}
           PREVIOUS_GENERATION: ${{ needs.predecessor.outputs.previous_generation }}
           AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).authority_commit }}
         run: |
           set -euo pipefail
-          test "$PUBLISHER_APP_SLUG" = syntaur-release-authority-publisher
           api_optional() {
             local endpoint=$1
             local output=$2
@@ -1529,7 +1517,7 @@ jobs:
               -f tag_name="$tag" \
               -f target_commitish="$GITHUB_SHA" \
               -f name="Syntaur release authority generation ${GENERATION}" \
-              -f body="Human-approved frozen N-1 authority source ${AUTHORITY_COMMIT}. This trust artifact is independent of product releases and is immutable." \
+              -f body="Evidence-approved frozen N-1 authority source ${AUTHORITY_COMMIT}. This trust artifact is independent of product releases and is immutable." \
               -F draft=true \
               -F prerelease=false \
               -f make_latest=false)

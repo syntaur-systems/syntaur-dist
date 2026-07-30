@@ -258,35 +258,33 @@ if [ -f "$authority_workflow" ]; then
   }
   [ "$(grep -o 'secrets.SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY' \
     "$authority_workflow" | wc -l)" -eq 1 ]
-  publisher_secret_jobs=$(jq -r '
+  if grep -q 'SYNTAUR_RELEASE_AUTHORITY_PUBLISHER_' "$authority_workflow"; then
+    echo "publisher App credentials are forbidden" >&2
+    exit 1
+  fi
+  publish_token_jobs=$(jq -r '
     to_entries[] |
     select(
       .value |
       tostring |
-      contains("SYNTAUR_RELEASE_AUTHORITY_PUBLISHER_")
+      contains("secrets.SYNTAUR_RELEASE_AUTHORITY_PUBLISH_TOKEN")
     ) |
     .key
   ' <<<"$jobs_json")
-  [ "$publisher_secret_jobs" = publish ] || {
-    echo "publisher credential escaped its protected job: $publisher_secret_jobs" >&2
+  [ "$publish_token_jobs" = publish ] || {
+    echo "publication token escaped its isolated job: $publish_token_jobs" >&2
     exit 1
   }
-  [ "$(grep -o 'secrets.SYNTAUR_RELEASE_AUTHORITY_PUBLISHER_CLIENT_ID' \
-    "$authority_workflow" | wc -l)" -eq 1 ]
-  [ "$(grep -o 'secrets.SYNTAUR_RELEASE_AUTHORITY_PUBLISHER_PRIVATE_KEY' \
+  [ "$(grep -o 'secrets.SYNTAUR_RELEASE_AUTHORITY_PUBLISH_TOKEN' \
     "$authority_workflow" | wc -l)" -eq 1 ]
   [ "$(yq -r '.jobs.predecessor.permissions.attestations' \
     "$authority_workflow")" = read ] || {
     echo "predecessor lacks read access to release attestations" >&2
     exit 1
   }
-  publisher_attestations=$(yq -r '
-    .jobs.publish.steps[]? |
-    select(.uses == "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1") |
-    .with."permission-attestations"
-  ' "$authority_workflow")
-  [ "$publisher_attestations" = read ] || {
-    echo "publisher App token lacks read access to release attestations" >&2
+  [ "$(yq -r '.jobs.publish.permissions.attestations' \
+    "$authority_workflow")" = read ] || {
+    echo "publisher lacks read access to release attestations" >&2
     exit 1
   }
   [ "$(yq -r '.jobs.repository_policy.environment' "$authority_workflow")" \

@@ -5,31 +5,26 @@ Production publication is authorized by a frozen, independently approved
 public immutable releases in `syntaur-systems/syntaur-dist`; product source
 remains private.
 
-The only genesis is an offline-human-approved V2 generation 1 while the
+The only genesis is an evidence-approved V2 generation 1 while the
 authority release namespace is empty. Every later checkpoint is the exact
 N+1 successor of the newest independently verified immutable checkpoint.
 Genesis and ordinary product deployment are separate acts: generation 1 may
 authorize only a distinct later source commit.
 
-## Human prerequisites
+## Automated prerequisites
 
 Configure every item below before adding source or signing secrets or
 dispatching the workflow:
 
-1. Create the visible (not secret)
-   `syntaur-systems/release-authority-reviewers` team with at least two
-   distinct people and give it explicit write access to `syntaur-dist`.
-   `.github/CODEOWNERS` must contain exactly:
+1. Bind `.github/CODEOWNERS` to the repository owner with exactly:
 
    ```text
-   * @syntaur-systems/release-authority-reviewers
+   * @buddyholly007
    ```
 
 2. Protect `main`, including administrators. Require an up-to-date branch,
-   code-owner review, stale-review dismissal, approval of the last push,
-   conversation resolution, linear history, no pull-request bypass actors, no
-   force pushes or deletion, and exactly these GitHub-Actions-bound required
-   checks:
+   conversation resolution, no force pushes or deletion, and exactly these
+   GitHub-Actions-bound required checks:
 
    ```text
    release-workflow
@@ -39,15 +34,12 @@ dispatching the workflow:
    The lint workflow runs on every push and pull request, so either check can
    never be silently skipped by a path filter.
 
-3. Create a dedicated GitHub App named
-   `syntaur-release-authority-publisher`, install it only on `syntaur-dist`,
-   and grant only Metadata read, Attestations read, and Contents write. Create
-   one active tag ruleset named `release-authority-tags`, targeting only
+3. Create one active tag ruleset named `release-authority-tags`, targeting only
    `refs/tags/authority-v1-g*`. It must enforce creation, update, deletion, and
-   non-fast-forward rules. Its only bypass actor is that dedicated App, with
-   `always` mode. The general GitHub Actions App must not bypass it. The
-   namespace retains `authority-v1-gN` for historical continuity even though
-   new manifests are V2.
+   non-fast-forward rules. Its only bypass actor is the repository Admin role,
+   with `always` mode. The GitHub Actions App must not bypass it. The namespace
+   retains `authority-v1-gN` for historical continuity even though new
+   manifests are V2.
 
 4. Enable immutable releases.
 
@@ -56,9 +48,10 @@ dispatching the workflow:
    - `release-authority-source` gates private-source checkout and decryption;
    - `release-authority` gates approval of the exact compared candidate.
 
-   Both environments must disable administrator bypass, prevent self-review,
-   require the exact reviewer team, use custom deployment branches, and allow
-   only the branch `main`.
+   Both environments must disable administrator bypass, use custom deployment
+   branches, and allow only the branch `main`. They intentionally have no
+   person-dependent reviewer gate; the workflow's exact automated evidence
+   checks are the approval gate for a solo-owned repository.
 
 6. Put these secrets only in `release-authority-source`:
 
@@ -70,16 +63,15 @@ dispatching the workflow:
      outside decrypting this workflow's short-lived source archive.
 
    Put a second copy of `SYNTAUR_RELEASE_AUTHORITY_ADMIN_READ_TOKEN` in
-   `release-authority`, plus
-   `SYNTAUR_RELEASE_AUTHORITY_PUBLISHER_CLIENT_ID` and
-   `SYNTAUR_RELEASE_AUTHORITY_PUBLISHER_PRIVATE_KEY` for the dedicated App.
-   The App credentials must exist in no other environment or repository.
-   Do not store any of these as unprotected repository secrets.
+   `release-authority`, together with
+   `SYNTAUR_RELEASE_AUTHORITY_PUBLISH_TOKEN`, scoped to `syntaur-dist` with
+   Contents write and Attestations read. The publication token is used only by
+   the isolated `publish` job. Do not store any of these as unprotected
+   repository secrets.
 
-`verify-release-authority-policy.sh` checks the branch, reviewer team, both
-environments, immutable-release setting, and tag ruleset before source access
-and again after candidate approval. Missing or ambiguous API state fails
-closed.
+`verify-release-authority-policy.sh` checks the branch, both environments,
+immutable-release setting, and tag ruleset before source access and again
+after evidence approval. Missing or ambiguous API state fails closed.
 
 The age recipient is public and pinned in the workflow. The identity protects
 private-source confidentiality, not GitHub, signing, publication, or
@@ -124,16 +116,14 @@ signing, and publication:
    binary, baseline, browser, schema, toolchain, approval-record, and canonical
    manifest digest.
 6. `approval_policy` is protected by the separate `release-authority`
-   environment and rechecks live policy after a distinct reviewer approves the
-   exact comparison.
+   environment and rechecks live policy after the exact comparison succeeds.
 7. `sign` has OIDC but no contents-write permission. It reconstructs the
    reviewed manifest and never executes the candidate.
 8. `publish` has no OIDC and its ordinary `GITHUB_TOKEN` is read-only. Behind
-   `release-authority`, it rechecks policy, mints a one-job installation token
-   from the dedicated publisher App, re-verifies the signed package, reconciles
-   only an exact draft, rechecks the tag and draft immediately before
-   publication, publishes, and proves immutability. The token is revoked by
-   the action at job end.
+   `release-authority`, it is the only job that receives the environment-held
+   publication token, rechecks policy, re-verifies the signed package,
+   reconciles only an exact draft, rechecks the tag and draft immediately
+   before publication, publishes, and proves immutability.
 
 No job has both OIDC and publication authority. No job that holds the private
 deploy key executes candidate code.
@@ -152,10 +142,10 @@ namespace is empty. A successor must name the newest immutable predecessor and
 its exact manifest digest. `GITHUB_RUN_ID` is used only to make artifact names
 unique; it is never a generation.
 
-No tag or release is created before reproducible builds, comparison, protected
-approval, reconstruction, signing, and verification pass. The dedicated
-publisher then creates the exact commit tag before staging the release as a
-draft. A retry can reconcile only the exact tag, workflow commit, canonical
+No tag or release is created before reproducible builds, comparison, automated
+approval, reconstruction, signing, and verification pass. The isolated
+publisher job then creates the exact commit tag before staging the release as
+a draft. A retry can reconcile only the exact tag, workflow commit, canonical
 manifest, signature, five assets, and approval record. Each consumer selects
 the newest immutable artifact for its producer and builder within the same
 workflow run, so failed-job and full reruns do not confuse run attempts.
@@ -239,7 +229,7 @@ Generation 1 must be an authority-only source commit containing the reviewed
 shipper, verifier, provisioner, crash-safe promotion transaction, and release
 contract. It must not be the product candidate it later authorizes.
 
-1. Complete all human prerequisites above and merge the reviewed public
+1. Complete all automated prerequisites above and merge the reviewed public
    workflow through protected `main`.
 2. Independently reproduce the authority-only source tree, shipper, verifier,
    provisioner, the five-member Genesis contract, browser, toolchain, and the
@@ -247,8 +237,8 @@ contract. It must not be the product candidate it later authorizes.
    source is an exact one-parent descendant of `b003360f63707d92fd0df1fd12384282f1c3004f`.
 3. Render and validate an approval record with previous generation `0` and a
    64-zero predecessor digest. Dispatch **Freeze or promote release authority**
-   from `main`, inspect the complete comparison, and approve both protected
-   environment stages.
+   from `main`; the complete comparison and both protected environment stages
+   must pass.
 4. Independently verify the immutable generation-1 release. Download exactly
    its five assets into a new canonical operator-owned directory whose parents
    are not group/world writable. Set the directory to `0500`, the manifest and
@@ -305,7 +295,7 @@ generation, deployment stamp, Frame payload/proof, release receipt, rollback,
 or deployment authority. Retain the evidence outside the host and record its
 digest and Engine/RustSec commits in the external ceremony record.
 
-Only after that human review, start a separate installation shell and populate
+Only after that separate evidence review, start a separate installation shell and populate
 `REVIEWED_GENESIS_EVIDENCE_SHA256`, `REVIEWED_GENESIS_ENGINE_COMMIT`, and
 `REVIEWED_GENESIS_RUSTSEC_DB_COMMIT` from the independently retained record.
 Do not derive those variables with command substitution from the live evidence

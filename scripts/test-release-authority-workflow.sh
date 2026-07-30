@@ -482,7 +482,10 @@ grep -Fq 'b003360f63707d92fd0df1fd12384282f1c3004f' "$workflow"
 grep -Fq '1bf740acd5a7223e98370f668148f01ebfb6eff8' "$workflow"
 grep -Fq 'draft' "$workflow"
 grep -Fq 'snapshot_authority_namespace' "$workflow"
-grep -Fq 'permission-attestations: read' "$workflow"
+grep -Fq 'GH_TOKEN: ${{ secrets.SYNTAUR_RELEASE_AUTHORITY_PUBLISH_TOKEN }}' "$workflow"
+if grep -Fq 'SYNTAUR_RELEASE_AUTHORITY_PUBLISHER_' "$workflow"; then
+    fail 'authority workflow contains a publisher App credential'
+fi
 grep -Fq '"/repos/${GITHUB_REPOSITORY}/releases?per_page=100"' "$workflow"
 grep -Fq 'release=$(gh api --method POST' "$workflow"
 grep -Fq 'generation=$((EXPECTED_PREVIOUS_GENERATION + 1))' "$workflow"

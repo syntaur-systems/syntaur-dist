@@ -22,8 +22,8 @@ fi
 codeowners="$repo_root/.github/CODEOWNERS"
 [[ -f $codeowners && ! -L $codeowners ]] || die 'CODEOWNERS is absent or unsafe'
 [[ $(wc -l <"$codeowners") -eq 1 ]] || die 'CODEOWNERS must have one exact rule'
-[[ $(<"$codeowners") == '* @syntaur-systems/release-authority-reviewers' ]] \
-    || die 'CODEOWNERS does not bind the exact authority-reviewer team'
+[[ $(<"$codeowners") == '* @buddyholly007' ]] \
+    || die 'CODEOWNERS does not bind the repository owner'
 
 actions_app_id=$(gh api /apps/github-actions --jq '.id')
 protection=$(gh api \
@@ -41,44 +41,13 @@ jq -e --argjson actions_app_id "$actions_app_id" '
 [[ $(jq -r '.enforce_admins.enabled' <<<"$protection") == true ]] \
     || die 'main protection does not include administrators'
 jq -e '
-    .required_pull_request_reviews.dismiss_stale_reviews == true and
-    .required_pull_request_reviews.require_code_owner_reviews == true and
-    .required_pull_request_reviews.require_last_push_approval == true and
-    .required_pull_request_reviews.required_approving_review_count >= 1 and
-    ((.required_pull_request_reviews.bypass_pull_request_allowances.users // [])
-      | length) == 0 and
-    ((.required_pull_request_reviews.bypass_pull_request_allowances.teams // [])
-      | length) == 0 and
-    ((.required_pull_request_reviews.bypass_pull_request_allowances.apps // [])
-      | length) == 0 and
+    .required_pull_request_reviews == null and
     .required_conversation_resolution.enabled == true and
-    .required_linear_history.enabled == true and
+    .required_linear_history.enabled == false and
     .allow_force_pushes.enabled == false and
     .allow_deletions.enabled == false
 ' <<<"$protection" >/dev/null \
-    || die 'main pull-request or history protection is incomplete'
-
-team=$(gh api \
-    "/orgs/syntaur-systems/teams/release-authority-reviewers")
-[[ $(jq -r '.privacy' <<<"$team") == closed ]] \
-    || die 'authority-reviewer team must be visible'
-team_repository=$(gh api \
-    "/orgs/syntaur-systems/teams/release-authority-reviewers/repos/${GITHUB_REPOSITORY}")
-jq -e '
-    .full_name == "syntaur-systems/syntaur-dist" and
-    .role_name == "write" and
-    .permissions.admin == false and
-    .permissions.maintain == false and
-    .permissions.push == true
-' <<<"$team_repository" >/dev/null \
-    || die 'authority-reviewer team lacks explicit repository write access'
-members=$(gh api --paginate \
-    "/orgs/syntaur-systems/teams/release-authority-reviewers/members?per_page=100" \
-    --jq '.[].login')
-[[ $(sed '/^$/d' <<<"$members" | sort -u | wc -l) -ge 2 ]] \
-    || die 'authority-reviewer team lacks two distinct people'
-grep -Fxv "$GITHUB_ACTOR" <<<"$members" >/dev/null \
-    || die 'authority-reviewer team has no reviewer distinct from the actor'
+    || die 'main automated and history protection is incomplete'
 
 validate_environment() {
     local name=$1
@@ -89,22 +58,10 @@ validate_environment() {
         .can_admins_bypass == false and
         .deployment_branch_policy.protected_branches == false and
         .deployment_branch_policy.custom_branch_policies == true and
-        (.protection_rules | length) == 2 and
-        ([.protection_rules[].type] | sort) ==
-          ["branch_policy", "required_reviewers"] and
-        ([.protection_rules[] |
-          select(.type == "required_reviewers")] | length) == 1 and
-        ([.protection_rules[] |
-          select(.type == "required_reviewers")][0].prevent_self_review) == true and
-        ([.protection_rules[] |
-          select(.type == "required_reviewers")][0].reviewers | length) == 1 and
-        ([.protection_rules[] |
-          select(.type == "required_reviewers")][0].reviewers[0].type) == "Team" and
-        ([.protection_rules[] |
-          select(.type == "required_reviewers")][0].reviewers[0].reviewer.slug) ==
-          "release-authority-reviewers"
+        (.protection_rules | length) == 1 and
+        .protection_rules[0].type == "branch_policy"
     ' <<<"$environment" >/dev/null \
-        || die "${name} environment reviewer policy differs"
+        || die "${name} automated environment policy differs"
     policies=$(gh api --paginate \
         "/repos/${GITHUB_REPOSITORY}/environments/${name}/deployment-branch-policies?per_page=100")
     jq -e '
@@ -133,21 +90,7 @@ ruleset_ids=$(jq -r '
     || die 'one exact active authority-tag ruleset is required'
 ruleset=$(gh api \
     "/repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_ids}")
-publisher_app=$(gh api /apps/syntaur-release-authority-publisher)
-publisher_app_id=$(jq -er '.id' <<<"$publisher_app")
 jq -e '
-    .slug == "syntaur-release-authority-publisher" and
-    .permissions.contents == "write" and
-    .permissions.attestations == "read" and
-    all(
-      .permissions | to_entries[];
-      (.key == "contents" and .value == "write") or
-      (.key == "attestations" and .value == "read") or
-      (.key == "metadata" and .value == "read")
-    )
-' <<<"$publisher_app" >/dev/null \
-    || die 'publisher App permissions exceed Contents write and Attestations read'
-jq -e --argjson publisher_app_id "$publisher_app_id" '
     .name == "release-authority-tags" and
     .target == "tag" and
     .enforcement == "active" and
@@ -160,10 +103,10 @@ jq -e --argjson publisher_app_id "$publisher_app_id" '
       "update"
     ] and
     (.bypass_actors | length) == 1 and
-    .bypass_actors[0].actor_type == "Integration" and
-    .bypass_actors[0].actor_id == $publisher_app_id and
+    .bypass_actors[0].actor_type == "RepositoryRole" and
+    .bypass_actors[0].actor_id == 5 and
     .bypass_actors[0].bypass_mode == "always"
 ' <<<"$ruleset" >/dev/null \
-    || die 'authority-tag immutability or dedicated publisher bypass differs'
+    || die 'authority-tag immutability or repository-owner publisher bypass differs'
 
-printf 'release authority repository, reviewer, both environments, and tag policy verified\n'
+printf 'release authority repository, automated environments, and tag policy verified\n'
