@@ -157,6 +157,8 @@ if command -v docker >/dev/null \
         --tag "$image" \
         "$context"
     docker run --rm --hostname claudevm \
+        --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
+        --env BOOTSTRAP_FIXTURE_REQUIRE_RUN_NOEXEC=1 \
         --env "EXPECTED_MANIFEST_SHA256=$manifest_sha256" \
         --env "EXPECTED_WORKFLOW_COMMIT=$GITHUB_SHA" \
         --env "EXPECTED_AUTHORITY_VERSION=$AUTHORITY_VERSION" \

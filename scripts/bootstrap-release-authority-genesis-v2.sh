@@ -301,8 +301,12 @@ validate_material() {
         || die 'manifest verifier digest differs'
     [[ $(jq -er '.provisioner_sha256' "$manifest") == "$expected_provisioner_sha256" ]] \
         || die 'manifest provisioner digest differs'
-    "$helper" validate "$manifest" 2 1 "$expected_workflow_commit" "$material"
-    "$helper" assert-genesis "$manifest"
+    # The root-owned snapshot lives on /run, which is deliberately mounted
+    # noexec on the production build host. Execute the reviewed helper through
+    # the pinned system Bash so noexec remains enforced for arbitrary files.
+    /usr/bin/bash "$helper" \
+        validate "$manifest" 2 1 "$expected_workflow_commit" "$material"
+    /usr/bin/bash "$helper" assert-genesis "$manifest"
     "$COSIGN" verify-blob \
         --bundle "$bundle" \
         --certificate-identity "$COSIGN_IDENTITY" \
