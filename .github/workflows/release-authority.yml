@@ -601,8 +601,15 @@ jobs:
             -mindepth 1 -maxdepth 1 -type d \
             -name "encrypted-authority-source-run-${GITHUB_RUN_ID}-attempt-*" \
             -printf '%f\n' | sort -V | sed -n '$p')
-          test -n "$selected"
-          mv "encrypted-source-artifacts/$selected" encrypted-source
+          if [[ -n $selected ]]; then
+            test -z "$(find encrypted-source-artifacts \
+              -mindepth 1 -maxdepth 1 ! -type d -print -quit)"
+            mv "encrypted-source-artifacts/$selected" encrypted-source
+          else
+            test -z "$(find encrypted-source-artifacts \
+              -mindepth 1 -maxdepth 1 -type d -print -quit)"
+            mv encrypted-source-artifacts encrypted-source
+          fi
 
       - name: Decrypt with a zero-authority step-scoped identity
         shell: bash
@@ -1156,8 +1163,15 @@ jobs:
             -mindepth 1 -maxdepth 1 -type d \
             -name "reviewed-authority-candidate-run-${GITHUB_RUN_ID}-attempt-*" \
             -printf '%f\n' | sort -V | sed -n '$p')
-          test -n "$selected"
-          mv "reviewed-candidate-artifacts/$selected" candidate
+          if [[ -n $selected ]]; then
+            test -z "$(find reviewed-candidate-artifacts \
+              -mindepth 1 -maxdepth 1 ! -type d -print -quit)"
+            mv "reviewed-candidate-artifacts/$selected" candidate
+          else
+            test -z "$(find reviewed-candidate-artifacts \
+              -mindepth 1 -maxdepth 1 -type d -print -quit)"
+            mv reviewed-candidate-artifacts candidate
+          fi
 
       - name: Reconstruct and validate exact approved manifest without execution
         shell: bash
@@ -1305,8 +1319,15 @@ jobs:
             -mindepth 1 -maxdepth 1 -type d \
             -name "signed-release-authority-run-${GITHUB_RUN_ID}-attempt-*" \
             -printf '%f\n' | sort -V | sed -n '$p')
-          test -n "$selected"
-          mv "signed-authority-artifacts/$selected" signed-authority
+          if [[ -n $selected ]]; then
+            test -z "$(find signed-authority-artifacts \
+              -mindepth 1 -maxdepth 1 ! -type d -print -quit)"
+            mv "signed-authority-artifacts/$selected" signed-authority
+          else
+            test -z "$(find signed-authority-artifacts \
+              -mindepth 1 -maxdepth 1 -type d -print -quit)"
+            mv signed-authority-artifacts signed-authority
+          fi
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
