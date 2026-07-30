@@ -617,19 +617,44 @@ assert_no_bootstrap_transients() {
         /etc/syntaur/.release-authority.recovery-v1-g1-g2-g3 \
         /usr/local/bin/.syntaur-ship.recovery-v1-g1-g2-g3 \
         /opt/.syntaur-build-authority-provision.recovery-v1-g2 \
-        /opt/.syntaur-genesis-validator.recovery-v1-g2; do
+        /opt/.syntaur-genesis-validator.recovery-v1-g2 \
+        /run/syntaur-release-authority-g1-g2-g3-g4-recovery.snapshot \
+        /etc/syntaur/.release-authority.recovery-v2-g1-g2-g3-g4 \
+        /usr/local/bin/.syntaur-ship.recovery-v2-g1-g2-g3-g4 \
+        /opt/.syntaur-build-authority-provision.recovery-v2-g4 \
+        /opt/.syntaur-genesis-validator.recovery-v2-g4; do
         [[ ! -e "$transient" && ! -L "$transient" ]]
     done
 }
 
 run_recovery_fixture() {
+    local scenario=${BOOTSTRAP_FIXTURE_SCENARIO:-recovery}
     local recovery="$bootstrap_root/bootstrap-release-authority-g1-g2-g3-recovery-v1.sh"
     local g2_dir=${BOOTSTRAP_FIXTURE_G2_DIR:-/fixture-g2}
     local g3_dir=${BOOTSTRAP_FIXTURE_G3_DIR:-/fixture-g3}
+    local g4_dir=${BOOTSTRAP_FIXTURE_G4_DIR:-/fixture-g4}
     local predecessor=${BOOTSTRAP_FIXTURE_RECOVERY_PREDECESSOR:-/recovery-predecessor/syntaur-ship}
-    local g2_evidence invalid_evidence evidence_digest invalid_digest
-    local g2_catalog hidden_catalog current_sha marker
+    local stage_action=stage-g2-build-authority
+    local genesis_label=G2
+    local genesis_slug=g2
+    local genesis_dir=$g2_dir
+    local genesis_authority_commit=$RECOVERY_G2_AUTHORITY_COMMIT
+    local genesis_authority_git_tree=$RECOVERY_G2_AUTHORITY_GIT_TREE
+    local genesis_manifest_sha256=$RECOVERY_G2_MANIFEST_SHA256
+    local genesis_provisioner_sha256=$RECOVERY_G2_PROVISIONER_SHA256
+    local genesis_shipper_sha256=$RECOVERY_G2_SHIPPER_SHA256
+    local genesis_source_date_epoch=$RECOVERY_G2_SOURCE_DATE_EPOCH
+    local active_generation=3
+    local active_dir=$g3_dir
+    local active_provisioner_sha256=$RECOVERY_G3_PROVISIONER_SHA256
+    local active_shipper_sha256=$RECOVERY_G3_SHIPPER_SHA256
+    local predecessor_material=$source_dir
+    local authority_parent_commit=
+    local authority_parent_tree=
+    local genesis_evidence invalid_evidence evidence_digest invalid_digest
+    local genesis_catalog hidden_catalog current_sha marker
     local name generation material workflow expected actual
+    local invalid_case invalid_filter
     local -a recovery_args install_args
 
     recovery_args=(
@@ -637,6 +662,27 @@ run_recovery_fixture() {
         --g2-dir "$g2_dir"
         --g3-dir "$g3_dir"
     )
+    if [[ $scenario == recovery-g4 ]]; then
+        recovery="$bootstrap_root/bootstrap-release-authority-g1-g2-g3-g4-recovery-v2.sh"
+        stage_action=stage-g4-build-authority
+        genesis_label=G4
+        genesis_slug=g4
+        genesis_dir=$g4_dir
+        genesis_authority_commit=$RECOVERY_G4_AUTHORITY_COMMIT
+        genesis_authority_git_tree=$RECOVERY_G4_AUTHORITY_GIT_TREE
+        genesis_manifest_sha256=$RECOVERY_G4_MANIFEST_SHA256
+        genesis_provisioner_sha256=$RECOVERY_G4_PROVISIONER_SHA256
+        genesis_shipper_sha256=$RECOVERY_G4_SHIPPER_SHA256
+        genesis_source_date_epoch=$RECOVERY_G4_SOURCE_DATE_EPOCH
+        active_generation=4
+        active_dir=$g4_dir
+        active_provisioner_sha256=$RECOVERY_G4_PROVISIONER_SHA256
+        active_shipper_sha256=$RECOVERY_G4_SHIPPER_SHA256
+        predecessor_material=$g2_dir
+        authority_parent_commit=$RECOVERY_G3_AUTHORITY_COMMIT
+        authority_parent_tree=$RECOVERY_G3_AUTHORITY_GIT_TREE
+        recovery_args+=(--g4-dir "$g4_dir")
+    fi
     if [[ $operator_uid == 0 && $operator_gid == 0 ]]; then
         "$recovery" verify "${recovery_args[@]}"
     else
@@ -644,12 +690,14 @@ run_recovery_fixture() {
             "$recovery" verify "${recovery_args[@]}"
     fi
 
-    local tampered=/home/sean/tampered-g3
+    local tampered="/home/sean/tampered-g$active_generation"
+    local -a tampered_args=("${recovery_args[@]}")
+    tampered_args[(active_generation * 2) - 1]=$tampered
     install -d -o "$operator_uid" -g "$operator_gid" -m 0700 "$tampered"
-    cp -a "$g3_dir/." "$tampered/"
+    cp -a "$active_dir/." "$tampered/"
     chown -R "$operator_uid:$operator_gid" "$tampered"
     chmod 0600 "$tampered/syntaur-ship-linux-x86_64"
-    printf 'tampered generation 3\n' \
+    printf 'tampered generation %s\n' "$active_generation" \
         >>"$tampered/syntaur-ship-linux-x86_64"
     chmod 0400 \
         "$tampered/release-authority-v2.json" \
@@ -660,86 +708,131 @@ run_recovery_fixture() {
         "$tampered/syntaur-verify-linux-x86_64" \
         "$tampered"
     if [[ $operator_uid == 0 && $operator_gid == 0 ]]; then
-        if "$recovery" verify \
-            --g1-dir "$source_dir" \
-            --g2-dir "$g2_dir" \
-            --g3-dir "$tampered"; then
-            printf 'tampered G3 recovery material was accepted\n' >&2
+        if "$recovery" verify "${tampered_args[@]}"; then
+            printf 'tampered %s recovery material was accepted\n' \
+                "$genesis_label" >&2
             exit 1
         fi
     elif setpriv --reuid "$operator_uid" --regid "$operator_gid" --clear-groups \
-        "$recovery" verify \
-            --g1-dir "$source_dir" \
-            --g2-dir "$g2_dir" \
-            --g3-dir "$tampered"; then
-        printf 'tampered G3 recovery material was accepted\n' >&2
+        "$recovery" verify "${tampered_args[@]}"; then
+        printf 'tampered %s recovery material was accepted\n' \
+            "$genesis_label" >&2
         exit 1
     fi
     chmod -R u+rwX "$tampered"
     rm -rf "$tampered"
     [[ ! -e /etc/syntaur/release-authority ]]
+    if [[ $scenario == recovery-g4 ]]; then
+        install -o root -g root -m 0755 \
+            "$predecessor_material/syntaur-build-authority-provision" \
+            /opt/syntaur-build-authority-provision
+        install -o root -g root -m 0755 \
+            "$predecessor_material/syntaur-ship-linux-x86_64" \
+            /opt/syntaur-genesis-validator
+    fi
 
     rm -f /etc/syntaur/syntaur-ship-mutation.lock
     if SUDO_UID="$operator_uid" SUDO_GID="$operator_gid" \
-        "$recovery" stage-g2-build-authority "${recovery_args[@]}"; then
+        "$recovery" "$stage_action" "${recovery_args[@]}"; then
         printf 'recovery recreated a missing predecessor lock\n' >&2
         exit 1
     fi
     install -o root -g "$operator_gid" -m 0440 /dev/null \
         /etc/syntaur/syntaur-ship-mutation.lock
 
+    rm -f /opt/syntaur-build-authority-provision
+    if SUDO_UID="$operator_uid" SUDO_GID="$operator_gid" \
+        "$recovery" "$stage_action" "${recovery_args[@]}"; then
+        printf 'recovery accepted an absent provisioner predecessor\n' >&2
+        exit 1
+    fi
+    [[ ! -e /opt/syntaur-build-authority-provision ]]
+    [[ $(sha256sum /opt/syntaur-genesis-validator \
+        | awk '{print $1}') == \
+        "$(sha256sum "$predecessor_material/syntaur-ship-linux-x86_64" \
+            | awk '{print $1}')" ]]
+    install -o root -g root -m 0755 \
+        "$predecessor_material/syntaur-build-authority-provision" \
+        /opt/syntaur-build-authority-provision
+
+    rm -f /opt/syntaur-genesis-validator
+    if SUDO_UID="$operator_uid" SUDO_GID="$operator_gid" \
+        "$recovery" "$stage_action" "${recovery_args[@]}"; then
+        printf 'recovery accepted an absent validator predecessor\n' >&2
+        exit 1
+    fi
+    [[ ! -e /opt/syntaur-genesis-validator ]]
+    [[ $(sha256sum /opt/syntaur-build-authority-provision \
+        | awk '{print $1}') == \
+        "$(sha256sum \
+            "$predecessor_material/syntaur-build-authority-provision" \
+            | awk '{print $1}')" ]]
+    install -o root -g root -m 0755 \
+        "$predecessor_material/syntaur-ship-linux-x86_64" \
+        /opt/syntaur-genesis-validator
+    assert_no_bootstrap_transients
+
     install -o root -g root -m 0755 /dev/null \
         /opt/syntaur-build-authority-provision
     if SUDO_UID="$operator_uid" SUDO_GID="$operator_gid" \
-        "$recovery" stage-g2-build-authority "${recovery_args[@]}"; then
+        "$recovery" "$stage_action" "${recovery_args[@]}"; then
         printf 'recovery accepted an unknown provisioner predecessor\n' >&2
         exit 1
     fi
+    [[ $(sha256sum /opt/syntaur-genesis-validator \
+        | awk '{print $1}') == \
+        "$(sha256sum "$predecessor_material/syntaur-ship-linux-x86_64" \
+            | awk '{print $1}')" ]]
     install -o root -g root -m 0755 \
-        "$source_dir/syntaur-build-authority-provision" \
+        "$predecessor_material/syntaur-build-authority-provision" \
         /opt/syntaur-build-authority-provision
 
     install -o root -g root -m 0755 /dev/null \
         /opt/syntaur-genesis-validator
     if SUDO_UID="$operator_uid" SUDO_GID="$operator_gid" \
-        "$recovery" stage-g2-build-authority "${recovery_args[@]}"; then
+        "$recovery" "$stage_action" "${recovery_args[@]}"; then
         printf 'recovery accepted an unknown validator predecessor\n' >&2
         exit 1
     fi
     [[ $(sha256sum /opt/syntaur-build-authority-provision \
-        | awk '{print $1}') == "$EXPECTED_PROVISIONER_SHA256" ]]
+        | awk '{print $1}') == \
+        "$(sha256sum \
+            "$predecessor_material/syntaur-build-authority-provision" \
+            | awk '{print $1}')" ]]
     [[ $(stat -c '%u:%g:%a:%h:%s' /opt/syntaur-genesis-validator) == \
         0:0:755:1:0 ]]
     [[ ! -e /etc/syntaur/release-authority ]]
     install -o root -g root -m 0755 \
-        "$source_dir/syntaur-ship-linux-x86_64" \
+        "$predecessor_material/syntaur-ship-linux-x86_64" \
         /opt/syntaur-genesis-validator
     assert_no_bootstrap_transients
 
     for _ in 1 2; do
         SUDO_UID="$operator_uid" SUDO_GID="$operator_gid" \
-            "$recovery" stage-g2-build-authority "${recovery_args[@]}"
+            "$recovery" "$stage_action" "${recovery_args[@]}"
         [[ $(sha256sum /opt/syntaur-build-authority-provision \
-            | awk '{print $1}') == "$RECOVERY_G2_PROVISIONER_SHA256" ]]
+            | awk '{print $1}') == "$genesis_provisioner_sha256" ]]
         [[ $(sha256sum /opt/syntaur-genesis-validator \
-            | awk '{print $1}') == "$RECOVERY_G2_SHIPPER_SHA256" ]]
+            | awk '{print $1}') == "$genesis_shipper_sha256" ]]
         [[ ! -e /etc/syntaur/release-authority ]]
         assert_no_bootstrap_transients
     done
 
     chmod 0700 "$evidence_dir"
-    g2_evidence="$evidence_dir/genesis-validation-g2.json"
+    genesis_evidence="$evidence_dir/genesis-validation-$genesis_slug.json"
     jq -c \
-        --arg source "$RECOVERY_G2_AUTHORITY_COMMIT" \
-        --arg source_tree "$RECOVERY_G2_AUTHORITY_GIT_TREE" \
-        --arg source_workspace "/tmp/source-g2" \
+        --arg source "$genesis_authority_commit" \
+        --arg source_tree "$genesis_authority_git_tree" \
+        --arg source_workspace "/tmp/source-$genesis_slug" \
         --arg version "$EXPECTED_AUTHORITY_VERSION" \
-        --arg shipper "$RECOVERY_G2_SHIPPER_SHA256" \
-        --arg provisioner "$RECOVERY_G2_PROVISIONER_SHA256" \
+        --arg shipper "$genesis_shipper_sha256" \
+        --arg provisioner "$genesis_provisioner_sha256" \
+        --arg authority_parent_commit "$authority_parent_commit" \
+        --arg authority_parent_tree "$authority_parent_tree" \
         --argjson shipper_size \
-            "$(stat -c '%s' "$g2_dir/syntaur-ship-linux-x86_64")" \
-        --argjson source_epoch "$RECOVERY_G2_SOURCE_DATE_EPOCH" \
-        --slurpfile manifest "$g2_dir/release-authority-v2.json" '
+            "$(stat -c '%s' "$genesis_dir/syntaur-ship-linux-x86_64")" \
+        --argjson source_epoch "$genesis_source_date_epoch" \
+        --slurpfile manifest "$genesis_dir/release-authority-v2.json" '
         .authority_source.commit = $source |
         .authority_source.tree = $source_tree |
         .authority_source.workspace = $source_workspace |
@@ -764,27 +857,43 @@ run_recovery_fixture() {
           $manifest[0].promotion_recovery_schema |
         .future_product_protocol.protocol.promotion_recovery_sha256 =
           $manifest[0].promotion_recovery_sha256 |
-        .persistent_authority.installed_provisioner_sha256 = $provisioner
-        ' "$evidence" >"$g2_evidence"
-    chown "$operator_uid:$operator_gid" "$g2_evidence"
-    chmod 0400 "$g2_evidence"
+        .persistent_authority.installed_provisioner_sha256 = $provisioner |
+        if $authority_parent_commit == "" then .
+        else (
+          to_entries |
+          .[0:6] + [
+            {
+              key:"authority_parent_commit",
+              value:$authority_parent_commit
+            },
+            {
+              key:"authority_parent_tree",
+              value:$authority_parent_tree
+            }
+          ] + .[6:] |
+          from_entries
+        )
+        end
+        ' "$evidence" >"$genesis_evidence"
+    chown "$operator_uid:$operator_gid" "$genesis_evidence"
+    chmod 0400 "$genesis_evidence"
     chmod 0500 "$evidence_dir"
-    evidence_digest=$(sha256sum "$g2_evidence" | awk '{print $1}')
+    evidence_digest=$(sha256sum "$genesis_evidence" | awk '{print $1}')
 
-    g2_catalog="$authority_root/catalog/$RECOVERY_G2_AUTHORITY_COMMIT-$engine_commit.json"
+    genesis_catalog="$authority_root/catalog/$genesis_authority_commit-$engine_commit.json"
     jq -c '.build_authority | {
       schema,source_commit,engine_commit,rustsec_provenance_schema,
       rustsec_db_remote,rustsec_db_ref,rustsec_db_commit,
       platform_image_sha256,platform_manifest_sha256,
       dependencies_image_sha256,dependencies_manifest_sha256,
       source_image_sha256,source_manifest_sha256
-    }' "$g2_evidence" >"$g2_catalog"
-    chown "root:$operator_gid" "$g2_catalog"
-    chmod 0440 "$g2_catalog"
+    }' "$genesis_evidence" >"$genesis_catalog"
+    chown "root:$operator_gid" "$genesis_catalog"
+    chmod 0440 "$genesis_catalog"
 
     install_args=(
         "${recovery_args[@]}"
-        --genesis-evidence "$g2_evidence"
+        --genesis-evidence "$genesis_evidence"
         --expected-genesis-evidence-sha256 "$evidence_digest"
         --expected-current-shipper-sha256 \
             "$RECOVERY_PREDECESSOR_SHIPPER_SHA256"
@@ -793,7 +902,7 @@ run_recovery_fixture() {
     chmod 0700 "$evidence_dir"
     invalid_evidence="$evidence_dir/invalid-recovery-evidence.json"
     jq -c '.mac_smoke.gateway_sha256 = ("0" * 64)' \
-        "$g2_evidence" >"$invalid_evidence"
+        "$genesis_evidence" >"$invalid_evidence"
     chown "$operator_uid:$operator_gid" "$invalid_evidence"
     chmod 0400 "$invalid_evidence"
     chmod 0500 "$evidence_dir"
@@ -804,7 +913,8 @@ run_recovery_fixture() {
             --expected-genesis-evidence-sha256 "$invalid_digest" \
             --expected-current-shipper-sha256 \
                 "$RECOVERY_PREDECESSOR_SHIPPER_SHA256"; then
-        printf 'invalid G2 recovery evidence was accepted\n' >&2
+        printf 'invalid %s recovery evidence was accepted\n' \
+            "$genesis_label" >&2
         exit 1
     fi
     [[ ! -e /etc/syntaur/release-authority ]]
@@ -812,14 +922,70 @@ run_recovery_fixture() {
     [[ -e /opt/syntaur-genesis-validator ]]
     assert_no_bootstrap_transients
 
-    hidden_catalog="$authority_root/catalog/.hidden-g2-recovery-catalog"
-    mv "$g2_catalog" "$hidden_catalog"
+    if [[ $scenario == recovery-g4 ]]; then
+        for invalid_case in wrong-parent-commit wrong-parent-tree \
+            missing-parent-commit missing-parent-tree old-g2; do
+            case $invalid_case in
+                wrong-parent-commit)
+                    invalid_filter='.authority_parent_commit = ("0" * 40)'
+                    ;;
+                wrong-parent-tree)
+                    invalid_filter='.authority_parent_tree = ("0" * 40)'
+                    ;;
+                missing-parent-commit)
+                    invalid_filter='del(.authority_parent_commit)'
+                    ;;
+                missing-parent-tree)
+                    invalid_filter='del(.authority_parent_tree)'
+                    ;;
+                old-g2)
+                    # shellcheck disable=SC2016 # jq variables are intentional.
+                    invalid_filter='
+                      del(
+                        .authority_parent_commit,
+                        .authority_parent_tree
+                      ) |
+                      .authority_source.commit = $g2_source |
+                      .authority_source.tree = $g2_tree
+                    '
+                    ;;
+            esac
+            chmod 0700 "$evidence_dir"
+            invalid_evidence="$evidence_dir/invalid-$invalid_case.json"
+            jq -c \
+                --arg g2_source "$RECOVERY_G2_AUTHORITY_COMMIT" \
+                --arg g2_tree "$RECOVERY_G2_AUTHORITY_GIT_TREE" \
+                "$invalid_filter" "$genesis_evidence" >"$invalid_evidence"
+            chown "$operator_uid:$operator_gid" "$invalid_evidence"
+            chmod 0400 "$invalid_evidence"
+            chmod 0500 "$evidence_dir"
+            invalid_digest=$(sha256sum "$invalid_evidence" | awk '{print $1}')
+            if SUDO_UID="$operator_uid" SUDO_GID="$operator_gid" \
+                "$recovery" install "${recovery_args[@]}" \
+                    --genesis-evidence "$invalid_evidence" \
+                    --expected-genesis-evidence-sha256 "$invalid_digest" \
+                    --expected-current-shipper-sha256 \
+                        "$RECOVERY_PREDECESSOR_SHIPPER_SHA256"; then
+                printf 'invalid G4 %s evidence was accepted\n' \
+                    "$invalid_case" >&2
+                exit 1
+            fi
+            [[ ! -e /etc/syntaur/release-authority ]]
+            [[ ! -e /usr/local/bin/syntaur-ship ]]
+            [[ -e /opt/syntaur-genesis-validator ]]
+            assert_no_bootstrap_transients
+        done
+    fi
+
+    hidden_catalog="$authority_root/catalog/.hidden-$genesis_slug-recovery-catalog"
+    mv "$genesis_catalog" "$hidden_catalog"
     if SUDO_UID="$operator_uid" SUDO_GID="$operator_gid" \
         "$recovery" install "${install_args[@]}"; then
-        printf 'missing G2 recovery catalog was accepted\n' >&2
+        printf 'missing %s recovery catalog was accepted\n' \
+            "$genesis_label" >&2
         exit 1
     fi
-    mv "$hidden_catalog" "$g2_catalog"
+    mv "$hidden_catalog" "$genesis_catalog"
     [[ ! -e /etc/syntaur/release-authority ]]
     [[ ! -e /usr/local/bin/syntaur-ship ]]
     [[ -e /opt/syntaur-genesis-validator ]]
@@ -863,12 +1029,15 @@ run_recovery_fixture() {
         actual=$(find "$authority" -mindepth 1 -maxdepth 1 -printf '%f\n' \
             | LC_ALL=C sort)
         [[ $actual == "$expected" ]]
-        expected=$(printf '%s\n' generation-1 generation-2 generation-3 \
-            | LC_ALL=C sort)
+        expected=$(
+            for ((generation = 1; generation <= active_generation; generation++)); do
+                printf 'generation-%s\n' "$generation"
+            done | LC_ALL=C sort
+        )
         actual=$(find "$authority/release-authority" -mindepth 1 -maxdepth 1 \
             -printf '%f\n' | LC_ALL=C sort)
         [[ $actual == "$expected" ]]
-        for generation in 1 2 3; do
+        for ((generation = 1; generation <= active_generation; generation++)); do
             case $generation in
                 1)
                     material=$source_dir
@@ -881,6 +1050,10 @@ run_recovery_fixture() {
                 3)
                     material=$g3_dir
                     workflow=$RECOVERY_G3_WORKFLOW_COMMIT
+                    ;;
+                4)
+                    material=$g4_dir
+                    workflow=$RECOVERY_G4_WORKFLOW_COMMIT
                     ;;
             esac
             local installed="$authority/release-authority/generation-$generation"
@@ -902,20 +1075,20 @@ run_recovery_fixture() {
         for name in release-authority-v2.json \
             release-authority-v2.json.cosign.bundle trusted-workflow-commit; do
             cmp -s "$authority/$name" \
-                "$authority/release-authority/generation-3/$name"
+                "$authority/release-authority/generation-$active_generation/$name"
         done
         [[ $(stat -c '%u:%g:%a:%h' /usr/local/bin/syntaur-ship) == \
             0:0:1755:1 ]]
         [[ $(sha256sum /usr/local/bin/syntaur-ship | awk '{print $1}') == \
-            "$RECOVERY_G3_SHIPPER_SHA256" ]]
+            "$active_shipper_sha256" ]]
         [[ $(sha256sum /opt/syntaur-build-authority-provision \
-            | awk '{print $1}') == "$RECOVERY_G3_PROVISIONER_SHA256" ]]
+            | awk '{print $1}') == "$active_provisioner_sha256" ]]
         jq -e \
-            --arg authority_commit "$RECOVERY_G2_AUTHORITY_COMMIT" \
-            --arg manifest "$RECOVERY_G2_MANIFEST_SHA256" \
+            --arg authority_commit "$genesis_authority_commit" \
+            --arg manifest "$genesis_manifest_sha256" \
             --arg evidence_sha "$evidence_digest" \
-            --arg shipper "$RECOVERY_G2_SHIPPER_SHA256" \
-            --arg provisioner "$RECOVERY_G2_PROVISIONER_SHA256" '
+            --arg shipper "$genesis_shipper_sha256" \
+            --arg provisioner "$genesis_provisioner_sha256" '
             .authority_commit == $authority_commit and
             .manifest_sha256 == $manifest and
             .genesis_evidence_sha256 == $evidence_sha and
@@ -924,7 +1097,7 @@ run_recovery_fixture() {
             ' "$authority/genesis/genesis-install-receipt-v1.json" >/dev/null
         if [[ $validator_state == present ]]; then
             [[ $(sha256sum /opt/syntaur-genesis-validator \
-                | awk '{print $1}') == "$RECOVERY_G2_SHIPPER_SHA256" ]]
+                | awk '{print $1}') == "$genesis_shipper_sha256" ]]
         else
             [[ ! -e /opt/syntaur-genesis-validator ]]
         fi
@@ -935,7 +1108,8 @@ run_recovery_fixture() {
     install -o root -g root -m 0600 /dev/null "$marker"
     if SUDO_UID="$operator_uid" SUDO_GID="$operator_gid" \
         "$recovery" install "${install_args[@]}"; then
-        printf 'injected G3 authority-status failure was ignored\n' >&2
+        printf 'injected generation %s authority-status failure was ignored\n' \
+            "$active_generation" >&2
         exit 1
     fi
     assert_recovery_layout present
@@ -948,10 +1122,12 @@ run_recovery_fixture() {
     SUDO_UID="$operator_uid" SUDO_GID="$operator_gid" \
         "$recovery" install "${install_args[@]}"
     assert_recovery_layout absent
-    printf 'G1-G2-G3 recovery bootstrap behavioral fixture passed\n'
+    printf 'G1 through G%s recovery bootstrap behavioral fixture passed\n' \
+        "$active_generation"
 }
 
-if [[ ${BOOTSTRAP_FIXTURE_SCENARIO:-genesis} == recovery ]]; then
+if [[ ${BOOTSTRAP_FIXTURE_SCENARIO:-genesis} == recovery \
+    || ${BOOTSTRAP_FIXTURE_SCENARIO:-genesis} == recovery-g4 ]]; then
     run_recovery_fixture
     exit 0
 fi

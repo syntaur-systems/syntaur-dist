@@ -17,6 +17,7 @@ context="$tmp_root/context"
 fixture="$context/fixture"
 fixture_g2="$context/fixture-g2"
 fixture_g3="$context/fixture-g3"
+fixture_g4="$context/fixture-g4"
 expected_shipper="$context/expected-shipper"
 recovery_predecessor="$context/recovery-predecessor"
 operator_ssh="$context/operator-ssh"
@@ -24,6 +25,7 @@ mkdir -p \
     "$fixture" \
     "$fixture_g2" \
     "$fixture_g3" \
+    "$fixture_g4" \
     "$expected_shipper" \
     "$recovery_predecessor" \
     "$operator_ssh"
@@ -77,6 +79,15 @@ cc -std=c11 -O2 -Wall -Wextra -Werror \
     -DFIXTURE_ROLE_MARKER='"verifier-g3"' \
     "$repo_root/scripts/fixtures/release_authority_bootstrap.c" \
     -o "$fixture_g3/syntaur-verify-linux-x86_64"
+cc -std=c11 -O2 -Wall -Wextra -Werror \
+    -DFIXTURE_ROLE_MARKER='"shipper-g4"' \
+    -DFIXTURE_AUTHORITY_GENERATIONS=4 \
+    "$repo_root/scripts/fixtures/release_authority_bootstrap.c" \
+    -o "$fixture_g4/syntaur-ship-linux-x86_64"
+cc -std=c11 -O2 -Wall -Wextra -Werror \
+    -DFIXTURE_ROLE_MARKER='"verifier-g4"' \
+    "$repo_root/scripts/fixtures/release_authority_bootstrap.c" \
+    -o "$fixture_g4/syntaur-verify-linux-x86_64"
 cp "$fixture/syntaur-ship-linux-x86_64" \
     "$expected_shipper/syntaur-ship-linux-x86_64"
 cp "$fixture/syntaur-verify-linux-x86_64" \
@@ -87,6 +98,8 @@ printf '#!/usr/bin/bash\nset -euo pipefail\n# generation 2\n' \
     >"$fixture_g2/syntaur-build-authority-provision"
 cp "$fixture_g2/syntaur-build-authority-provision" \
     "$fixture_g3/syntaur-build-authority-provision"
+printf '#!/usr/bin/bash\nset -euo pipefail\n# generation 4\n' \
+    >"$fixture_g4/syntaur-build-authority-provision"
 printf '#!/usr/bin/bash\nexit 64\n# fixed recovery predecessor\n' \
     >"$recovery_predecessor/syntaur-ship"
 
@@ -108,12 +121,20 @@ G3_VERIFIER_SHA256=$(sha256sum \
     "$fixture_g3/syntaur-verify-linux-x86_64" | awk '{print $1}')
 G3_PROVISIONER_SHA256=$(sha256sum \
     "$fixture_g3/syntaur-build-authority-provision" | awk '{print $1}')
+G4_SHIPPER_SHA256=$(sha256sum \
+    "$fixture_g4/syntaur-ship-linux-x86_64" | awk '{print $1}')
+G4_VERIFIER_SHA256=$(sha256sum \
+    "$fixture_g4/syntaur-verify-linux-x86_64" | awk '{print $1}')
+G4_PROVISIONER_SHA256=$(sha256sum \
+    "$fixture_g4/syntaur-build-authority-provision" | awk '{print $1}')
 RECOVERY_PREDECESSOR_SHIPPER_SHA256=$(sha256sum \
     "$recovery_predecessor/syntaur-ship" | awk '{print $1}')
 [[ $SHIPPER_SHA256 != "$VERIFIER_SHA256" ]]
 [[ $SHIPPER_SHA256 != "$G2_SHIPPER_SHA256" ]]
 [[ $G2_SHIPPER_SHA256 != "$G3_SHIPPER_SHA256" ]]
 [[ $G2_PROVISIONER_SHA256 == "$G3_PROVISIONER_SHA256" ]]
+[[ $G3_SHIPPER_SHA256 != "$G4_SHIPPER_SHA256" ]]
+[[ $G3_PROVISIONER_SHA256 != "$G4_PROVISIONER_SHA256" ]]
 PRODUCTION_CONTRACT_SHA256=$(printf production-contract | sha256sum | awk '{print $1}')
 PROMOTION_RECOVERY_SHA256=$(printf promotion-recovery | sha256sum | awk '{print $1}')
 AUTHORITY_VERSION=0.7.114
@@ -142,10 +163,18 @@ G2_AUTHORITY_TREE_SHA256=$(
 )
 G2_WORKFLOW_COMMIT=$(printf 'e%.0s' {1..40})
 G3_AUTHORITY_COMMIT=$(printf 'f%.0s' {1..40})
+G3_AUTHORITY_GIT_TREE=$(printf '2%.0s' {1..40})
 G3_AUTHORITY_TREE_SHA256=$(
     printf authority-tree-g3 | sha256sum | awk '{print $1}'
 )
 G3_WORKFLOW_COMMIT=$(printf '1%.0s' {1..40})
+G4_AUTHORITY_COMMIT=$(printf '3%.0s' {1..40})
+G4_AUTHORITY_GIT_TREE=$(printf '4%.0s' {1..40})
+G4_AUTHORITY_TREE_SHA256=$(
+    printf authority-tree-g4 | sha256sum | awk '{print $1}'
+)
+G4_WORKFLOW_COMMIT=$(printf '5%.0s' {1..40})
+G4_SOURCE_DATE_EPOCH=2
 G2_SOURCE_DATE_EPOCH=1
 RECOVERY_RUSTSEC_DB_COMMIT=$(printf 'd%.0s' {1..40})
 RECOVERY_RUSTSEC_TREE_SHA256=$(
@@ -169,9 +198,12 @@ export GITHUB_SHA AUTHORITY_GENERATION PREVIOUS_AUTHORITY_GENERATION
 export PREVIOUS_AUTHORITY_MANIFEST_SHA256
 export G2_AUTHORITY_COMMIT G2_AUTHORITY_GIT_TREE G2_AUTHORITY_TREE_SHA256
 export G2_WORKFLOW_COMMIT G3_AUTHORITY_COMMIT G3_AUTHORITY_TREE_SHA256
-export G3_WORKFLOW_COMMIT G2_SOURCE_DATE_EPOCH
+export G3_AUTHORITY_GIT_TREE G3_WORKFLOW_COMMIT G2_SOURCE_DATE_EPOCH
+export G4_AUTHORITY_COMMIT G4_AUTHORITY_GIT_TREE G4_AUTHORITY_TREE_SHA256
+export G4_WORKFLOW_COMMIT G4_SOURCE_DATE_EPOCH
 export G2_SHIPPER_SHA256 G2_VERIFIER_SHA256 G2_PROVISIONER_SHA256
 export G3_SHIPPER_SHA256 G3_VERIFIER_SHA256 G3_PROVISIONER_SHA256
+export G4_SHIPPER_SHA256 G4_VERIFIER_SHA256 G4_PROVISIONER_SHA256
 export RECOVERY_PREDECESSOR_SHIPPER_SHA256 RECOVERY_RUSTSEC_DB_COMMIT
 export RECOVERY_RUSTSEC_TREE_SHA256 RECOVERY_SYSTEM_USR_TREE_SHA256
 
@@ -212,6 +244,22 @@ env \
         render-v2 "$fixture_g3/release-authority-v2.json"
 printf '{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}\n' \
     >"$fixture_g3/release-authority-v2.json.cosign.bundle"
+g3_manifest_sha256=$(sha256sum \
+    "$fixture_g3/release-authority-v2.json" | awk '{print $1}')
+env \
+    SHIPPER_SHA256="$G4_SHIPPER_SHA256" \
+    VERIFIER_SHA256="$G4_VERIFIER_SHA256" \
+    PROVISIONER_SHA256="$G4_PROVISIONER_SHA256" \
+    AUTHORITY_COMMIT="$G4_AUTHORITY_COMMIT" \
+    AUTHORITY_TREE_SHA256="$G4_AUTHORITY_TREE_SHA256" \
+    GITHUB_SHA="$G4_WORKFLOW_COMMIT" \
+    AUTHORITY_GENERATION=4 \
+    PREVIOUS_AUTHORITY_GENERATION=3 \
+    PREVIOUS_AUTHORITY_MANIFEST_SHA256="$g3_manifest_sha256" \
+    "$repo_root/scripts/release-authority-manifest.sh" \
+        render-v2 "$fixture_g4/release-authority-v2.json"
+printf '{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}\n' \
+    >"$fixture_g4/release-authority-v2.json.cosign.bundle"
 
 fake_cosign_sha256=$(sha256sum \
     "$repo_root/scripts/fixtures/release_authority_fake_cosign.sh" \
@@ -230,10 +278,12 @@ g1_bundle_sha256=$(sha256sum \
     "$fixture/release-authority-v2.json.cosign.bundle" | awk '{print $1}')
 g2_bundle_sha256=$(sha256sum \
     "$fixture_g2/release-authority-v2.json.cosign.bundle" | awk '{print $1}')
-g3_manifest_sha256=$(sha256sum \
-    "$fixture_g3/release-authority-v2.json" | awk '{print $1}')
 g3_bundle_sha256=$(sha256sum \
     "$fixture_g3/release-authority-v2.json.cosign.bundle" | awk '{print $1}')
+g4_manifest_sha256=$(sha256sum \
+    "$fixture_g4/release-authority-v2.json" | awk '{print $1}')
+g4_bundle_sha256=$(sha256sum \
+    "$fixture_g4/release-authority-v2.json.cosign.bundle" | awk '{print $1}')
 recovery_helper_sha256=$(sha256sum \
     "$repo_root/scripts/release-authority-manifest.sh" | awk '{print $1}')
 sed \
@@ -276,6 +326,55 @@ sed \
     -e "s|^readonly MAC_IDENTITY_FINGERPRINT=.*|readonly MAC_IDENTITY_FINGERPRINT='$GENESIS_TEST_IDENTITY_FINGERPRINT'|" \
     "$repo_root/scripts/bootstrap-release-authority-g1-g2-g3-recovery-v1.sh" \
     >"$context/bootstrap-release-authority-g1-g2-g3-recovery-v1.sh"
+sed \
+    -e "s/^readonly COSIGN_SHA256=.*/readonly COSIGN_SHA256=$fake_cosign_sha256/" \
+    -e "s/^readonly MANIFEST_HELPER_SHA256=.*/readonly MANIFEST_HELPER_SHA256=$recovery_helper_sha256/" \
+    -e "s/^readonly G1_MANIFEST_SHA256=.*/readonly G1_MANIFEST_SHA256=$g1_manifest_sha256/" \
+    -e "s/^readonly G1_BUNDLE_SHA256=.*/readonly G1_BUNDLE_SHA256=$g1_bundle_sha256/" \
+    -e "s/^readonly G1_WORKFLOW_COMMIT=.*/readonly G1_WORKFLOW_COMMIT=$GITHUB_SHA/" \
+    -e "s/^readonly G1_AUTHORITY_COMMIT=.*/readonly G1_AUTHORITY_COMMIT=$AUTHORITY_COMMIT/" \
+    -e "s/^readonly G1_AUTHORITY_TREE_SHA256=.*/readonly G1_AUTHORITY_TREE_SHA256=$AUTHORITY_TREE_SHA256/" \
+    -e "s/^readonly G1_SHIPPER_SHA256=.*/readonly G1_SHIPPER_SHA256=$SHIPPER_SHA256/" \
+    -e "s/^readonly G1_VERIFIER_SHA256=.*/readonly G1_VERIFIER_SHA256=$VERIFIER_SHA256/" \
+    -e "s/^readonly G1_PROVISIONER_SHA256=.*/readonly G1_PROVISIONER_SHA256=$PROVISIONER_SHA256/" \
+    -e "s/^readonly G2_MANIFEST_SHA256=.*/readonly G2_MANIFEST_SHA256=$g2_manifest_sha256/" \
+    -e "s/^readonly G2_BUNDLE_SHA256=.*/readonly G2_BUNDLE_SHA256=$g2_bundle_sha256/" \
+    -e "s/^readonly G2_WORKFLOW_COMMIT=.*/readonly G2_WORKFLOW_COMMIT=$G2_WORKFLOW_COMMIT/" \
+    -e "s/^readonly G2_AUTHORITY_COMMIT=.*/readonly G2_AUTHORITY_COMMIT=$G2_AUTHORITY_COMMIT/" \
+    -e "s/^readonly G2_AUTHORITY_TREE_SHA256=.*/readonly G2_AUTHORITY_TREE_SHA256=$G2_AUTHORITY_TREE_SHA256/" \
+    -e "s/^readonly G2_SHIPPER_SHA256=.*/readonly G2_SHIPPER_SHA256=$G2_SHIPPER_SHA256/" \
+    -e "s/^readonly G2_VERIFIER_SHA256=.*/readonly G2_VERIFIER_SHA256=$G2_VERIFIER_SHA256/" \
+    -e "s/^readonly G2_PROVISIONER_SHA256=.*/readonly G2_PROVISIONER_SHA256=$G2_PROVISIONER_SHA256/" \
+    -e "s/^readonly G3_MANIFEST_SHA256=.*/readonly G3_MANIFEST_SHA256=$g3_manifest_sha256/" \
+    -e "s/^readonly G3_BUNDLE_SHA256=.*/readonly G3_BUNDLE_SHA256=$g3_bundle_sha256/" \
+    -e "s/^readonly G3_WORKFLOW_COMMIT=.*/readonly G3_WORKFLOW_COMMIT=$G3_WORKFLOW_COMMIT/" \
+    -e "s/^readonly G3_AUTHORITY_COMMIT=.*/readonly G3_AUTHORITY_COMMIT=$G3_AUTHORITY_COMMIT/" \
+    -e "s/^readonly G3_AUTHORITY_GIT_TREE=.*/readonly G3_AUTHORITY_GIT_TREE=$G3_AUTHORITY_GIT_TREE/" \
+    -e "s/^readonly G3_AUTHORITY_TREE_SHA256=.*/readonly G3_AUTHORITY_TREE_SHA256=$G3_AUTHORITY_TREE_SHA256/" \
+    -e "s/^readonly G3_SHIPPER_SHA256=.*/readonly G3_SHIPPER_SHA256=$G3_SHIPPER_SHA256/" \
+    -e "s/^readonly G3_VERIFIER_SHA256=.*/readonly G3_VERIFIER_SHA256=$G3_VERIFIER_SHA256/" \
+    -e "s/^readonly G3_PROVISIONER_SHA256=.*/readonly G3_PROVISIONER_SHA256=$G3_PROVISIONER_SHA256/" \
+    -e "s/^readonly G4_MANIFEST_SHA256=.*/readonly G4_MANIFEST_SHA256=$g4_manifest_sha256/" \
+    -e "s/^readonly G4_BUNDLE_SHA256=.*/readonly G4_BUNDLE_SHA256=$g4_bundle_sha256/" \
+    -e "s/^readonly G4_WORKFLOW_COMMIT=.*/readonly G4_WORKFLOW_COMMIT=$G4_WORKFLOW_COMMIT/" \
+    -e "s/^readonly G4_AUTHORITY_COMMIT=.*/readonly G4_AUTHORITY_COMMIT=$G4_AUTHORITY_COMMIT/" \
+    -e "s/^readonly G4_AUTHORITY_GIT_TREE=.*/readonly G4_AUTHORITY_GIT_TREE=$G4_AUTHORITY_GIT_TREE/" \
+    -e "s/^readonly G4_AUTHORITY_TREE_SHA256=.*/readonly G4_AUTHORITY_TREE_SHA256=$G4_AUTHORITY_TREE_SHA256/" \
+    -e "s/^readonly G4_SOURCE_DATE_EPOCH=.*/readonly G4_SOURCE_DATE_EPOCH=$G4_SOURCE_DATE_EPOCH/" \
+    -e "s/^readonly G4_SHIPPER_SHA256=.*/readonly G4_SHIPPER_SHA256=$G4_SHIPPER_SHA256/" \
+    -e "s/^readonly G4_VERIFIER_SHA256=.*/readonly G4_VERIFIER_SHA256=$G4_VERIFIER_SHA256/" \
+    -e "s/^readonly G4_PROVISIONER_SHA256=.*/readonly G4_PROVISIONER_SHA256=$G4_PROVISIONER_SHA256/" \
+    -e "s/^readonly RUSTSEC_DB_COMMIT=.*/readonly RUSTSEC_DB_COMMIT=$RECOVERY_RUSTSEC_DB_COMMIT/" \
+    -e "s/^readonly RUSTSEC_TREE_SHA256=.*/readonly RUSTSEC_TREE_SHA256=$RECOVERY_RUSTSEC_TREE_SHA256/" \
+    -e "s/^readonly SYSTEM_USR_TREE_SHA256=.*/readonly SYSTEM_USR_TREE_SHA256=$RECOVERY_SYSTEM_USR_TREE_SHA256/" \
+    -e "s/^readonly PRE_RECOVERY_SHIPPER_SHA256=.*/readonly PRE_RECOVERY_SHIPPER_SHA256=$RECOVERY_PREDECESSOR_SHIPPER_SHA256/" \
+    -e "s|^readonly MAC_IDENTITY=.*|readonly MAC_IDENTITY=$GENESIS_TEST_IDENTITY_PATH|" \
+    -e "s/^readonly MAC_IDENTITY_SHA256=.*/readonly MAC_IDENTITY_SHA256=$GENESIS_TEST_IDENTITY_SHA256/" \
+    -e "s/^readonly MAC_IDENTITY_SIZE=.*/readonly MAC_IDENTITY_SIZE=$GENESIS_TEST_IDENTITY_SIZE/" \
+    -e "s/^readonly MAC_IDENTITY_PUBLIC_SHA256=.*/readonly MAC_IDENTITY_PUBLIC_SHA256=$GENESIS_TEST_IDENTITY_PUBLIC_SHA256/" \
+    -e "s|^readonly MAC_IDENTITY_FINGERPRINT=.*|readonly MAC_IDENTITY_FINGERPRINT='$GENESIS_TEST_IDENTITY_FINGERPRINT'|" \
+    "$repo_root/scripts/bootstrap-release-authority-g1-g2-g3-g4-recovery-v2.sh" \
+    >"$context/bootstrap-release-authority-g1-g2-g3-g4-recovery-v2.sh"
 cp "$repo_root/scripts/release-authority-manifest.sh" \
     "$context/release-authority-manifest.sh"
 cp "$repo_root/scripts/fixtures/release_authority_fake_cosign.sh" \
@@ -287,17 +386,21 @@ cp "$repo_root/scripts/fixtures/release_authority_bootstrap.Dockerfile" \
 chmod 0555 \
     "$context/bootstrap-release-authority-genesis-v2.sh" \
     "$context/bootstrap-release-authority-g1-g2-g3-recovery-v1.sh" \
+    "$context/bootstrap-release-authority-g1-g2-g3-g4-recovery-v2.sh" \
     "$context/release-authority-manifest.sh" \
     "$context/release-authority-bootstrap-driver.sh"
 chmod 0755 "$context/release-authority-fake-cosign.sh"
-chmod 0500 "$fixture" "$fixture_g2" "$fixture_g3" "$recovery_predecessor"
+chmod 0500 "$fixture" "$fixture_g2" "$fixture_g3" "$fixture_g4" \
+    "$recovery_predecessor"
 chmod 0400 \
     "$fixture/release-authority-v2.json" \
     "$fixture/release-authority-v2.json.cosign.bundle" \
     "$fixture_g2/release-authority-v2.json" \
     "$fixture_g2/release-authority-v2.json.cosign.bundle" \
     "$fixture_g3/release-authority-v2.json" \
-    "$fixture_g3/release-authority-v2.json.cosign.bundle"
+    "$fixture_g3/release-authority-v2.json.cosign.bundle" \
+    "$fixture_g4/release-authority-v2.json" \
+    "$fixture_g4/release-authority-v2.json.cosign.bundle"
 chmod 0500 \
     "$fixture/syntaur-build-authority-provision" \
     "$fixture/syntaur-ship-linux-x86_64" \
@@ -308,6 +411,9 @@ chmod 0500 \
     "$fixture_g3/syntaur-build-authority-provision" \
     "$fixture_g3/syntaur-ship-linux-x86_64" \
     "$fixture_g3/syntaur-verify-linux-x86_64" \
+    "$fixture_g4/syntaur-build-authority-provision" \
+    "$fixture_g4/syntaur-ship-linux-x86_64" \
+    "$fixture_g4/syntaur-verify-linux-x86_64" \
     "$expected_shipper/syntaur-ship-linux-x86_64" \
     "$recovery_predecessor/syntaur-ship"
 
@@ -372,6 +478,45 @@ if command -v docker >/dev/null \
         --env "RECOVERY_G3_WORKFLOW_COMMIT=$G3_WORKFLOW_COMMIT" \
         --env "RECOVERY_PREDECESSOR_SHIPPER_SHA256=$RECOVERY_PREDECESSOR_SHIPPER_SHA256" \
         "$image"
+    docker run --rm --hostname claudevm \
+        --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
+        --env BOOTSTRAP_FIXTURE_REQUIRE_RUN_NOEXEC=1 \
+        --env BOOTSTRAP_FIXTURE_SCENARIO=recovery-g4 \
+        --env "EXPECTED_MANIFEST_SHA256=$manifest_sha256" \
+        --env "EXPECTED_WORKFLOW_COMMIT=$GITHUB_SHA" \
+        --env "EXPECTED_AUTHORITY_VERSION=$AUTHORITY_VERSION" \
+        --env "EXPECTED_AUTHORITY_COMMIT=$AUTHORITY_COMMIT" \
+        --env "EXPECTED_SHIPPER_SHA256=$SHIPPER_SHA256" \
+        --env "EXPECTED_VERIFIER_SHA256=$VERIFIER_SHA256" \
+        --env "EXPECTED_PROVISIONER_SHA256=$PROVISIONER_SHA256" \
+        --env "EXPECTED_HELPER_SHA256=$helper_sha256" \
+        --env "GENESIS_TEST_IDENTITY_SHA256=$GENESIS_TEST_IDENTITY_SHA256" \
+        --env "GENESIS_TEST_IDENTITY_PUBLIC_SHA256=$GENESIS_TEST_IDENTITY_PUBLIC_SHA256" \
+        --env "GENESIS_TEST_IDENTITY_FINGERPRINT=$GENESIS_TEST_IDENTITY_FINGERPRINT" \
+        --env "GENESIS_TEST_IDENTITY_PATH=$GENESIS_TEST_IDENTITY_PATH" \
+        --env "GENESIS_TEST_AUTHORITY_TREE=$GENESIS_TEST_AUTHORITY_TREE" \
+        --env "GENESIS_TEST_SOURCE_EPOCH=$GENESIS_TEST_SOURCE_EPOCH" \
+        --env "RECOVERY_G2_AUTHORITY_COMMIT=$G2_AUTHORITY_COMMIT" \
+        --env "RECOVERY_G2_AUTHORITY_GIT_TREE=$G2_AUTHORITY_GIT_TREE" \
+        --env "RECOVERY_G2_MANIFEST_SHA256=$g2_manifest_sha256" \
+        --env "RECOVERY_G2_PROVISIONER_SHA256=$G2_PROVISIONER_SHA256" \
+        --env "RECOVERY_G2_SHIPPER_SHA256=$G2_SHIPPER_SHA256" \
+        --env "RECOVERY_G2_SOURCE_DATE_EPOCH=$G2_SOURCE_DATE_EPOCH" \
+        --env "RECOVERY_G2_WORKFLOW_COMMIT=$G2_WORKFLOW_COMMIT" \
+        --env "RECOVERY_G3_AUTHORITY_COMMIT=$G3_AUTHORITY_COMMIT" \
+        --env "RECOVERY_G3_AUTHORITY_GIT_TREE=$G3_AUTHORITY_GIT_TREE" \
+        --env "RECOVERY_G3_PROVISIONER_SHA256=$G3_PROVISIONER_SHA256" \
+        --env "RECOVERY_G3_SHIPPER_SHA256=$G3_SHIPPER_SHA256" \
+        --env "RECOVERY_G3_WORKFLOW_COMMIT=$G3_WORKFLOW_COMMIT" \
+        --env "RECOVERY_G4_AUTHORITY_COMMIT=$G4_AUTHORITY_COMMIT" \
+        --env "RECOVERY_G4_AUTHORITY_GIT_TREE=$G4_AUTHORITY_GIT_TREE" \
+        --env "RECOVERY_G4_MANIFEST_SHA256=$g4_manifest_sha256" \
+        --env "RECOVERY_G4_PROVISIONER_SHA256=$G4_PROVISIONER_SHA256" \
+        --env "RECOVERY_G4_SHIPPER_SHA256=$G4_SHIPPER_SHA256" \
+        --env "RECOVERY_G4_SOURCE_DATE_EPOCH=$G4_SOURCE_DATE_EPOCH" \
+        --env "RECOVERY_G4_WORKFLOW_COMMIT=$G4_WORKFLOW_COMMIT" \
+        --env "RECOVERY_PREDECESSOR_SHIPPER_SHA256=$RECOVERY_PREDECESSOR_SHIPPER_SHA256" \
+        "$image"
     docker image rm "$image" >/dev/null
     image=
 else
@@ -395,6 +540,16 @@ else
         "$context/bootstrap-release-authority-g1-g2-g3-recovery-v1.sh"
     chmod 0555 \
         "$context/bootstrap-release-authority-g1-g2-g3-recovery-v1.sh"
+    # shellcheck disable=SC2016 # This test rewrite matches literal source text.
+    sed -E 's/\^\[1-9\]\[0-9\]\*\$/^[0-9]+$/g' \
+        "$context/bootstrap-release-authority-g1-g2-g3-g4-recovery-v2.sh" \
+        | sed \
+            's/\[\[ $owner == 0 || $owner == "$operator_uid" \]\]/[[ $owner == 0 || $owner == 65534 || $owner == "$operator_uid" ]]/' \
+        >"$context/bootstrap-single-uid"
+    mv "$context/bootstrap-single-uid" \
+        "$context/bootstrap-release-authority-g1-g2-g3-g4-recovery-v2.sh"
+    chmod 0555 \
+        "$context/bootstrap-release-authority-g1-g2-g3-g4-recovery-v2.sh"
     printf 'claudevm\n' >"$context/hostname"
     chmod 0444 "$context/hostname"
     alternatives_bind=()
@@ -404,9 +559,9 @@ else
     run_bwrap_fixture() {
         local scenario=$1
         local -a scenario_args=()
-        if [[ $scenario == recovery ]]; then
+        if [[ $scenario == recovery || $scenario == recovery-g4 ]]; then
             scenario_args=(
-                --setenv BOOTSTRAP_FIXTURE_SCENARIO recovery
+                --setenv BOOTSTRAP_FIXTURE_SCENARIO "$scenario"
             )
         fi
         bwrap \
@@ -432,6 +587,7 @@ else
             --dir /tmp/fixture \
             --dir /tmp/fixture-g2 \
             --dir /tmp/fixture-g3 \
+            --dir /tmp/fixture-g4 \
             --dir /tmp/bootstrap \
             --dir /tmp/expected \
             --dir /tmp/recovery-predecessor \
@@ -443,12 +599,14 @@ else
             --bind "$fixture" /tmp/fixture \
             --bind "$fixture_g2" /tmp/fixture-g2 \
             --bind "$fixture_g3" /tmp/fixture-g3 \
+            --bind "$fixture_g4" /tmp/fixture-g4 \
             --ro-bind "$context" /tmp/bootstrap \
             --ro-bind "$expected_shipper" /tmp/expected \
             --ro-bind "$recovery_predecessor" /tmp/recovery-predecessor \
             --setenv BOOTSTRAP_FIXTURE_SOURCE_DIR /tmp/fixture \
             --setenv BOOTSTRAP_FIXTURE_G2_DIR /tmp/fixture-g2 \
             --setenv BOOTSTRAP_FIXTURE_G3_DIR /tmp/fixture-g3 \
+            --setenv BOOTSTRAP_FIXTURE_G4_DIR /tmp/fixture-g4 \
             --setenv BOOTSTRAP_FIXTURE_BOOTSTRAP_ROOT /tmp/bootstrap \
             --setenv BOOTSTRAP_FIXTURE_EXPECTED_DIR /tmp/expected \
             --setenv BOOTSTRAP_FIXTURE_RECOVERY_PREDECESSOR \
@@ -493,8 +651,26 @@ else
                 "$G3_PROVISIONER_SHA256" \
             --setenv RECOVERY_G3_SHIPPER_SHA256 \
                 "$G3_SHIPPER_SHA256" \
+            --setenv RECOVERY_G3_AUTHORITY_COMMIT \
+                "$G3_AUTHORITY_COMMIT" \
+            --setenv RECOVERY_G3_AUTHORITY_GIT_TREE \
+                "$G3_AUTHORITY_GIT_TREE" \
             --setenv RECOVERY_G3_WORKFLOW_COMMIT \
                 "$G3_WORKFLOW_COMMIT" \
+            --setenv RECOVERY_G4_AUTHORITY_COMMIT \
+                "$G4_AUTHORITY_COMMIT" \
+            --setenv RECOVERY_G4_AUTHORITY_GIT_TREE \
+                "$G4_AUTHORITY_GIT_TREE" \
+            --setenv RECOVERY_G4_MANIFEST_SHA256 \
+                "$g4_manifest_sha256" \
+            --setenv RECOVERY_G4_PROVISIONER_SHA256 \
+                "$G4_PROVISIONER_SHA256" \
+            --setenv RECOVERY_G4_SHIPPER_SHA256 \
+                "$G4_SHIPPER_SHA256" \
+            --setenv RECOVERY_G4_SOURCE_DATE_EPOCH \
+                "$G4_SOURCE_DATE_EPOCH" \
+            --setenv RECOVERY_G4_WORKFLOW_COMMIT \
+                "$G4_WORKFLOW_COMMIT" \
             --setenv RECOVERY_PREDECESSOR_SHIPPER_SHA256 \
                 "$RECOVERY_PREDECESSOR_SHIPPER_SHA256" \
             "${scenario_args[@]}" \
@@ -502,4 +678,5 @@ else
     }
     run_bwrap_fixture genesis
     run_bwrap_fixture recovery
+    run_bwrap_fixture recovery-g4
 fi

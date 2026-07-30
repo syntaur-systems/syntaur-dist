@@ -452,6 +452,83 @@ different authority root, or an inexact retained generation fails closed.
 The next product release must be a distinct descendant of G3. The recovery
 does not authorize G3 to release itself.
 
+## Fixed G1-G2-G3-G4 recovery
+
+When the authority root is still absent after G4 has been published, do not
+run the earlier G1-G2-G3 recovery first. G4 Genesis rejects a pre-existing
+authority root, so that ordering would permanently prevent the truthful G4
+ceremony. Use only the versioned
+`scripts/bootstrap-release-authority-g1-g2-g3-g4-recovery-v2.sh` for this
+exact four-release chain.
+
+Download and independently verify the five immutable assets from each of
+`authority-v1-g1` through `authority-v1-g4` in four distinct canonical
+directories. Normalize directories to `0500`, manifests and bundles to
+`0400`, and executables to `0500`. Verify the full signed successor chain:
+
+```sh
+scripts/bootstrap-release-authority-g1-g2-g3-g4-recovery-v2.sh verify \
+  --g1-dir "$G1_DIR" \
+  --g2-dir "$G2_DIR" \
+  --g3-dir "$G3_DIR" \
+  --g4-dir "$G4_DIR"
+```
+
+While the authority root remains absent, stage the exact G4 provisioner and
+G4 shipper-as-validator:
+
+```sh
+sudo scripts/bootstrap-release-authority-g1-g2-g3-g4-recovery-v2.sh \
+  stage-g4-build-authority \
+  --g1-dir "$G1_DIR" \
+  --g2-dir "$G2_DIR" \
+  --g3-dir "$G3_DIR" \
+  --g4-dir "$G4_DIR"
+```
+
+Run the staged validator as the ordinary operator from exact G4 commit
+`417e2f6b8e0518ccd314680ba9d68766378e4900` and exact Engine commit
+`36f3348fc32c02d0a0091be9ea87b828306941cc`. The evidence must bind the G4
+source to parent commit `8003e39735ebed5a326ee011001937be64bc340c`
+and parent tree `998e1a949928d145b4186c79384c946c927b79ec`, in addition to the
+full Genesis contract:
+
+```sh
+env -i \
+  HOME=/home/sean USER=sean LOGNAME=sean \
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  LANG=C.UTF-8 LC_ALL=C.UTF-8 RUST_LOG=info \
+  SYNTAUR_WORKSPACE="$G4_SOURCE_WORKTREE" \
+  SYNTAUR_ENGINE_WORKSPACE="$GENESIS_ENGINE_WORKTREE" \
+  /opt/syntaur-genesis-validator genesis-validate \
+    --commit 417e2f6b8e0518ccd314680ba9d68766378e4900 \
+    --engine-commit 36f3348fc32c02d0a0091be9ea87b828306941cc \
+    >"$GENESIS_EVIDENCE_PARTIAL" \
+    2>"$GENESIS_LOG"
+```
+
+After independently checking that one-record canonical evidence, its G4
+catalog, the source and parent identities, and continued authority-root
+absence, install:
+
+```sh
+sudo scripts/bootstrap-release-authority-g1-g2-g3-g4-recovery-v2.sh install \
+  --g1-dir "$G1_DIR" \
+  --g2-dir "$G2_DIR" \
+  --g3-dir "$G3_DIR" \
+  --g4-dir "$G4_DIR" \
+  --genesis-evidence "$GENESIS_EVIDENCE" \
+  --expected-genesis-evidence-sha256 "$GENESIS_EVIDENCE_SHA256" \
+  --expected-current-shipper-sha256 "$PRE_RECOVERY_SHIPPER_SHA256"
+```
+
+Installation atomically retains generations 1 through 4, activates G4,
+installs the exact G4 shipper and provisioner, and records a G4-bound Genesis
+receipt. It retires the validator only after unprivileged `authority-status`
+succeeds. Failed status checks preserve the validator and published root for
+an exact idempotent retry. The next product release must be a distinct
+descendant of G4.
+
 ## Independent dispatch verification
 
 Record values from an independently reviewed checkout and isolated baseline,
