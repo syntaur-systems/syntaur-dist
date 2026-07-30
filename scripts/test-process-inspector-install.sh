@@ -8,6 +8,23 @@ command -v getcap >/dev/null
 setfacl_bin=$(command -v setfacl)
 getfacl_bin=$(command -v getfacl)
 
+capability_bound_hex=$(
+  /usr/bin/awk '$1 == "CapBnd:" { print $2 }' /proc/self/status
+)
+case "$capability_bound_hex" in
+  ''|*[!0-9A-Fa-f]*)
+    echo 'could not read the Linux capability bounding set' >&2
+    exit 1
+    ;;
+esac
+capability_bound=$((16#$capability_bound_hex))
+cap_sys_ptrace_mask=$((1 << 19)) # CAP_SYS_PTRACE from linux/capability.h.
+if (( (capability_bound & cap_sys_ptrace_mask) == 0 )); then
+  echo 'CAP_SYS_PTRACE is absent from the runner capability bounding set' >&2
+  echo 'run this test in the digest-pinned bounded container harness' >&2
+  exit 1
+fi
+
 temporary=$(mktemp -d)
 root=/usr/local/libexec/syntaur/process-inspectors
 versions=()
@@ -195,7 +212,7 @@ PROBE_DIRECTORY="$probe" \
 
 fixed_tool_version=$(version_for 11)
 remember_version "$fixed_tool_version"
-# shellcheck disable=SC2329 # resolved indirectly by the sourced installer function.
+# shellcheck disable=SC2317,SC2329 # invoked indirectly by the sourced installer function.
 awk() {
   printf '%064d\n' 0
 }
