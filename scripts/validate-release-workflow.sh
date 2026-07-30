@@ -22,6 +22,106 @@ for action in "${actions[@]}"; do
   }
 done
 
+process_inspector_harness=scripts/test-process-inspector-install-container.sh
+expected_process_inspector_image='image=ubuntu@sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54'
+expected_process_inspector_cap_add="  --cap-add=SYS_PTRACE \\"
+expected_process_inspector_mount="  --mount \"type=bind,src=\$repository,dst=/repo,readonly\" \\"
+image_count=$(grep -Fxc -- \
+  "$expected_process_inspector_image" "$process_inspector_harness" || true)
+[ "$image_count" -eq 1 ] || {
+  echo "process inspector test image is not pinned to the reviewed digest" >&2
+  exit 1
+}
+cap_add_count=$(grep -Ec -- \
+  '^[[:space:]]*--cap-add=' "$process_inspector_harness" || true)
+exact_cap_count=$(grep -Fxc -- \
+  "$expected_process_inspector_cap_add" "$process_inspector_harness" || true)
+[ "$cap_add_count" -eq 1 ] && [ "$exact_cap_count" -eq 1 ] || {
+  echo "process inspector harness must add only SYS_PTRACE" >&2
+  exit 1
+}
+mount_count=$(grep -Ec -- \
+  '^[[:space:]]*--mount ' "$process_inspector_harness" || true)
+readonly_mount_count=$(grep -Fxc -- \
+  "$expected_process_inspector_mount" \
+  "$process_inspector_harness" || true)
+[ "$mount_count" -eq 1 ] && [ "$readonly_mount_count" -eq 1 ] || {
+  echo "process inspector harness must use only the reviewed read-only repository mount" >&2
+  exit 1
+}
+if grep -Eq -- \
+    '^[[:space:]]*--(device|ipc|network|pid|privileged|uts)([=[:space:]\\]|$)|docker\.sock' \
+    "$process_inspector_harness"; then
+  echo "process inspector harness contains a forbidden host-escape option" >&2
+  exit 1
+fi
+
+direct_process_inspector_calls=0
+harness_process_inspector_calls=0
+for workflow_file in "${workflow_files[@]}"; do
+  direct_count=$(yq -r '
+    [.jobs[].steps[]? |
+      select(has("run")) |
+      .run |
+      select(contains("scripts/test-process-inspector-install.sh"))] |
+    length
+  ' "$workflow_file")
+  harness_count=$(yq -r '
+    [.jobs[].steps[]? |
+      select(has("run")) |
+      .run |
+      select(contains("scripts/test-process-inspector-install-container.sh"))] |
+    length
+  ' "$workflow_file")
+  direct_process_inspector_calls=$((direct_process_inspector_calls + direct_count))
+  harness_process_inspector_calls=$((harness_process_inspector_calls + harness_count))
+done
+[ "$direct_process_inspector_calls" -eq 0 ] || {
+  echo "a workflow bypasses the bounded process inspector harness" >&2
+  exit 1
+}
+[ "$harness_process_inspector_calls" -eq 2 ] || {
+  echo "expected exactly two workflow process inspector harness calls" >&2
+  exit 1
+}
+
+lint_process_step_count=$(yq -r '
+  [.jobs."release-workflow".steps[]? |
+    select(.name == "Verify privileged process inspector installation")] |
+  length
+' .github/workflows/workflow-lint.yml)
+lint_process_run=$(yq -r '
+  .jobs."release-workflow".steps[]? |
+  select(.name == "Verify privileged process inspector installation") |
+  .run
+' .github/workflows/workflow-lint.yml)
+[ "$lint_process_step_count" -eq 1 ] \
+  && [ "$lint_process_run" = \
+    'bash scripts/test-process-inspector-install-container.sh' ] || {
+  echo "workflow lint must run the bounded process inspector fixture exactly once" >&2
+  exit 1
+}
+
+release_process_step_count=$(yq -r '
+  [.jobs."sign-and-release".steps[]? |
+    select(.name == "Verify shipped Rust process inspector installation")] |
+  length
+' "$workflow")
+release_process_run=$(yq -r '
+  .jobs."sign-and-release".steps[]? |
+  select(.name == "Verify shipped Rust process inspector installation") |
+  .run
+' "$workflow")
+expected_release_inspector="SYNTAUR_TEST_PROCESS_INSPECTOR=\"\$PWD/dist/syntaur-process-inspector-linux-x86_64\""
+[ "$release_process_step_count" -eq 1 ] \
+  && [[ "$release_process_run" == \
+    *"$expected_release_inspector"* ]] \
+  && [[ "$release_process_run" == \
+    *'bash scripts/test-process-inspector-install-container.sh'* ]] || {
+  echo "release signing must validate the downloaded process inspector through the bounded harness" >&2
+  exit 1
+}
+
 mapfile -t toolchains < <(
   yq -r '.jobs[].steps[]? | select(.uses == "dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88") | .with.toolchain' "$workflow"
 )
@@ -234,6 +334,7 @@ authority_scripts=(
   scripts/release-authority-manifest.sh
   scripts/test-release-authority-bootstrap.sh
   scripts/test-release-authority-workflow.sh
+  scripts/test-process-inspector-install-container.sh
   scripts/validate-release-workflow.sh
   scripts/verify-release-authority-policy.sh
 )

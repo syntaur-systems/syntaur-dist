@@ -41,13 +41,8 @@ jobs:
       - name: Verify POSIX EULA acceptance reuse
         run: bash scripts/test-eula-acceptance.sh
 
-      - name: Install process inspector test dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends acl libcap2-bin
-
       - name: Verify privileged process inspector installation
-        run: bash scripts/test-process-inspector-install.sh
+        run: bash scripts/test-process-inspector-install-container.sh
 
   windows-eula:
     runs-on: windows-2025
