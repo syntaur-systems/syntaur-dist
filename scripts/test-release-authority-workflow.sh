@@ -476,6 +476,7 @@ grep -Fq 'release-authority-source' "$workflow"
 grep -Fq 'SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY' "$workflow"
 grep -Fq 'sudo chown -R 65534:65534 source' "$workflow"
 grep -Fq 'encrypted-authority-source-run-' "$workflow"
+[[ $(grep -Fc -- '--repo "$GITHUB_REPOSITORY"' "$workflow") -eq 10 ]]
 grep -Fq 'mkdir -m 0700 "$age_root/bin"' "$workflow"
 grep -Fq '"$age_root/bin/"' "$workflow"
 grep -Fq '"$age_root/bin/age-keygen" -y -' "$workflow"

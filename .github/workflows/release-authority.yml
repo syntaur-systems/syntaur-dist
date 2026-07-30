@@ -245,16 +245,19 @@ jobs:
             previous_schema=$(bash \
               public-workflow/scripts/release-authority-manifest.sh \
               asset-schema "$RUNNER_TEMP/previous-authority-assets.txt")
-            gh release download "$previous_tag" --dir "$previous_dir"
+            gh release download "$previous_tag" \
+              --repo "$GITHUB_REPOSITORY" --dir "$previous_dir"
             find "$previous_dir" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' \
               >"$RUNNER_TEMP/downloaded-authority-assets.txt"
             test "$(bash public-workflow/scripts/release-authority-manifest.sh \
               asset-schema "$RUNNER_TEMP/downloaded-authority-assets.txt")" \
               = "$previous_schema"
-            gh release verify "$previous_tag" >/dev/null
+            gh release verify "$previous_tag" \
+              --repo "$GITHUB_REPOSITORY" >/dev/null
             while IFS= read -r asset; do
               gh release verify-asset \
-                "$previous_tag" "$previous_dir/$asset" >/dev/null
+                "$previous_tag" "$previous_dir/$asset" \
+                --repo "$GITHUB_REPOSITORY" >/dev/null
             done <"$RUNNER_TEMP/previous-authority-assets.txt"
             previous_manifest="$previous_dir/release-authority-v${previous_schema}.json"
             previous_bundle="${previous_manifest}.cosign.bundle"
@@ -312,10 +315,13 @@ jobs:
                 >"$RUNNER_TEMP/target-assets.txt"
               test "$(bash public-workflow/scripts/release-authority-manifest.sh \
                 asset-schema "$RUNNER_TEMP/target-assets.txt")" = 2
-              gh release download "$tag" --dir "$target_dir"
-              gh release verify "$tag" >/dev/null
+              gh release download "$tag" \
+                --repo "$GITHUB_REPOSITORY" --dir "$target_dir"
+              gh release verify "$tag" \
+                --repo "$GITHUB_REPOSITORY" >/dev/null
               while IFS= read -r asset; do
-                gh release verify-asset "$tag" "$target_dir/$asset" >/dev/null
+                gh release verify-asset "$tag" "$target_dir/$asset" \
+                  --repo "$GITHUB_REPOSITORY" >/dev/null
               done <"$RUNNER_TEMP/target-assets.txt"
               target_manifest="$target_dir/release-authority-v2.json"
               bash public-workflow/scripts/release-authority-manifest.sh validate \
@@ -1556,7 +1562,8 @@ jobs:
               [[ -z $existing ]] && continue
               grep -Fxq "$existing" <<<"$expected_assets"
             done <<<"$actual_assets"
-            gh release upload "$tag" --clobber \
+            gh release upload "$tag" \
+              --repo "$GITHUB_REPOSITORY" --clobber \
               signed-authority/release-authority-v2.json \
               signed-authority/release-authority-v2.json.cosign.bundle \
               signed-authority/syntaur-build-authority-provision \
@@ -1565,7 +1572,8 @@ jobs:
 
             proof_dir="$RUNNER_TEMP/published-draft-proof"
             mkdir -m 0700 "$proof_dir"
-            gh release download "$tag" --dir "$proof_dir"
+            gh release download "$tag" \
+              --repo "$GITHUB_REPOSITORY" --dir "$proof_dir"
             actual_assets=$(find "$proof_dir" -mindepth 1 -maxdepth 1 \
               -type f -printf '%f\n' | LC_ALL=C sort)
             test "$actual_assets" = "$expected_assets"
@@ -1633,9 +1641,11 @@ jobs:
           test "$(jq -r '.immutable' <<<"$release")" = true
           actual_assets=$(jq -r '.assets[].name' <<<"$release" | LC_ALL=C sort)
           test "$actual_assets" = "$expected_assets"
-          gh release verify "$tag" >/dev/null
+          gh release verify "$tag" \
+            --repo "$GITHUB_REPOSITORY" >/dev/null
           while IFS= read -r asset; do
-            gh release verify-asset "$tag" "signed-authority/$asset" >/dev/null
+            gh release verify-asset "$tag" "signed-authority/$asset" \
+              --repo "$GITHUB_REPOSITORY" >/dev/null
           done <<<"$expected_assets"
           test "$(gh api \
             "/repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')" \
