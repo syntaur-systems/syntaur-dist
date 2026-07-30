@@ -19,10 +19,13 @@ expected_shipper="$context/expected-shipper"
 mkdir -p "$fixture" "$expected_shipper"
 
 cc -std=c11 -O2 -Wall -Wextra -Werror \
+    -DFIXTURE_ROLE_MARKER='"shipper"' \
     "$repo_root/scripts/fixtures/release_authority_bootstrap.c" \
     -o "$fixture/syntaur-ship-linux-x86_64"
-cp "$fixture/syntaur-ship-linux-x86_64" \
-    "$fixture/syntaur-verify-linux-x86_64"
+cc -std=c11 -O2 -Wall -Wextra -Werror \
+    -DFIXTURE_ROLE_MARKER='"verifier"' \
+    "$repo_root/scripts/fixtures/release_authority_bootstrap.c" \
+    -o "$fixture/syntaur-verify-linux-x86_64"
 cp "$fixture/syntaur-ship-linux-x86_64" \
     "$expected_shipper/syntaur-ship-linux-x86_64"
 printf '#!/usr/bin/bash\nset -euo pipefail\n' \
@@ -34,9 +37,10 @@ VERIFIER_SHA256=$(sha256sum \
     "$fixture/syntaur-verify-linux-x86_64" | awk '{print $1}')
 PROVISIONER_SHA256=$(sha256sum \
     "$fixture/syntaur-build-authority-provision" | awk '{print $1}')
+[[ $SHIPPER_SHA256 != "$VERIFIER_SHA256" ]]
 PRODUCTION_CONTRACT_SHA256=$(printf production-contract | sha256sum | awk '{print $1}')
 PROMOTION_RECOVERY_SHA256=$(printf promotion-recovery | sha256sum | awk '{print $1}')
-AUTHORITY_VERSION=0.7.116
+AUTHORITY_VERSION=0.7.114
 AUTHORITY_COMMIT=$(printf 'a%.0s' {1..40})
 AUTHORITY_TREE_SHA256=$(printf authority-tree | sha256sum | awk '{print $1}')
 VERIFIER_TOOLCHAIN_ID=rust-1.94.1-x86_64-unknown-linux-gnu
@@ -108,10 +112,11 @@ manifest_sha256=$(sha256sum \
     "$fixture/release-authority-v2.json" | awk '{print $1}')
 helper_sha256=$(sha256sum \
     "$context/release-authority-manifest.sh" | awk '{print $1}')
-base_image=$(yq -er '.env.AUTHORITY_BUILDER_IMAGE' \
-    "$repo_root/.github/workflows/release-authority.yml")
 image="syntaur-release-authority-bootstrap-test:${GITHUB_RUN_ID:-local}-$$"
-if docker info >/dev/null 2>&1; then
+if command -v docker >/dev/null \
+    && timeout 10 docker info >/dev/null 2>&1; then
+    base_image=$(yq -er '.env.AUTHORITY_BUILDER_IMAGE' \
+        "$repo_root/.github/workflows/release-authority.yml")
     docker build --pull=false \
         --build-arg "BASE_IMAGE=$base_image" \
         --tag "$image" \
@@ -161,6 +166,8 @@ else
         --ro-bind "$context/hostname" /etc/hostname \
         --tmpfs /run \
         --dir /run/lock \
+        --tmpfs /home \
+        --dir /home/sean \
         --tmpfs /tmp \
         --dir /tmp/fixture \
         --dir /tmp/bootstrap \

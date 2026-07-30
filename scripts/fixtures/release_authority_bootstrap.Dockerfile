@@ -16,7 +16,8 @@ COPY --chown=root:root release-authority-bootstrap-driver.sh /bootstrap/driver.s
 COPY --chown=1000:1000 fixture/ /fixture/
 COPY --chown=root:root expected-shipper/ /expected/
 
-RUN chmod 0555 \
+RUN install -d -o 1000 -g 1000 -m 0755 /home/sean \
+    && chmod 0555 \
       /bootstrap/bootstrap-release-authority-genesis-v2.sh \
       /bootstrap/release-authority-manifest.sh \
       /bootstrap/driver.sh \

@@ -223,8 +223,10 @@ contract. It must not be the product candidate it later authorizes.
    its five assets into a new canonical operator-owned directory whose parents
    are not group/world writable. Set the directory to `0500`, the manifest and
    bundle to `0400`, and executables to `0500`.
-5. From the independently reviewed public checkout, record the helper digest
-   and run:
+5. From the independently reviewed public checkout, record the helper digest.
+   Independently record the current provisioner and Genesis-validator digests;
+   use the all-zero digest only after proving the corresponding path absent.
+   Then run the non-authorizing verification and staging:
 
 ```sh
 scripts/bootstrap-release-authority-genesis-v2.sh verify \
@@ -238,6 +240,42 @@ scripts/bootstrap-release-authority-genesis-v2.sh verify \
   --expected-provisioner-sha256 "$G1_PROVISIONER_SHA256" \
   --expected-helper-sha256 "$G1_HELPER_SHA256"
 
+sudo scripts/bootstrap-release-authority-genesis-v2.sh stage-build-authority \
+  --source-dir "$SOURCE_DIR" \
+  --expected-manifest-sha256 "$G1_MANIFEST_SHA256" \
+  --expected-workflow-commit "$G1_WORKFLOW_COMMIT" \
+  --expected-authority-version "$G1_VERSION" \
+  --expected-authority-commit "$G1_SOURCE_COMMIT" \
+  --expected-shipper-sha256 "$G1_SHIPPER_SHA256" \
+  --expected-verifier-sha256 "$G1_VERIFIER_SHA256" \
+  --expected-provisioner-sha256 "$G1_PROVISIONER_SHA256" \
+  --expected-helper-sha256 "$G1_HELPER_SHA256" \
+  --expected-current-provisioner-sha256 "$CURRENT_PROVISIONER_SHA256" \
+  --expected-current-validator-sha256 "$CURRENT_GENESIS_VALIDATOR_SHA256"
+
+SYNTAUR_WORKSPACE="$EXACT_G1_SOURCE_WORKTREE" \
+SYNTAUR_ENGINE_WORKSPACE="$EXACT_ENGINE_WORKTREE" \
+  /opt/syntaur-genesis-validator genesis-validate \
+    --commit "$G1_SOURCE_COMMIT" \
+    --engine-commit "$GENESIS_ENGINE_COMMIT" \
+    >"$GENESIS_EVIDENCE"
+chmod 0400 "$GENESIS_EVIDENCE"
+```
+
+**STOP. Do not run installation in this shell or as a continuation of the
+producer command.** Review the one-record Genesis JSON, independently verify
+the immutable build, Mac proof, retained build-authority catalog, source and
+Engine commits, and the generation-1 checkpoint's exact `RUSTSEC_DB_COMMIT`.
+Retain the evidence outside the host and record its digest and Engine/RustSec
+commits in the external ceremony record.
+
+Only after that human review, start a separate installation shell and populate
+`REVIEWED_GENESIS_EVIDENCE_SHA256`, `REVIEWED_GENESIS_ENGINE_COMMIT`, and
+`REVIEWED_GENESIS_RUSTSEC_DB_COMMIT` from the independently retained record.
+Do not derive those variables with command substitution from the live evidence
+file. Then run:
+
+```sh
 sudo scripts/bootstrap-release-authority-genesis-v2.sh install \
   --source-dir "$SOURCE_DIR" \
   --expected-manifest-sha256 "$G1_MANIFEST_SHA256" \
@@ -247,15 +285,35 @@ sudo scripts/bootstrap-release-authority-genesis-v2.sh install \
   --expected-shipper-sha256 "$G1_SHIPPER_SHA256" \
   --expected-verifier-sha256 "$G1_VERIFIER_SHA256" \
   --expected-provisioner-sha256 "$G1_PROVISIONER_SHA256" \
-  --expected-helper-sha256 "$G1_HELPER_SHA256"
+  --expected-helper-sha256 "$G1_HELPER_SHA256" \
+  --expected-rustsec-db-commit "$REVIEWED_GENESIS_RUSTSEC_DB_COMMIT" \
+  --genesis-evidence "$GENESIS_EVIDENCE" \
+  --expected-genesis-evidence-sha256 "$REVIEWED_GENESIS_EVIDENCE_SHA256" \
+  --expected-genesis-engine-commit "$REVIEWED_GENESIS_ENGINE_COMMIT"
 ```
 
-The root action is allowed only on `claudevm`. After acquiring its root lock it
-copies every operator-owned input into bounded root-owned storage, then
-validates and installs only those snapshots. It atomically publishes the
-complete authority root before installing the exact root-owned provisioner and
-shipper. An exact rerun repairs partial executable installation; a different
-root or stale snapshot fails closed.
+Both root actions are allowed only on `claudevm`. Staging creates the
+non-authorizing host-global lock and CAS-installs the signed provisioner plus a
+root-owned validator copied from the signed shipper while proving the canonical
+release root remains absent. Genesis executes that root-owned validator as the
+ordinary operator and performs the exact immutable build and Mac proof under
+the same host-global and canonical deployment locks.
+
+The installer locks the same global and deployment files, snapshots every
+operator-owned input into bounded root-owned storage, validates the approved
+Genesis record, and only then atomically publishes the complete authority root
+and installs the exact shipper. The immutable
+`/etc/syntaur/release-authority/genesis/` proof namespace retains the reviewed
+Genesis evidence and a receipt binding its digest, Engine commit, RustSec
+commit, manifest, shipper, and provisioner; exact reruns must match that
+receipt. Generation 1 itself retains only the exact six-file V2 promotion
+contract so the installed shipper can consume it as a later predecessor. The
+one-time validator is then removed. The provisioner must already be the staged
+signed version and cannot be repaired after publication. An exact rerun repairs
+a root-owned bounded snapshot, an exact staged provisioner or shipper, and the
+private hard-link residue from interrupted lock publication. A different
+authority root, unsafe residue, changed provisioner, or missing/mismatched
+Genesis proof fails closed.
 
 Generation 1 then runs the mandatory product pipeline for a distinct descendant
 commit containing the queued security, camera, physical Frame, memory, and
