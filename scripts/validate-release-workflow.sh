@@ -36,19 +36,19 @@ cap_add_count=$(grep -Ec -- \
   '^[[:space:]]*--cap-add=' "$process_inspector_harness" || true)
 exact_cap_count=$(grep -Fxc -- \
   "$expected_process_inspector_cap_add" "$process_inspector_harness" || true)
-[ "$cap_add_count" -eq 1 ] && [ "$exact_cap_count" -eq 1 ] || {
+if [ "$cap_add_count" -ne 1 ] || [ "$exact_cap_count" -ne 1 ]; then
   echo "process inspector harness must add only SYS_PTRACE" >&2
   exit 1
-}
+fi
 mount_count=$(grep -Ec -- \
   '^[[:space:]]*--mount ' "$process_inspector_harness" || true)
 readonly_mount_count=$(grep -Fxc -- \
   "$expected_process_inspector_mount" \
   "$process_inspector_harness" || true)
-[ "$mount_count" -eq 1 ] && [ "$readonly_mount_count" -eq 1 ] || {
+if [ "$mount_count" -ne 1 ] || [ "$readonly_mount_count" -ne 1 ]; then
   echo "process inspector harness must use only the reviewed read-only repository mount" >&2
   exit 1
-}
+fi
 if grep -Eq -- \
     '^[[:space:]]*--(device|ipc|network|pid|privileged|uts)([=[:space:]\\]|$)|docker\.sock' \
     "$process_inspector_harness"; then
@@ -95,12 +95,12 @@ lint_process_run=$(yq -r '
   select(.name == "Verify privileged process inspector installation") |
   .run
 ' .github/workflows/workflow-lint.yml)
-[ "$lint_process_step_count" -eq 1 ] \
-  && [ "$lint_process_run" = \
-    'bash scripts/test-process-inspector-install-container.sh' ] || {
+if [ "$lint_process_step_count" -ne 1 ] \
+    || [ "$lint_process_run" != \
+      'bash scripts/test-process-inspector-install-container.sh' ]; then
   echo "workflow lint must run the bounded process inspector fixture exactly once" >&2
   exit 1
-}
+fi
 
 release_process_step_count=$(yq -r '
   [.jobs."sign-and-release".steps[]? |
@@ -113,14 +113,13 @@ release_process_run=$(yq -r '
   .run
 ' "$workflow")
 expected_release_inspector="SYNTAUR_TEST_PROCESS_INSPECTOR=\"\$PWD/dist/syntaur-process-inspector-linux-x86_64\""
-[ "$release_process_step_count" -eq 1 ] \
-  && [[ "$release_process_run" == \
-    *"$expected_release_inspector"* ]] \
-  && [[ "$release_process_run" == \
-    *'bash scripts/test-process-inspector-install-container.sh'* ]] || {
+if [ "$release_process_step_count" -ne 1 ] \
+    || [[ "$release_process_run" != *"$expected_release_inspector"* ]] \
+    || [[ "$release_process_run" != \
+      *'bash scripts/test-process-inspector-install-container.sh'* ]]; then
   echo "release signing must validate the downloaded process inspector through the bounded harness" >&2
   exit 1
-}
+fi
 
 mapfile -t toolchains < <(
   yq -r '.jobs[].steps[]? | select(.uses == "dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88") | .with.toolchain' "$workflow"
@@ -334,6 +333,7 @@ authority_scripts=(
   scripts/release-authority-manifest.sh
   scripts/test-release-authority-bootstrap.sh
   scripts/test-release-authority-workflow.sh
+  scripts/test-process-inspector-install.sh
   scripts/test-process-inspector-install-container.sh
   scripts/validate-release-workflow.sh
   scripts/verify-release-authority-policy.sh

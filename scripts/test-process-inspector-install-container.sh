@@ -9,11 +9,11 @@ container_inspector=
 command -v docker >/dev/null
 
 if [[ -n ${SYNTAUR_TEST_PROCESS_INSPECTOR:-} ]]; then
-  [[ -f $SYNTAUR_TEST_PROCESS_INSPECTOR ]] \
-    && [[ ! -L $SYNTAUR_TEST_PROCESS_INSPECTOR ]] || {
-      echo 'external process inspector must be a regular non-symlink file' >&2
-      exit 1
-    }
+  if [[ ! -f $SYNTAUR_TEST_PROCESS_INSPECTOR ]] \
+      || [[ -L $SYNTAUR_TEST_PROCESS_INSPECTOR ]]; then
+    echo 'external process inspector must be a regular non-symlink file' >&2
+    exit 1
+  fi
   inspector=$(realpath -e -- "$SYNTAUR_TEST_PROCESS_INSPECTOR")
   case "$inspector" in
     "$repository"/*)

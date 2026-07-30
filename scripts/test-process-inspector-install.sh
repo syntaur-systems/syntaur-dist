@@ -212,7 +212,7 @@ PROBE_DIRECTORY="$probe" \
 
 fixed_tool_version=$(version_for 11)
 remember_version "$fixed_tool_version"
-# shellcheck disable=SC2329 # resolved indirectly by the sourced installer function.
+# shellcheck disable=SC2317,SC2329 # invoked indirectly by the sourced installer function.
 awk() {
   printf '%064d\n' 0
 }
