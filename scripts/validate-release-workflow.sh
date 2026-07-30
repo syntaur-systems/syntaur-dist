@@ -258,6 +258,11 @@ if [ -f "$authority_workflow" ]; then
   }
   [ "$(grep -o 'secrets.SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY' \
     "$authority_workflow" | wc -l)" -eq 1 ]
+  [ "$(grep -Fc 'sudo chown -R 65534:65534 source' \
+    "$authority_workflow")" -eq 1 ] || {
+    echo "authority source ownership is not normalized for the unprivileged builder" >&2
+    exit 1
+  }
   if grep -q 'SYNTAUR_RELEASE_AUTHORITY_PUBLISHER_' "$authority_workflow"; then
     echo "publisher App credentials are forbidden" >&2
     exit 1

@@ -105,7 +105,8 @@ signing, and publication:
    one-day-retention source archive.
 4. Two `isolated_build` jobs receive only the zero-authority age identity in
    one step. They verify its pinned recipient, decrypt, erase the identity,
-   prove no credential remains, fetch locked dependencies, then build and
+   prove no credential remains, normalize the verified checkout to the
+   unprivileged builder UID, fetch locked dependencies, then build and
    self-test inside a digest-pinned container. Candidate execution has no
    network, capabilities, host credentials, OIDC, or write token. Private
    compiler and candidate diagnostics are not emitted to public Actions logs.
