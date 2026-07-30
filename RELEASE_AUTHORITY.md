@@ -149,7 +149,9 @@ publisher job then creates the exact commit tag before staging the release as
 a draft. A retry can reconcile only the exact tag, workflow commit, canonical
 manifest, signature, five assets, and approval record. Each consumer selects
 the newest immutable artifact for its producer and builder within the same
-workflow run, so failed-job and full reruns do not confuse run attempts.
+workflow run, accepting the download action's direct single-artifact layout
+as well as its per-artifact multi-match layout, so failed-job and full reruns
+do not confuse run attempts.
 Unknown assets, a moved
 tag, another target commit, an immutable collision, an unverified predecessor,
 or a skipped generation fails closed. A complete full-workflow rerun recognizes
