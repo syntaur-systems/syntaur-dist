@@ -1,4 +1,4 @@
-ARG BASE_IMAGE
+ARG BASE_IMAGE=rust@sha256:4ec71e955e6c08aeb238885083222ddff79d82eb87654a96c76e38e94da1a53b
 FROM ${BASE_IMAGE}
 
 RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources \
@@ -8,6 +8,21 @@ RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Check-Valid-Until=false update \
     && apt-get install -y --no-install-recommends jq mawk util-linux \
     && rm -rf /var/lib/apt/lists/*
+
+RUN ! getent passwd sean >/dev/null 2>&1 \
+    && ! getent passwd 1000 >/dev/null 2>&1 \
+    && ! getent group sean >/dev/null 2>&1 \
+    && ! getent group 1000 >/dev/null 2>&1 \
+    && printf '%s\n' \
+      'sean:x:1000:1000:Syntaur fixture operator:/home/sean:/usr/sbin/nologin' \
+      >> /etc/passwd \
+    && printf '%s\n' 'sean:x:1000:' >> /etc/group \
+    && [ "$(getent passwd sean)" = \
+      'sean:x:1000:1000:Syntaur fixture operator:/home/sean:/usr/sbin/nologin' ] \
+    && [ "$(getent passwd 1000)" = \
+      'sean:x:1000:1000:Syntaur fixture operator:/home/sean:/usr/sbin/nologin' ] \
+    && [ "$(getent group sean)" = 'sean:x:1000:' ] \
+    && [ "$(getent group 1000)" = 'sean:x:1000:' ]
 
 COPY --chown=root:root bootstrap-release-authority-genesis-v2.sh /bootstrap/bootstrap-release-authority-genesis-v2.sh
 COPY --chown=root:root release-authority-manifest.sh /bootstrap/release-authority-manifest.sh

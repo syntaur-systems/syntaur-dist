@@ -8,6 +8,19 @@ expected_dir=${BOOTSTRAP_FIXTURE_EXPECTED_DIR:-/expected}
 bootstrap="$bootstrap_root/bootstrap-release-authority-genesis-v2.sh"
 operator_uid=${BOOTSTRAP_FIXTURE_OPERATOR_UID:-1000}
 operator_gid=${BOOTSTRAP_FIXTURE_OPERATOR_GID:-1000}
+if [[ $operator_uid != 0 || $operator_gid != 0 ]]; then
+    expected_operator_passwd=\
+'sean:x:1000:1000:Syntaur fixture operator:/home/sean:/usr/sbin/nologin'
+    expected_operator_group='sean:x:1000:'
+    [[ $operator_uid == 1000 ]]
+    [[ $operator_gid == 1000 ]]
+    [[ $(/usr/bin/getent passwd sean) == "$expected_operator_passwd" ]]
+    [[ $(/usr/bin/getent passwd "$operator_uid") == \
+        "$expected_operator_passwd" ]]
+    [[ $(/usr/bin/getent group sean) == "$expected_operator_group" ]]
+    [[ $(/usr/bin/getent group "$operator_gid") == \
+        "$expected_operator_group" ]]
+fi
 expected_rustsec_commit=$(printf 'd%.0s' {1..40})
 args=(
     --source-dir "$source_dir"
