@@ -2,6 +2,13 @@
 set -euo pipefail
 umask 077
 
+install -d -o root -g root -m 0755 /run/lock
+if [[ ${BOOTSTRAP_FIXTURE_REQUIRE_RUN_NOEXEC:-0} == 1 ]]; then
+    /usr/bin/findmnt -no OPTIONS /run \
+        | /usr/bin/tr ',' '\n' \
+        | /usr/bin/grep -Fx noexec >/dev/null
+fi
+
 bootstrap_root=${BOOTSTRAP_FIXTURE_BOOTSTRAP_ROOT:-/bootstrap}
 source_dir=${BOOTSTRAP_FIXTURE_SOURCE_DIR:-/fixture}
 expected_dir=${BOOTSTRAP_FIXTURE_EXPECTED_DIR:-/expected}
