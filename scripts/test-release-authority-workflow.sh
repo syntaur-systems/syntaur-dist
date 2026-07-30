@@ -223,6 +223,15 @@ jq -c '. + {unexpected:true}' "$tmp_root/protocol.json" \
 expect_failure "$helper" validate-protocol \
     "$tmp_root/protocol-extra.json" "$tmp_root/release-authority-v2.json"
 
+"$helper" shipper-self-test-from-manifest "$tmp_root/release-authority-v2.json" \
+    >"$tmp_root/shipper-self-test.json"
+"$helper" validate-shipper-self-test \
+    "$tmp_root/shipper-self-test.json" "$tmp_root/release-authority-v2.json"
+jq -c '.authority_commit = ("f" * 40)' "$tmp_root/shipper-self-test.json" \
+    >"$tmp_root/shipper-self-test-wrong.json"
+expect_failure "$helper" validate-shipper-self-test \
+    "$tmp_root/shipper-self-test-wrong.json" "$tmp_root/release-authority-v2.json"
+
 "$helper" verifier-self-test-from-manifest "$tmp_root/release-authority-v2.json" \
     >"$tmp_root/verifier-self-test.json"
 "$helper" validate-verifier-self-test \
@@ -265,6 +274,183 @@ git -C "$source_repo" commit -qm two
 source_commit_two=$(git -C "$source_repo" rev-parse HEAD)
 [[ $("$helper" source-tree-sha256 "$source_repo" "$source_commit_two") != "$tree_one" ]]
 
+g1_verifier="$repo_root/scripts/verify-g1-authority-source.sh"
+g1_toml_parser="$tmp_root/yq-linux-amd64-v4.53.2"
+/usr/bin/curl -fsSLo "$g1_toml_parser" \
+    https://github.com/mikefarah/yq/releases/download/v4.53.2/yq_linux_amd64
+printf '%s  %s\n' \
+    d56bf5c6819e8e696340c312bd70f849dc1678a7cda9c2ad63eebd906371d56b \
+    "$g1_toml_parser" | sha256sum -c - >/dev/null
+chmod 0500 "$g1_toml_parser"
+
+verify_g1() {
+    "$g1_verifier" "$@" "$g1_toml_parser"
+}
+
+g1_repo="$tmp_root/g1-source-repo"
+mkdir -p \
+    "$g1_repo/syntaur-ship/src" \
+    "$g1_repo/syntaur-ship/build-tools" \
+    "$g1_repo/scripts"
+git -C "$g1_repo" init -q
+git -C "$g1_repo" config user.name fixture
+git -C "$g1_repo" config user.email fixture@example.invalid
+printf '0.7.114\n' >"$g1_repo/VERSION"
+printf 'baseline validator\n' >"$g1_repo/syntaur-ship/src/genesis_validation.rs"
+printf 'baseline date\n' >"$g1_repo/syntaur-ship/build-tools/date"
+printf 'baseline git\n' >"$g1_repo/syntaur-ship/build-tools/git"
+printf 'baseline provisioner\n' >"$g1_repo/scripts/provision-syntaur-build-authority.sh"
+printf '%s\n' \
+    'version = 3' \
+    '' \
+    '[[package]]' \
+    'name = "core-dependency"' \
+    'version = "1.0.0"' \
+    '' \
+    '[[package]]' \
+    'name = "syntaur-ship"' \
+    'version = "0.7.114"' \
+    '' \
+    '[[package]]' \
+    'name = "syntaur-verify"' \
+    'version = "0.7.114"' \
+    >"$g1_repo/Cargo.lock"
+git -C "$g1_repo" add .
+git -C "$g1_repo" commit -qm baseline
+g1_parent=$(git -C "$g1_repo" rev-parse HEAD)
+g1_parent_tree=$(git -C "$g1_repo" rev-parse "$g1_parent^{tree}")
+
+write_g1_delta() {
+    printf 'G1 validator\n' >"$g1_repo/syntaur-ship/src/genesis_validation.rs"
+    printf 'G1 date\n' >"$g1_repo/syntaur-ship/build-tools/date"
+    printf 'G1 git\n' >"$g1_repo/syntaur-ship/build-tools/git"
+    printf 'G1 provisioner\n' >"$g1_repo/scripts/provision-syntaur-build-authority.sh"
+    chmod 0755 \
+        "$g1_repo/syntaur-ship/build-tools/date" \
+        "$g1_repo/syntaur-ship/build-tools/git" \
+        "$g1_repo/scripts/provision-syntaur-build-authority.sh"
+}
+
+write_g1_delta
+sed -i 's/version = "0.7.114"/version = "0.7.115"/g' "$g1_repo/Cargo.lock"
+git -C "$g1_repo" add .
+git -C "$g1_repo" commit -qm exact-g1
+g1_candidate=$(git -C "$g1_repo" rev-parse HEAD)
+verify_g1 \
+    "$g1_repo" "$g1_candidate" "$g1_parent" "$g1_parent_tree" 0.7.114
+
+required_g1_paths=(
+    syntaur-ship/src/genesis_validation.rs
+    syntaur-ship/build-tools/date
+    syntaur-ship/build-tools/git
+    scripts/provision-syntaur-build-authority.sh
+)
+invalid_g1_modes=(0755 0644 0644 0644)
+for index in "${!required_g1_paths[@]}"; do
+    required_path=${required_g1_paths[$index]}
+
+    git -C "$g1_repo" checkout -q \
+        -b "bad-required-deletion-$index" "$g1_parent"
+    write_g1_delta
+    rm -- "$g1_repo/$required_path"
+    git -C "$g1_repo" add -A
+    git -C "$g1_repo" commit -qm "bad required deletion $index"
+    expect_failure verify_g1 \
+        "$g1_repo" "$(git -C "$g1_repo" rev-parse HEAD)" \
+        "$g1_parent" "$g1_parent_tree" 0.7.114
+
+    git -C "$g1_repo" checkout -q \
+        -b "bad-required-mode-$index" "$g1_parent"
+    write_g1_delta
+    chmod "${invalid_g1_modes[$index]}" "$g1_repo/$required_path"
+    git -C "$g1_repo" add .
+    git -C "$g1_repo" commit -qm "bad required mode $index"
+    expect_failure verify_g1 \
+        "$g1_repo" "$(git -C "$g1_repo" rev-parse HEAD)" \
+        "$g1_parent" "$g1_parent_tree" 0.7.114
+
+    git -C "$g1_repo" checkout -q \
+        -b "bad-required-gitlink-$index" "$g1_parent"
+    write_g1_delta
+    rm -- "$g1_repo/$required_path"
+    git -C "$g1_repo" add .
+    git -C "$g1_repo" update-index --add \
+        --cacheinfo "160000,$g1_parent,$required_path"
+    git -C "$g1_repo" commit -qm "bad required gitlink $index"
+    expect_failure verify_g1 \
+        "$g1_repo" "$(git -C "$g1_repo" rev-parse HEAD)" \
+        "$g1_parent" "$g1_parent_tree" 0.7.114
+done
+
+git -C "$g1_repo" checkout -q -b bad-product "$g1_parent"
+write_g1_delta
+mkdir -p "$g1_repo/truenas-infra"
+printf 'product mutation\n' >"$g1_repo/truenas-infra/docker-compose-prod.yml"
+git -C "$g1_repo" add .
+git -C "$g1_repo" commit -qm bad-product
+expect_failure verify_g1 \
+    "$g1_repo" "$(git -C "$g1_repo" rev-parse HEAD)" \
+    "$g1_parent" "$g1_parent_tree" 0.7.114
+
+git -C "$g1_repo" checkout -q -b bad-lock "$g1_parent"
+write_g1_delta
+sed -i '0,/version = "1.0.0"/s//version = "2.0.0"/' "$g1_repo/Cargo.lock"
+git -C "$g1_repo" add .
+git -C "$g1_repo" commit -qm bad-lock
+expect_failure verify_g1 \
+    "$g1_repo" "$(git -C "$g1_repo" rev-parse HEAD)" \
+    "$g1_parent" "$g1_parent_tree" 0.7.114
+
+git -C "$g1_repo" checkout -q -b bad-lock-scalar-type "$g1_parent"
+write_g1_delta
+sed -i '1s/version = 3/version = 3.0/' "$g1_repo/Cargo.lock"
+git -C "$g1_repo" add .
+git -C "$g1_repo" commit -qm bad-lock-scalar-type
+expect_failure verify_g1 \
+    "$g1_repo" "$(git -C "$g1_repo" rev-parse HEAD)" \
+    "$g1_parent" "$g1_parent_tree" 0.7.114
+
+git -C "$g1_repo" checkout -q -b bad-lock-table-syntax "$g1_parent"
+write_g1_delta
+printf '%s\n' \
+    '' \
+    '[[ package ]]' \
+    'name = "hidden-non-authority-package"' \
+    'version = "1.0.0"' \
+    >>"$g1_repo/Cargo.lock"
+git -C "$g1_repo" add .
+git -C "$g1_repo" commit -qm bad-lock-table-syntax
+expect_failure verify_g1 \
+    "$g1_repo" "$(git -C "$g1_repo" rev-parse HEAD)" \
+    "$g1_parent" "$g1_parent_tree" 0.7.114
+
+git -C "$g1_repo" checkout -q -b bad-lock-multiline-string "$g1_parent"
+write_g1_delta
+printf '%s\n' \
+    '' \
+    '[[package]]' \
+    'name = "hidden-non-authority-package"' \
+    'version = "1.0.0"' \
+    'description = """' \
+    'name = "syntaur-ship"' \
+    '"""' \
+    >>"$g1_repo/Cargo.lock"
+git -C "$g1_repo" add .
+git -C "$g1_repo" commit -qm bad-lock-multiline-string
+expect_failure verify_g1 \
+    "$g1_repo" "$(git -C "$g1_repo" rev-parse HEAD)" \
+    "$g1_parent" "$g1_parent_tree" 0.7.114
+
+git -C "$g1_repo" checkout -q -b bad-path-utf8 "$g1_parent"
+write_g1_delta
+invalid_utf8_path=$'syntaur-ship/\xff'
+printf 'invalid UTF-8 path\n' >"$g1_repo/$invalid_utf8_path"
+git -C "$g1_repo" add .
+git -C "$g1_repo" commit -qm bad-path-utf8
+expect_failure verify_g1 \
+    "$g1_repo" "$(git -C "$g1_repo" rev-parse HEAD)" \
+    "$g1_parent" "$g1_parent_tree" 0.7.114
+
 workflow="$repo_root/.github/workflows/release-authority.yml"
 [[ $(yq -r '.on.workflow_dispatch.inputs | length' "$workflow") == 1 ]]
 grep -Fq 'approval_record:' "$workflow"
@@ -280,11 +466,20 @@ for required in \
 done
 grep -Fq 'authority-protocol-inputs' "$workflow"
 grep -Fq -- '--authority-protocol-self-test' "$workflow"
+grep -Fq 'shipper-self-test.json' "$workflow"
+grep -Fq 'YQ_VERSION: v4.53.2' "$workflow"
+grep -Fq \
+    'YQ_LINUX_AMD64_SHA256: d56bf5c6819e8e696340c312bd70f849dc1678a7cda9c2ad63eebd906371d56b' \
+    "$workflow"
 grep -Fq -- '--network none' "$workflow"
 grep -Fq 'release-authority-source' "$workflow"
 grep -Fq 'SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY' "$workflow"
 grep -Fq 'encrypted-authority-source-run-' "$workflow"
 grep -Fq 'assert-genesis' "$workflow"
+grep -Fq 'fetch-depth: 2' "$workflow"
+grep -Fq 'verify-g1-authority-source.sh' "$workflow"
+grep -Fq 'b003360f63707d92fd0df1fd12384282f1c3004f' "$workflow"
+grep -Fq '1bf740acd5a7223e98370f668148f01ebfb6eff8' "$workflow"
 grep -Fq 'draft' "$workflow"
 grep -Fq 'snapshot_authority_namespace' "$workflow"
 grep -Fq 'permission-attestations: read' "$workflow"

@@ -107,7 +107,9 @@ signing, and publication:
 3. `source_metadata`, also behind `release-authority-source`, is the only job
    with the read-only deploy key. It checks out the exact reviewed commit,
    proves credential removal, verifies the source identity and provisioner,
-   rejects unsafe archive entries, and uploads only an age-encrypted,
+   and, for G1, proves exact one-parent ancestry and an authority-only delta
+   while comparing all non-authority Cargo.lock data with a digest-pinned TOML
+   parser. It rejects unsafe archive entries and uploads only an age-encrypted,
    one-day-retention source archive.
 4. Two `isolated_build` jobs receive only the zero-authority age identity in
    one step. They verify its pinned recipient, decrypt, erase the identity,
@@ -116,7 +118,8 @@ signing, and publication:
    network, capabilities, host credentials, OIDC, or write token. Private
    compiler and candidate diagnostics are not emitted to public Actions logs.
 5. `compare_builds` requires exact file sets, byte-identical binaries and
-   metadata, the eight-key shipper protocol, and the verifier protocol
+   metadata, the eight-key shipper protocol, the shipper self-test that binds
+   its compiled version and embedded source commit, and the verifier protocol
    self-test. Its pre-approval summary binds every reviewed source, ancestry,
    binary, baseline, browser, schema, toolchain, approval-record, and canonical
    manifest digest.
@@ -198,12 +201,37 @@ promotion_recovery_schema
 promotion_recovery_sha256
 ```
 
-This revision fixes production member count `12`, receipt schema `6`,
-build-authority schema `4`, and promotion-recovery schema `1`. The verifier
-must emit the exact canonical
+This signed future-product protocol fixes production member count `12`,
+receipt schema `6`, build-authority schema `4`, and promotion-recovery schema
+`1`. The verifier must emit the exact canonical
 `syntaur-verify --authority-protocol-self-test` line for verifier schema `5`,
 18 required gates, four viewport gates, and protocol
 `syntaur-verify-attestation-v5`.
+
+The one-time Genesis validation has a separate, non-authorizing contract. Its
+exact ordered baseline contains five members from the source-closed
+`b003360f63707d92fd0df1fd12384282f1c3004f` core:
+
+```text
+rust-openclaw
+mace
+syntaur_browser
+runtime-compose
+runtime-entrypoint
+```
+
+Five does not mean “everything that happened to be live” at that historical
+point. `syntaur-isolation-tests` is a separate validation artifact. CAPTCHA,
+Social, `release-images.env`, the Tailscale entrypoint, SearXNG settings, the
+physical Frame payload, and every runtime/production generation are
+future-product members and cannot appear in the Genesis baseline. The
+build-authority schema still binds `frame_sysroot_tree_sha256`; that is future
+toolchain authority, not a Genesis Frame artifact.
+
+The verifier manifest’s `approved_baseline_*` fields describe the independently
+approved visual/browser verification baseline. They are unrelated to the
+five-member Genesis build baseline and must never be used as its inventory or
+contract hash.
 
 ## One-time V2 generation-1 bootstrap
 
@@ -214,7 +242,9 @@ contract. It must not be the product candidate it later authorizes.
 1. Complete all human prerequisites above and merge the reviewed public
    workflow through protected `main`.
 2. Independently reproduce the authority-only source tree, shipper, verifier,
-   provisioner, baseline, browser, toolchain, and protocol values.
+   provisioner, the five-member Genesis contract, browser, toolchain, and the
+   separate signed 12-member future-product protocol values. Prove the G1
+   source is an exact one-parent descendant of `b003360f63707d92fd0df1fd12384282f1c3004f`.
 3. Render and validate an approval record with previous generation `0` and a
    64-zero predecessor digest. Dispatch **Freeze or promote release authority**
    from `main`, inspect the complete comparison, and approve both protected
@@ -263,11 +293,17 @@ chmod 0400 "$GENESIS_EVIDENCE"
 ```
 
 **STOP. Do not run installation in this shell or as a continuation of the
-producer command.** Review the one-record Genesis JSON, independently verify
-the immutable build, Mac proof, retained build-authority catalog, source and
-Engine commits, and the generation-1 checkpoint's exact `RUSTSEC_DB_COMMIT`.
-Retain the evidence outside the host and record its digest and Engine/RustSec
-commits in the external ceremony record.
+producer command.** Review the one-record `syntaur.genesis-validation.v2`
+JSON. Its `authority_source` is the later G1 authority-only commit, while the
+gateway proof and five-member baseline are pinned to `b003360f`. Independently
+verify the recomputed baseline inventory ID and manifest hash, the separate
+isolation artifact, both fresh builds, Mac browser/gateway proof, root-owned
+Mac host-key pin and explicit identity fingerprint, retained build-authority
+catalog, source and Engine commits, and the generation-1 checkpoint's exact
+`RUSTSEC_DB_COMMIT`. The record must contain no runtime generation, production
+generation, deployment stamp, Frame payload/proof, release receipt, rollback,
+or deployment authority. Retain the evidence outside the host and record its
+digest and Engine/RustSec commits in the external ceremony record.
 
 Only after that human review, start a separate installation shell and populate
 `REVIEWED_GENESIS_EVIDENCE_SHA256`, `REVIEWED_GENESIS_ENGINE_COMMIT`, and
@@ -295,18 +331,30 @@ sudo scripts/bootstrap-release-authority-genesis-v2.sh install \
 Both root actions are allowed only on `claudevm`. Staging creates the
 non-authorizing host-global lock and CAS-installs the signed provisioner plus a
 root-owned validator copied from the signed shipper while proving the canonical
-release root remains absent. Genesis executes that root-owned validator as the
-ordinary operator and performs the exact immutable build and Mac proof under
-the same host-global and canonical deployment locks.
+release root remains absent. It also installs the exact root-owned
+`/etc/syntaur/mac-mini-known-hosts` record and an exact content-addressed Mac
+identity under `/etc/syntaur/`. The private identity is root-owned,
+operator-readable, link-count/size/private-digest pinned, and independently
+cross-checked against its reviewed public digest and fingerprint. Genesis
+executes the root-owned validator as the ordinary operator, disables
+ssh-agent/default identities, certificates, and ambient host-key trust, uses
+only those protected files, and performs the exact immutable build and Mac
+proof under the same host-global and canonical deployment locks.
 
 The installer locks the same global and deployment files, snapshots every
 operator-owned input into bounded root-owned storage, validates the approved
 Genesis record, and only then atomically publishes the complete authority root
-and installs the exact shipper. The immutable
+and installs the exact shipper. The live `/usr/local/bin/syntaur-ship` has the
+distinct exact mode `01755`; the sticky bit is a role tag, not credential
+authority. Retained generation executables remain `0555`. Bootstrap and
+promotion prove root ownership, digest, and link count; the bounded launcher
+then binds its inherited descriptor to the canonical installed path, inode,
+and initial/self mount provenance. The immutable
 `/etc/syntaur/release-authority/genesis/` proof namespace retains the reviewed
-Genesis evidence and a receipt binding its digest, Engine commit, RustSec
-commit, manifest, shipper, and provisioner; exact reruns must match that
-receipt. Generation 1 itself retains only the exact six-file V2 promotion
+Genesis evidence and a separate install receipt binding its digest, Engine
+commit, RustSec commit, manifest, shipper, and provisioner; exact reruns must
+match that receipt. The validator itself never emits a release or deployment
+receipt. Generation 1 retains only the exact six-file V2 promotion
 contract so the installed shipper can consume it as a later predecessor. The
 one-time validator is then removed. The provisioner must already be the staged
 signed version and cannot be repaired after publication. An exact rerun repairs

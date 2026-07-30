@@ -15,8 +15,13 @@ COPY --chown=root:root release-authority-fake-cosign.sh /usr/local/bin/cosign
 COPY --chown=root:root release-authority-bootstrap-driver.sh /bootstrap/driver.sh
 COPY --chown=1000:1000 fixture/ /fixture/
 COPY --chown=root:root expected-shipper/ /expected/
+COPY --chown=1000:1000 operator-ssh/ /home/sean/.ssh/
 
 RUN install -d -o 1000 -g 1000 -m 0755 /home/sean \
+    && chown 1000:1000 /home/sean \
+    && chown 1000:1000 /home/sean/.ssh \
+    && chmod 0700 /home/sean/.ssh \
+    && chmod 0600 /home/sean/.ssh/id_ed25519 \
     && chmod 0555 \
       /bootstrap/bootstrap-release-authority-genesis-v2.sh \
       /bootstrap/release-authority-manifest.sh \

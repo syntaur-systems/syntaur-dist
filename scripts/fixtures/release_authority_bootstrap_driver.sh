@@ -24,7 +24,7 @@ install_args=(
     "${args[@]}"
     --expected-rustsec-db-commit "$expected_rustsec_commit"
 )
-engine_commit=$(printf 'c%.0s' {1..40})
+engine_commit=36f3348fc32c02d0a0091be9ea87b828306941cc
 
 if [[ $operator_uid == 0 && $operator_gid == 0 ]]; then
     "$bootstrap" verify "${args[@]}"
@@ -63,6 +63,28 @@ SUDO_UID="$operator_uid" SUDO_GID="$operator_gid" \
 [[ ! -e /etc/syntaur/release-authority ]]
 [[ $(stat -c '%u:%g:%a:%h:%s' /etc/syntaur/syntaur-ship-mutation.lock) \
     == "0:$operator_gid:440:1:0" ]]
+[[ $(stat -c '%u:%g:%a:%h' /etc/syntaur/mac-mini-known-hosts) \
+    == "0:0:444:1" ]]
+[[ $(sha256sum /etc/syntaur/mac-mini-known-hosts | awk '{print $1}') \
+    == 2a703ea347e6abc8e423df92ba4e2592656cf64fee467083104565a69478b1c1 ]]
+[[ $(stat -c '%u:%g:%a:%h' "$GENESIS_TEST_IDENTITY_PATH") \
+    == "0:$operator_gid:440:1" ]]
+[[ $(sha256sum "$GENESIS_TEST_IDENTITY_PATH" | awk '{print $1}') \
+    == "$GENESIS_TEST_IDENTITY_SHA256" ]]
+if [[ $operator_uid != 0 && $operator_gid != 0 ]]; then
+    observed_public_sha256=$(
+        /usr/bin/setpriv \
+            --reuid "$operator_uid" \
+            --regid "$operator_gid" \
+            --clear-groups \
+            /usr/bin/ssh-keygen -y -f "$GENESIS_TEST_IDENTITY_PATH" \
+            | awk 'NF >= 2 {print $1, $2}' \
+            | sha256sum \
+            | awk '{print $1}'
+    )
+    [[ $observed_public_sha256 == \
+        "$GENESIS_TEST_IDENTITY_PUBLIC_SHA256" ]]
+fi
 [[ $(sha256sum "$source_dir/syntaur-ship-linux-x86_64" | awk '{print $1}') \
     != "$EXPECTED_SHIPPER_SHA256" ]]
 [[ ! -e /run/syntaur-release-authority-genesis-v2.snapshot ]]
@@ -111,8 +133,8 @@ evidence="$evidence_dir/genesis-validation.json"
 sha256_label() {
     printf '%s' "$1" | sha256sum | awk '{print $1}'
 }
-source_tree=$(printf '1%.0s' {1..40})
-engine_tree=$(printf '2%.0s' {1..40})
+source_tree=$GENESIS_TEST_AUTHORITY_TREE
+engine_tree=2983054537a8fe4be36a3a8f7c73973722ed1dd1
 source_export_sha=$(sha256_label source-export)
 source_sealed_sha=$(sha256_label source-sealed-export)
 engine_export_sha=$(sha256_label engine-export)
@@ -142,20 +164,73 @@ gateway_sha=$(sha256_label artifact-rust-openclaw)
 mace_sha=$(sha256_label artifact-mace)
 isolation_sha=$(sha256_label artifact-syntaur-isolation-tests)
 browser_sha=$(sha256_label artifact-syntaur-browser)
-captcha_sha=$(sha256_label artifact-rust-captcha-bridge)
-social_sha=$(sha256_label artifact-rust-social-manager)
-compose_sha=$(sha256_label artifact-runtime-compose)
-images_sha=$(sha256_label artifact-runtime-images)
-entrypoint_sha=$(sha256_label artifact-runtime-entrypoint)
-tailscale_sha=$(sha256_label artifact-runtime-tailscale-entrypoint)
-searxng_sha=$(sha256_label artifact-runtime-searxng-settings)
-frame_sha=$(sha256_label artifact-syntaur-frame)
-runtime_generation_id=$(sha256_label runtime-generation)
-runtime_manifest_sha=$(sha256_label runtime-generation-manifest)
-production_generation_id=$(sha256_label production-generation)
+compose_sha=2ae3b178f3b0c6cbb539cf61547cc3b26e5030db6a2fe378e64498325ef95390
+entrypoint_sha=177fc537cf32a42836ba4309a2d24dfa06a99cc1669f9dbc92bc449b9ce1eb8e
+baseline_contract_sha=d93f9e3022dc3494434373473f461e2b2b6fba2b238f9335a407a83cd5d5f40c
+inventory_members=$(
+    jq -cjn \
+        --arg gateway "$gateway_sha" \
+        --arg mace "$mace_sha" \
+        --arg browser "$browser_sha" \
+        --arg compose "$compose_sha" \
+        --arg entrypoint "$entrypoint_sha" \
+        '[
+          {id:"rust-openclaw",path:"bin/rust-openclaw",sha256:$gateway,size:1,kind:"binary",mode:365},
+          {id:"mace",path:"bin/mace",sha256:$mace,size:2,kind:"binary",mode:365},
+          {id:"syntaur_browser",path:"bin/syntaur_browser",sha256:$browser,size:4,kind:"binary",mode:365},
+          {id:"runtime-compose",path:"runtime/docker-compose-prod.yml",sha256:$compose,size:4817,kind:"config",mode:420},
+          {id:"runtime-entrypoint",path:"runtime/entrypoint.sh",sha256:$entrypoint,size:2913,kind:"script",mode:365}
+        ]'
+)
+inventory_id=$(
+    {
+        printf 'syntaur.genesis-baseline-inventory.v1\0'
+        jq -cjn \
+            --arg contract "$baseline_contract_sha" \
+            --argjson members "$inventory_members" \
+            '{schema:1,contract_sha256:$contract,members:$members}'
+    } | sha256sum | awk '{print $1}'
+)
+baseline_inventory=$(
+    jq -cjn \
+        --arg contract "$baseline_contract_sha" \
+        --arg inventory "$inventory_id" \
+        --argjson members "$inventory_members" \
+        '{schema:1,contract_sha256:$contract,inventory_id:$inventory,members:$members}'
+)
+inventory_manifest_sha=$(
+    {
+        printf 'syntaur.genesis-baseline-inventory-manifest.v1\0'
+        printf '%s' "$baseline_inventory"
+    } | sha256sum | awk '{print $1}'
+)
+production_contract_sha=$(
+    jq -er '.production_contract_sha256' \
+        "$source_dir/release-authority-v2.json"
+)
+production_member_count=$(
+    jq -er '.production_member_count' \
+        "$source_dir/release-authority-v2.json"
+)
+receipt_schema=$(jq -er '.receipt_schema' "$source_dir/release-authority-v2.json")
+build_authority_schema=$(
+    jq -er '.build_authority_schema' \
+        "$source_dir/release-authority-v2.json"
+)
+promotion_recovery_schema=$(
+    jq -er '.promotion_recovery_schema' \
+        "$source_dir/release-authority-v2.json"
+)
+promotion_recovery_sha=$(
+    jq -er '.promotion_recovery_sha256' \
+        "$source_dir/release-authority-v2.json"
+)
+[[ $production_member_count -eq 12 ]]
+[[ $(jq -r 'length' <<<"$inventory_members") -eq 5 ]]
 jq -cn \
     --arg version "$EXPECTED_AUTHORITY_VERSION" \
     --arg source "$EXPECTED_AUTHORITY_COMMIT" \
+    --arg source_epoch "$GENESIS_TEST_SOURCE_EPOCH" \
     --arg engine "$engine_commit" \
     --arg rustsec "$expected_rustsec_commit" \
     --arg shipper "$EXPECTED_SHIPPER_SHA256" \
@@ -191,26 +266,31 @@ jq -cn \
     --arg mace "$mace_sha" \
     --arg isolation "$isolation_sha" \
     --arg browser "$browser_sha" \
-    --arg captcha "$captcha_sha" \
-    --arg social "$social_sha" \
-    --arg compose "$compose_sha" \
-    --arg images "$images_sha" \
-    --arg entrypoint "$entrypoint_sha" \
-    --arg tailscale "$tailscale_sha" \
-    --arg searxng "$searxng_sha" \
-    --arg frame "$frame_sha" \
-    --arg runtime_generation "$runtime_generation_id" \
-    --arg runtime_manifest "$runtime_manifest_sha" \
-    --arg production_generation "$production_generation_id" \
+    --arg baseline_contract "$baseline_contract_sha" \
+    --arg inventory_id "$inventory_id" \
+    --arg inventory_manifest "$inventory_manifest_sha" \
+    --arg ssh_identity_path "$GENESIS_TEST_IDENTITY_PATH" \
+    --arg ssh_identity_sha256 "$GENESIS_TEST_IDENTITY_SHA256" \
+    --arg ssh_identity_public_sha256 \
+        "$GENESIS_TEST_IDENTITY_PUBLIC_SHA256" \
+    --arg ssh_identity_fingerprint \
+        "$GENESIS_TEST_IDENTITY_FINGERPRINT" \
+    --argjson baseline_inventory "$baseline_inventory" \
+    --arg production_contract "$production_contract_sha" \
+    --argjson production_member_count "$production_member_count" \
+    --argjson receipt_schema "$receipt_schema" \
+    --argjson build_authority_schema "$build_authority_schema" \
+    --argjson promotion_recovery_schema "$promotion_recovery_schema" \
+    --arg promotion_recovery "$promotion_recovery_sha" \
     --argjson shipper_size \
         "$(stat -c '%s' "$expected_dir/syntaur-ship-linux-x86_64")" \
     '{
-      schema:"syntaur.genesis-validation.v1",
+      schema:"syntaur.genesis-validation.v2",
       authorizing:false,
       completed_at:"2026-07-29T00:00:00Z",
       host:"claudevm",
-      version:$version,
-      source:{
+      authority_version:$version,
+      authority_source:{
         commit:$source,
         tree:$source_tree,
         workspace:"/tmp/source",
@@ -224,7 +304,23 @@ jq -cn \
         export_tree_sha256:$engine_export,
         sealed_export_tree_sha256:$engine_sealed
       },
-      source_date_epoch:1,
+      authority_source_date_epoch:($source_epoch | tonumber),
+      baseline:{
+        schema:1,
+        product_parent_commit:"b003360f63707d92fd0df1fd12384282f1c3004f",
+        product_parent_tree:"1bf740acd5a7223e98370f668148f01ebfb6eff8",
+        product_version:"0.7.114",
+        product_source_date_epoch:1784316447,
+        product_built_at:"2026-07-17T19:27:27Z",
+        build_tool_count:2,
+        date_shim_sha256:"8006ad3b0a1eaf63a5d8e80c04e9c7c259a435fdf44c2cd698ac6efbc335abe9",
+        git_shim_sha256:"872bbdd70036c8b3992fa1f404a29ef74483004ca4baec90be8b03f4ea12b5b0",
+        engine_commit:$engine,
+        engine_tree:$engine_tree,
+        member_count:5,
+        contract_sha256:$baseline_contract,
+        authorizing:false
+      },
       shipper:{
         schema:1,
         executable_sha256:$shipper,
@@ -271,36 +367,62 @@ jq -cn \
         host_target:"x86_64-unknown-linux-gnu"
       },
       reproducibility_builds:2,
-      artifacts:[
-        {id:"rust-openclaw",path:"bin/rust-openclaw",sha256:$gateway,size:1},
-        {id:"mace",path:"bin/mace",sha256:$mace,size:2},
-        {id:"syntaur-isolation-tests",path:"bin/syntaur-isolation-tests",sha256:$isolation,size:3},
-        {id:"syntaur_browser",path:"bin/syntaur_browser",sha256:$browser,size:4},
-        {id:"rust-captcha-bridge",path:"bin/rust-captcha-bridge",sha256:$captcha,size:5},
-        {id:"rust-social-manager",path:"bin/rust-social-manager",sha256:$social,size:6},
-        {id:"runtime-compose",path:"runtime/docker-compose-prod.yml",sha256:$compose,size:7},
-        {id:"runtime-images",path:"runtime/release-images.env",sha256:$images,size:8},
-        {id:"runtime-entrypoint",path:"runtime/entrypoint.sh",sha256:$entrypoint,size:9},
-        {id:"runtime-tailscale-entrypoint",path:"runtime/tailscale-sidecar-entrypoint.sh",sha256:$tailscale,size:10},
-        {id:"runtime-searxng-settings",path:"runtime/searxng-settings.yml",sha256:$searxng,size:11},
-        {id:"syntaur-frame",path:"frame/syntaur-frame",sha256:$frame,size:12}
+      baseline_inventory:$baseline_inventory,
+      baseline_inventory_manifest_sha256:$inventory_manifest,
+      validation_artifacts:[
+        {
+          id:"syntaur-isolation-tests",
+          path:"validation/syntaur-isolation-tests",
+          sha256:$isolation,
+          size:3
+        }
       ],
-      runtime_generation_id:$runtime_generation,
-      runtime_generation_manifest_sha256:$runtime_manifest,
-      production_generation_id:$production_generation,
+      future_product_protocol:{
+        schema:"syntaur.future-product-protocol.v2",
+        release_authority_manifest_schema:2,
+        protocol:{
+          schema:1,
+          provisioner_sha256:$provisioner,
+          production_contract_sha256:$production_contract,
+          production_member_count:$production_member_count,
+          receipt_schema:$receipt_schema,
+          build_authority_schema:$build_authority_schema,
+          promotion_recovery_schema:$promotion_recovery_schema,
+          promotion_recovery_sha256:$promotion_recovery
+        }
+      },
       mac_target:"sean@192.168.1.58",
       mac_gateway_url:"http://192.168.1.58:18789",
       mac_smoke:{
+        schema:"syntaur.genesis-baseline-mac-smoke.v1",
         completed_at:"2026-07-29T00:00:00Z",
-        version:$version,
-        source_commit:$source,
+        baseline_contract_sha256:$baseline_contract,
+        baseline_inventory_id:$inventory_id,
+        baseline_inventory_manifest_sha256:$inventory_manifest,
+        staged_member_count:5,
         gateway_sha256:$gateway,
-        frame_sha256:$frame,
-        frame_size:12,
-        frame_elf_machine:183,
-        production_generation_id:$production_generation,
-        runtime_generation_id:$runtime_generation,
-        runtime_generation_manifest_sha256:$runtime_manifest,
+        gateway_size:1,
+        gateway_version:"0.7.114",
+        gateway_source_commit:"b003360f63707d92fd0df1fd12384282f1c3004f",
+        gateway_built_at:"2026-07-17T19:27:27Z",
+        mace_sha256:$mace,
+        mace_size:2,
+        browser_sha256:$browser,
+        browser_size:4,
+        browser_engine_commit:$engine,
+        browser_audit_passed:true,
+        isolation_sha256:$isolation,
+        isolation_size:3,
+        isolation_version:"0.7.114",
+        ssh_known_hosts_path:"/etc/syntaur/mac-mini-known-hosts",
+        ssh_known_hosts_sha256:"2a703ea347e6abc8e423df92ba4e2592656cf64fee467083104565a69478b1c1",
+        ssh_host_key_algorithm:"ssh-ed25519",
+        ssh_host_key_fingerprint:"SHA256:/SNqZRbZ8lcIPNZOvWRxvKDRgAtmYAEy4A4KX782ldU",
+        ssh_identity_path:$ssh_identity_path,
+        ssh_identity_sha256:$ssh_identity_sha256,
+        ssh_identity_public_sha256:$ssh_identity_public_sha256,
+        ssh_identity_fingerprint:$ssh_identity_fingerprint,
+        exact_stage_shape_verified:true,
         canary_seconds:45
       },
       persistent_authority:{
@@ -375,6 +497,8 @@ assert_installed_authority_layout() {
     local generation="$authority/release-authority/generation-1"
     local genesis="$authority/genesis"
     local actual expected name
+    [[ $(stat -c '%u:%g:%a:%h' /usr/local/bin/syntaur-ship) == \
+        0:0:1755:1 ]]
     expected=$(printf '%s\n' \
         genesis \
         release-authority \
@@ -466,7 +590,9 @@ assert_no_bootstrap_transients() {
         /etc/syntaur/.release-authority.bootstrap-v2-g1 \
         /usr/local/bin/.syntaur-ship.authority-bootstrap-v2-g1 \
         /opt/.syntaur-build-authority-provision.bootstrap-v2-g1 \
-        /opt/.syntaur-genesis-validator.bootstrap-v2-g1; do
+        /opt/.syntaur-genesis-validator.bootstrap-v2-g1 \
+        /etc/syntaur/.mac-mini-known-hosts.bootstrap-v2-g1 \
+        /etc/syntaur/.mac-mini-identity.bootstrap-v2-g1; do
         [[ ! -e "$transient" && ! -L "$transient" ]]
     done
 }
@@ -514,16 +640,49 @@ expect_invalid_evidence() {
 
 expect_invalid_evidence two-records two-records
 expect_invalid_evidence duplicate-keys duplicate-keys
+expect_invalid_evidence baseline-contract \
+    '.baseline.contract_sha256 = ("0" * 64)'
+expect_invalid_evidence baseline-count \
+    '.baseline.member_count = 12'
+expect_invalid_evidence reordered-baseline \
+    '.baseline_inventory.members |= reverse'
+expect_invalid_evidence extra-baseline-member \
+    '.baseline_inventory.members += [{
+      id:"runtime-images",path:"runtime/release-images.env",
+      sha256:("0" * 64),size:1,kind:"config",mode:420
+    }]'
+expect_invalid_evidence isolation-in-baseline \
+    '.baseline_inventory.members += [{
+      id:"syntaur-isolation-tests",path:"validation/syntaur-isolation-tests",
+      sha256:.validation_artifacts[0].sha256,
+      size:.validation_artifacts[0].size,kind:"binary",mode:365
+    }]'
+expect_invalid_evidence inventory-id \
+    '.baseline_inventory.inventory_id = ("0" * 64)'
+expect_invalid_evidence inventory-manifest \
+    '.baseline_inventory_manifest_sha256 = ("0" * 64)'
+expect_invalid_evidence mac-inventory-link \
+    '.mac_smoke.baseline_inventory_id = ("0" * 64)'
 expect_invalid_evidence gateway-link \
     '.mac_smoke.gateway_sha256 = ("0" * 64)'
-expect_invalid_evidence frame-link \
-    '.mac_smoke.frame_size = 2'
-expect_invalid_evidence generation-link \
-    '.mac_smoke.runtime_generation_id = ("0" * 64)'
+expect_invalid_evidence reintroduced-runtime-generation \
+    '.runtime_generation_id = ("0" * 64)'
+expect_invalid_evidence reintroduced-frame \
+    '.mac_smoke.frame_sha256 = ("0" * 64)'
+expect_invalid_evidence legacy-v1 \
+    '.schema = "syntaur.genesis-validation.v1"'
+expect_invalid_evidence invalid-completed-at \
+    '.completed_at = "2026-07-29T+Z"'
+expect_invalid_evidence reordered-top-level \
+    'to_entries | reverse | from_entries'
+expect_invalid_evidence future-protocol-count \
+    '.future_product_protocol.protocol.production_member_count = 5'
 expect_invalid_evidence source-tree-link \
     '.build_authority.source_tree_sha256 = ("0" * 64)'
 expect_invalid_evidence rustsec-link \
-    '.build_authority.rustsec_db_commit = .source.commit'
+    '.build_authority.rustsec_db_commit = .authority_source.commit'
+expect_invalid_evidence ssh-private-identity \
+    '.mac_smoke.ssh_identity_sha256 = ("0" * 64)'
 expect_invalid_evidence layer-swap \
     '.build_authority.dependencies_image_sha256 =
         .build_authority.platform_image_sha256'
@@ -571,7 +730,7 @@ expect_persistent_authority_rejected missing-platform-layer
 mv "$hidden_platform_image" "$platform_image"
 
 # Resume an exact shipper stage left by a kill before its final rename.
-install -o root -g root -m 0755 \
+install -o root -g root -m 1755 \
     "$expected_dir/syntaur-ship-linux-x86_64" \
     /usr/local/bin/.syntaur-ship.authority-bootstrap-v2-g1
 SUDO_UID="$operator_uid" SUDO_GID="$operator_gid" \
@@ -582,6 +741,25 @@ SUDO_UID="$operator_uid" SUDO_GID="$operator_gid" \
 [[ $(sha256sum /usr/local/bin/syntaur-ship | awk '{print $1}') \
     == "$EXPECTED_SHIPPER_SHA256" ]]
 [[ ! -e /opt/syntaur-genesis-validator ]]
+assert_installed_authority_layout
+
+# Exercise the existing-root recovery branch with both an inexact published
+# shipper and an exact durable stage left before rename.
+install -o root -g root -m 0755 /dev/null \
+    /usr/local/bin/syntaur-ship
+install -o root -g root -m 1755 \
+    "$expected_dir/syntaur-ship-linux-x86_64" \
+    /usr/local/bin/.syntaur-ship.authority-bootstrap-v2-g1
+SUDO_UID="$operator_uid" SUDO_GID="$operator_gid" \
+    "$bootstrap" install "${install_args[@]}" \
+    --genesis-evidence "$evidence" \
+    --expected-genesis-evidence-sha256 "$evidence_sha256" \
+    --expected-genesis-engine-commit "$engine_commit"
+[[ $(sha256sum /usr/local/bin/syntaur-ship | awk '{print $1}') \
+    == "$EXPECTED_SHIPPER_SHA256" ]]
+[[ $(stat -c '%u:%g:%a:%h' /usr/local/bin/syntaur-ship) == \
+    0:0:1755:1 ]]
+[[ ! -e /usr/local/bin/.syntaur-ship.authority-bootstrap-v2-g1 ]]
 assert_installed_authority_layout
 
 # Prove both the bootstrap and the independent fixture reject an inexact

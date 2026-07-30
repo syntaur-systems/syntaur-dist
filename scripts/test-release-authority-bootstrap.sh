@@ -16,7 +16,36 @@ trap cleanup EXIT
 context="$tmp_root/context"
 fixture="$context/fixture"
 expected_shipper="$context/expected-shipper"
-mkdir -p "$fixture" "$expected_shipper"
+operator_ssh="$context/operator-ssh"
+mkdir -p "$fixture" "$expected_shipper" "$operator_ssh"
+chmod 0700 "$operator_ssh"
+/usr/bin/ssh-keygen -q -t ed25519 -N '' -C fixture \
+    -f "$operator_ssh/id_ed25519"
+rm -f "$operator_ssh/id_ed25519.pub"
+GENESIS_TEST_IDENTITY_SHA256=$(
+    sha256sum "$operator_ssh/id_ed25519" | awk '{print $1}'
+)
+GENESIS_TEST_IDENTITY_SIZE=$(stat -c '%s' "$operator_ssh/id_ed25519")
+GENESIS_TEST_IDENTITY_PUBLIC_SHA256=$(
+    /usr/bin/ssh-keygen -y -f "$operator_ssh/id_ed25519" \
+        | awk 'NF >= 2 {print $1, $2}' \
+        | sha256sum \
+        | awk '{print $1}'
+)
+GENESIS_TEST_IDENTITY_FINGERPRINT=$(
+    /usr/bin/ssh-keygen -lf "$operator_ssh/id_ed25519" \
+        | awk 'NR == 1 {print $2}'
+)
+GENESIS_TEST_IDENTITY_PATH="/etc/syntaur/mac-mini-identity-$GENESIS_TEST_IDENTITY_PUBLIC_SHA256"
+GENESIS_TEST_AUTHORITY_TREE=$(
+    sed -n 's/^readonly GENESIS_AUTHORITY_TREE=//p' \
+        "$repo_root/scripts/bootstrap-release-authority-genesis-v2.sh"
+)
+GENESIS_TEST_SOURCE_EPOCH=1
+export GENESIS_TEST_IDENTITY_SHA256 GENESIS_TEST_IDENTITY_SIZE
+export GENESIS_TEST_IDENTITY_PUBLIC_SHA256
+export GENESIS_TEST_IDENTITY_FINGERPRINT GENESIS_TEST_IDENTITY_PATH
+export GENESIS_TEST_AUTHORITY_TREE GENESIS_TEST_SOURCE_EPOCH
 
 cc -std=c11 -O2 -Wall -Wextra -Werror \
     -DFIXTURE_ROLE_MARKER='"shipper"' \
@@ -82,7 +111,13 @@ fake_cosign_sha256=$(sha256sum \
     "$repo_root/scripts/fixtures/release_authority_fake_cosign.sh" \
     | awk '{print $1}')
 sed \
-    "s/^readonly COSIGN_SHA256=.*/readonly COSIGN_SHA256=$fake_cosign_sha256/" \
+    -e "s/^readonly COSIGN_SHA256=.*/readonly COSIGN_SHA256=$fake_cosign_sha256/" \
+    -e "s|^readonly GENESIS_MAC_IDENTITY=.*|readonly GENESIS_MAC_IDENTITY=$GENESIS_TEST_IDENTITY_PATH|" \
+    -e "s/^readonly GENESIS_MAC_IDENTITY_SHA256=.*/readonly GENESIS_MAC_IDENTITY_SHA256=$GENESIS_TEST_IDENTITY_SHA256/" \
+    -e "s/^readonly GENESIS_MAC_IDENTITY_SIZE=.*/readonly GENESIS_MAC_IDENTITY_SIZE=$GENESIS_TEST_IDENTITY_SIZE/" \
+    -e "s/^readonly GENESIS_MAC_IDENTITY_PUBLIC_SHA256=.*/readonly GENESIS_MAC_IDENTITY_PUBLIC_SHA256=$GENESIS_TEST_IDENTITY_PUBLIC_SHA256/" \
+    -e "s|^readonly GENESIS_MAC_IDENTITY_FINGERPRINT=.*|readonly GENESIS_MAC_IDENTITY_FINGERPRINT='$GENESIS_TEST_IDENTITY_FINGERPRINT'|" \
+    -e "s/^readonly GENESIS_AUTHORITY_SOURCE_DATE_EPOCH=.*/readonly GENESIS_AUTHORITY_SOURCE_DATE_EPOCH=$GENESIS_TEST_SOURCE_EPOCH/" \
     "$repo_root/scripts/bootstrap-release-authority-genesis-v2.sh" \
     >"$context/bootstrap-release-authority-genesis-v2.sh"
 cp "$repo_root/scripts/release-authority-manifest.sh" \
@@ -130,6 +165,12 @@ if command -v docker >/dev/null \
         --env "EXPECTED_VERIFIER_SHA256=$VERIFIER_SHA256" \
         --env "EXPECTED_PROVISIONER_SHA256=$PROVISIONER_SHA256" \
         --env "EXPECTED_HELPER_SHA256=$helper_sha256" \
+        --env "GENESIS_TEST_IDENTITY_SHA256=$GENESIS_TEST_IDENTITY_SHA256" \
+        --env "GENESIS_TEST_IDENTITY_PUBLIC_SHA256=$GENESIS_TEST_IDENTITY_PUBLIC_SHA256" \
+        --env "GENESIS_TEST_IDENTITY_FINGERPRINT=$GENESIS_TEST_IDENTITY_FINGERPRINT" \
+        --env "GENESIS_TEST_IDENTITY_PATH=$GENESIS_TEST_IDENTITY_PATH" \
+        --env "GENESIS_TEST_AUTHORITY_TREE=$GENESIS_TEST_AUTHORITY_TREE" \
+        --env "GENESIS_TEST_SOURCE_EPOCH=$GENESIS_TEST_SOURCE_EPOCH" \
         "$image"
     docker image rm "$image" >/dev/null
     image=
@@ -168,6 +209,7 @@ else
         --dir /run/lock \
         --tmpfs /home \
         --dir /home/sean \
+        --ro-bind "$operator_ssh" /home/sean/.ssh \
         --tmpfs /tmp \
         --dir /tmp/fixture \
         --dir /tmp/bootstrap \
@@ -193,5 +235,17 @@ else
         --setenv EXPECTED_VERIFIER_SHA256 "$VERIFIER_SHA256" \
         --setenv EXPECTED_PROVISIONER_SHA256 "$PROVISIONER_SHA256" \
         --setenv EXPECTED_HELPER_SHA256 "$helper_sha256" \
+        --setenv GENESIS_TEST_IDENTITY_SHA256 \
+            "$GENESIS_TEST_IDENTITY_SHA256" \
+        --setenv GENESIS_TEST_IDENTITY_PUBLIC_SHA256 \
+            "$GENESIS_TEST_IDENTITY_PUBLIC_SHA256" \
+        --setenv GENESIS_TEST_IDENTITY_FINGERPRINT \
+            "$GENESIS_TEST_IDENTITY_FINGERPRINT" \
+        --setenv GENESIS_TEST_IDENTITY_PATH \
+            "$GENESIS_TEST_IDENTITY_PATH" \
+        --setenv GENESIS_TEST_AUTHORITY_TREE \
+            "$GENESIS_TEST_AUTHORITY_TREE" \
+        --setenv GENESIS_TEST_SOURCE_EPOCH \
+            "$GENESIS_TEST_SOURCE_EPOCH" \
         /tmp/bootstrap/release-authority-bootstrap-driver.sh
 fi

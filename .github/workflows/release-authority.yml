@@ -21,6 +21,8 @@ env:
   DEBIAN_SNAPSHOT: '20260727T000000Z'
   AGE_VERSION: v1.3.1
   AGE_LINUX_AMD64_SHA256: bdc69c09cbdd6cf8b1f333d372a1f58247b3a33146406333e30c0f26e8f51377
+  YQ_VERSION: v4.53.2
+  YQ_LINUX_AMD64_SHA256: d56bf5c6819e8e696340c312bd70f849dc1678a7cda9c2ad63eebd906371d56b
   SOURCE_ARCHIVE_AGE_RECIPIENT: age1hq780lp7gjl4sm3w33wppa9e28uuc5694jwdpak7am6znzrzv3aquasxwe
 
 jobs:
@@ -427,6 +429,7 @@ jobs:
           ssh-key: ${{ secrets.SYNTAUR_SOURCE_DEPLOY_KEY }}
           persist-credentials: false
           path: source
+          fetch-depth: 2
 
       - name: Prove credential removal, review, and encrypt exact source
         id: metadata
@@ -437,6 +440,7 @@ jobs:
           EXPECTED_AUTHORITY_TREE_SHA256: ${{ fromJSON(inputs.approval_record).authority_tree_sha256 }}
           EXPECTED_PROVISIONER_SHA256: ${{ fromJSON(inputs.approval_record).provisioner_sha256 }}
           VERIFIER_SCHEMA: ${{ fromJSON(inputs.approval_record).verifier_schema }}
+          GENESIS: ${{ needs.predecessor.outputs.genesis }}
         run: |
           set -euo pipefail
           test -z "$(git -C source config --local --get-all core.sshCommand || true)"
@@ -446,7 +450,25 @@ jobs:
             | xargs -0 -r grep -Il '^-----BEGIN OPENSSH PRIVATE KEY-----$' || true)
           test -z "$leaked_keys"
           test "$(git -C source rev-parse HEAD)" = "$AUTHORITY_COMMIT"
-          test "$(tr -d '\r\n' <source/VERSION)" = "$AUTHORITY_VERSION"
+          if [[ $GENESIS == true ]]; then
+            g1_parser_root="$RUNNER_TEMP/g1-toml-parser"
+            mkdir -m 0700 "$g1_parser_root"
+            /usr/bin/curl -fsSLo "$g1_parser_root/yq.download" \
+              "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+            printf '%s  %s\n' \
+              "$YQ_LINUX_AMD64_SHA256" "$g1_parser_root/yq.download" \
+              | sha256sum -c - >/dev/null
+            install -m 0500 "$g1_parser_root/yq.download" "$g1_parser_root/yq"
+            bash public-workflow/scripts/verify-g1-authority-source.sh \
+              source \
+              "$AUTHORITY_COMMIT" \
+              b003360f63707d92fd0df1fd12384282f1c3004f \
+              1bf740acd5a7223e98370f668148f01ebfb6eff8 \
+              0.7.114 \
+              "$g1_parser_root/yq"
+          fi
+          cmp -s source/VERSION <(printf '%s' "$AUTHORITY_VERSION") \
+            || cmp -s source/VERSION <(printf '%s\n' "$AUTHORITY_VERSION")
           source_schema=$(sed -nE \
             's/^pub const VERIFICATION_ATTESTATION_SCHEMA_VERSION: u32 = ([0-9]+);$/\1/p' \
             source/crates/syntaur-verify/src/run.rs)
@@ -776,6 +798,8 @@ jobs:
                   -p syntaur-ship -p syntaur-verify
                 /target/x86_64-unknown-linux-gnu/release/syntaur-ship \
                   authority-protocol-inputs > /target/authority-protocol.json
+                /target/x86_64-unknown-linux-gnu/release/syntaur-ship \
+                  authority-protocol-self-test > /target/shipper-self-test.json
                 /target/x86_64-unknown-linux-gnu/release/syntaur-verify \
                   --authority-protocol-self-test > /target/verifier-self-test.json
               } >/tmp/candidate-build.log 2>&1
@@ -790,6 +814,7 @@ jobs:
           EXPECTED_VERIFIER_SHA256: ${{ fromJSON(inputs.approval_record).verifier_sha256 }}
           EXPECTED_PROVISIONER_SHA256: ${{ fromJSON(inputs.approval_record).provisioner_sha256 }}
           AUTHORITY_TREE_SHA256: ${{ needs.source_metadata.outputs.authority_tree_sha256 }}
+          APPROVAL_RECORD: ${{ inputs.approval_record }}
         run: |
           # The quoted script expands inside the pinned container.
           # shellcheck disable=SC2016
@@ -809,6 +834,9 @@ jobs:
             "$RUNNER_TEMP/authority-target/authority-protocol.json" \
             "$candidate/authority-protocol.json"
           install -m 0400 \
+            "$RUNNER_TEMP/authority-target/shipper-self-test.json" \
+            "$candidate/shipper-self-test.json"
+          install -m 0400 \
             "$RUNNER_TEMP/authority-target/verifier-self-test.json" \
             "$candidate/verifier-self-test.json"
           shipper_sha256=$(sha256sum \
@@ -820,6 +848,14 @@ jobs:
           test "$shipper_sha256" = "$EXPECTED_SHIPPER_SHA256"
           test "$verifier_sha256" = "$EXPECTED_VERIFIER_SHA256"
           test "$provisioner_sha256" = "$EXPECTED_PROVISIONER_SHA256"
+          printf '%s' "$APPROVAL_RECORD" >"$RUNNER_TEMP/approval-record.json"
+          chmod 0400 "$RUNNER_TEMP/approval-record.json"
+          bash public-workflow/scripts/release-authority-manifest.sh \
+            validate-approval-record "$RUNNER_TEMP/approval-record.json"
+          bash public-workflow/scripts/release-authority-manifest.sh \
+            validate-shipper-self-test \
+            "$candidate/shipper-self-test.json" \
+            "$RUNNER_TEMP/approval-record.json"
 
           docker run --rm \
             --network none \
@@ -939,6 +975,7 @@ jobs:
           expected=$(printf '%s\n' \
             authority-protocol.json \
             build-metadata.json \
+            shipper-self-test.json \
             syntaur-build-authority-provision \
             syntaur-ship-linux-x86_64 \
             syntaur-verify-linux-x86_64 \
@@ -978,6 +1015,10 @@ jobs:
           bash public-workflow/scripts/release-authority-manifest.sh \
             validate-protocol \
             "$first/authority-protocol.json" \
+            "$first/review-manifest.json"
+          bash public-workflow/scripts/release-authority-manifest.sh \
+            validate-shipper-self-test \
+            "$first/shipper-self-test.json" \
             "$first/review-manifest.json"
           bash public-workflow/scripts/release-authority-manifest.sh \
             validate-verifier-self-test \
@@ -1169,6 +1210,10 @@ jobs:
           bash public-workflow/scripts/release-authority-manifest.sh \
             validate-protocol \
             candidate/authority-protocol.json \
+            "$RUNNER_TEMP/release-authority-v2.json"
+          bash public-workflow/scripts/release-authority-manifest.sh \
+            validate-shipper-self-test \
+            candidate/shipper-self-test.json \
             "$RUNNER_TEMP/release-authority-v2.json"
           bash public-workflow/scripts/release-authority-manifest.sh \
             validate-verifier-self-test \

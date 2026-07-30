@@ -478,6 +478,21 @@ protocol_from_manifest() {
         }'
 }
 
+shipper_self_test_from_manifest() {
+    local manifest=$1
+    jq -cjn \
+        --argjson schema 1 \
+        --arg authority_version "$(manifest_value "$manifest" authority_version)" \
+        --arg authority_commit "$(manifest_value "$manifest" authority_commit)" \
+        --argjson protocol "$(protocol_from_manifest "$manifest")" \
+        '{
+          schema:$schema,
+          authority_version:$authority_version,
+          authority_commit:$authority_commit,
+          protocol:$protocol
+        }'
+}
+
 verifier_self_test_from_manifest() {
     local manifest=$1
     jq -cjn \
@@ -754,6 +769,14 @@ case ${1:-} in
         [[ $# -eq 3 ]] || die 'usage: validate-protocol OUTPUT MANIFEST'
         validate_exact_json_line "$2" "$(protocol_from_manifest "$3")"
         ;;
+    shipper-self-test-from-manifest)
+        [[ $# -eq 2 ]] || die 'usage: shipper-self-test-from-manifest MANIFEST'
+        printf '%s\n' "$(shipper_self_test_from_manifest "$2")"
+        ;;
+    validate-shipper-self-test)
+        [[ $# -eq 3 ]] || die 'usage: validate-shipper-self-test OUTPUT MANIFEST'
+        validate_exact_json_line "$2" "$(shipper_self_test_from_manifest "$3")"
+        ;;
     verifier-self-test-from-manifest)
         [[ $# -eq 2 ]] || die 'usage: verifier-self-test-from-manifest MANIFEST'
         printf '%s\n' "$(verifier_self_test_from_manifest "$2")"
@@ -775,6 +798,6 @@ case ${1:-} in
         validate_stage_v2 "$2"
         ;;
     *)
-        die 'usage: release-authority-manifest.sh render-approval-record|validate-approval-record|asset-schema|validate|render-v2|assert-genesis|assert-successor|protocol-from-manifest|validate-protocol|verifier-self-test-from-manifest|validate-verifier-self-test|source-tree-sha256|stage-v2|validate-stage-v2 ...'
+        die 'usage: release-authority-manifest.sh render-approval-record|validate-approval-record|asset-schema|validate|render-v2|assert-genesis|assert-successor|protocol-from-manifest|validate-protocol|shipper-self-test-from-manifest|validate-shipper-self-test|verifier-self-test-from-manifest|validate-verifier-self-test|source-tree-sha256|stage-v2|validate-stage-v2 ...'
         ;;
 esac

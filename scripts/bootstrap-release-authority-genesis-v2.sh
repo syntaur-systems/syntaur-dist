@@ -13,6 +13,19 @@ readonly INSTALLED_SHIPPER=/usr/local/bin/syntaur-ship
 readonly INSTALLED_PROVISIONER=/opt/syntaur-build-authority-provision
 readonly GENESIS_VALIDATOR=/opt/syntaur-genesis-validator
 readonly GLOBAL_MUTATION_LOCK=/etc/syntaur/syntaur-ship-mutation.lock
+readonly GENESIS_MAC_KNOWN_HOSTS=/etc/syntaur/mac-mini-known-hosts
+readonly GENESIS_MAC_KNOWN_HOSTS_SHA256=2a703ea347e6abc8e423df92ba4e2592656cf64fee467083104565a69478b1c1
+readonly GENESIS_MAC_KNOWN_HOSTS_RECORD='192.168.1.58 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJECwhXDA0s53ZtLPhSm17CNSK1isL6OF+w0KXhA95ig'
+readonly GENESIS_MAC_IDENTITY_SOURCE=/home/sean/.ssh/id_ed25519
+readonly GENESIS_MAC_IDENTITY=/etc/syntaur/mac-mini-identity-b9b69e39abe1089c1fb5a8a307425003a2fc01585f5b67f35a674e814b5e8d7a
+readonly GENESIS_MAC_IDENTITY_SHA256=9b107d62548047fa028a1ab588f00b0894d41bb0399114a5499bc4bfd06df40f
+readonly GENESIS_MAC_IDENTITY_SIZE=411
+readonly GENESIS_MAC_IDENTITY_PUBLIC_SHA256=b9b69e39abe1089c1fb5a8a307425003a2fc01585f5b67f35a674e814b5e8d7a
+readonly GENESIS_MAC_IDENTITY_FINGERPRINT='SHA256:HAUyJtTA+8CYqXxLp9oBlYpRdVpctcb76+n0xTo5EWU'
+# Replaced with the reviewed G1 tree before this branch is published.
+readonly GENESIS_AUTHORITY_TREE=db67df308a8a363d9b907a90d52001184eca05d4
+# Replaced with the finalized G1 commit timestamp before publication.
+readonly GENESIS_AUTHORITY_SOURCE_DATE_EPOCH=1785416703
 readonly OPERATOR_STATE=/home/sean/.syntaur/ship
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 readonly script_dir
@@ -44,12 +57,12 @@ Usage:
      --expected-genesis-engine-commit COMMIT]]
 
 `verify` is non-mutating. `stage-build-authority` is the reviewed pre-G1 root
-step: it creates the non-authorizing global lock and CAS-installs only the
-exact signed provisioner and Genesis validator while the canonical release
-root remains absent. `install` publishes the G1 release root and exact shipper
-after successful Genesis validation. Both mutating actions require sudo on
-claudevm and snapshot every operator-owned input into root-owned storage
-before using it.
+step: it creates the non-authorizing global lock, CAS-installs the exact signed
+provisioner and Genesis validator, and pins the reviewed Mac build trust and
+SSH-identity inputs while the canonical release root remains absent. `install`
+publishes the G1 release root and exact shipper after successful Genesis
+validation. Both mutating actions require sudo on claudevm and snapshot every
+operator-owned input into root-owned storage before using it.
 EOF
     exit 2
 }
@@ -159,6 +172,8 @@ done
     || die 'expected authority commit is invalid'
 [[ $expected_authority_version =~ ^(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})$ ]] \
     || die 'expected authority version is invalid'
+[[ $expected_authority_version == 0.7.114 ]] \
+    || die 'generation-1 authority version must be exactly 0.7.114'
 [[ $source_dir == /* ]] || die 'source directory must be absolute'
 [[ $(readlink -f -- "$source_dir") == "$source_dir" ]] \
     || die 'source directory must be canonical'
@@ -473,17 +488,21 @@ snapshot_material="$snapshot/material"
 /usr/bin/install -d -o root -g root -m 0700 "$snapshot_material"
 snapshot_helper="$snapshot/release-authority-manifest.sh"
 snapshot_evidence="$snapshot/genesis-validation.json"
+snapshot_identity="$snapshot/mac-mini-identity"
 stage=/etc/syntaur/.release-authority.bootstrap-v2-g1
 installed_generation_dir="$AUTHORITY_ROOT/release-authority/generation-1"
 installed_genesis_dir="$AUTHORITY_ROOT/genesis"
 shipper_stage=/usr/local/bin/.syntaur-ship.authority-bootstrap-v2-g1
 provisioner_stage=/opt/.syntaur-build-authority-provision.bootstrap-v2-g1
 validator_stage=/opt/.syntaur-genesis-validator.bootstrap-v2-g1
+known_hosts_stage=/etc/syntaur/.mac-mini-known-hosts.bootstrap-v2-g1
+identity_stage=/etc/syntaur/.mac-mini-identity.bootstrap-v2-g1
 
 cleanup_staging() {
     local path
     for path in \
-        "$snapshot" "$shipper_stage" "$provisioner_stage" "$validator_stage"; do
+        "$snapshot" "$shipper_stage" "$provisioner_stage" "$validator_stage" \
+        "$known_hosts_stage" "$identity_stage"; do
         if [[ -e $path && ! -L $path ]]; then
             /usr/bin/chmod -R u+rwX "$path" 2>/dev/null || true
             /usr/bin/rm -rf -- "$path"
@@ -513,6 +532,62 @@ snapshot_file() {
     /usr/bin/sync -f "$target"
 }
 
+validate_genesis_mac_identity_material() {
+    local path=$1
+    local owner=$2
+    local group=$3
+    local mode=$4
+    local public_sha256 fingerprint identity_report
+    [[ -f $path && ! -L $path ]] \
+        || die 'Genesis Mac SSH identity is missing or unsafe'
+    [[ $(stat -c '%u:%g:%a:%h:%s' "$path") == \
+        "$owner:$group:$mode:1:$GENESIS_MAC_IDENTITY_SIZE" ]] \
+        || die 'Genesis Mac SSH identity metadata differs'
+    [[ $(sha256sum "$path" | awk '{print $1}') == \
+        "$GENESIS_MAC_IDENTITY_SHA256" ]] \
+        || die 'Genesis Mac SSH private identity digest differs'
+    identity_report=$(
+        set -euo pipefail
+        inspection=$(/usr/bin/mktemp \
+            /run/.syntaur-mac-identity-inspection.XXXXXXXX)
+        trap '/usr/bin/rm -f -- "$inspection"' EXIT
+        /usr/bin/timeout 30 /usr/bin/dd \
+            if="$path" \
+            of="$inspection" \
+            iflag=nofollow,nonblock,fullblock,count_bytes \
+            count="$((GENESIS_MAC_IDENTITY_SIZE + 1))" \
+            status=none
+        /usr/bin/chown root:root "$inspection"
+        /usr/bin/chmod 0400 "$inspection"
+        [[ $(sha256sum "$inspection" | awk '{print $1}') == \
+            "$GENESIS_MAC_IDENTITY_SHA256" ]]
+        /usr/bin/ssh-keygen -y -f "$inspection" \
+            | awk 'NF >= 2 {print $1, $2}' \
+            | sha256sum \
+            | awk '{print $1}'
+        /usr/bin/ssh-keygen -lf "$inspection" | awk 'NR == 1 {print $2}'
+    )
+    public_sha256=$(sed -n '1p' <<<"$identity_report")
+    [[ $public_sha256 == "$GENESIS_MAC_IDENTITY_PUBLIC_SHA256" ]] \
+        || die 'Genesis Mac SSH public identity digest differs'
+    fingerprint=$(sed -n '2p' <<<"$identity_report")
+    [[ $fingerprint == "$GENESIS_MAC_IDENTITY_FINGERPRINT" ]] \
+        || die 'Genesis Mac SSH identity fingerprint differs'
+}
+
+validate_genesis_mac_identity_source() {
+    [[ -d /home/sean/.ssh && ! -L /home/sean/.ssh ]] \
+        || die 'canonical operator SSH directory is unsafe'
+    [[ $(stat -c '%u:%g:%a' /home/sean/.ssh) == \
+        "$operator_uid:$operator_gid:700" ]] \
+        || die 'canonical operator SSH directory identity differs'
+    validate_genesis_mac_identity_material \
+        "$GENESIS_MAC_IDENTITY_SOURCE" \
+        "$operator_uid" \
+        "$operator_gid" \
+        600
+}
+
 snapshot_file "$source_dir/release-authority-v2.json" \
     "$snapshot_material/release-authority-v2.json" 400 1048576
 snapshot_file "$source_dir/release-authority-v2.json.cosign.bundle" \
@@ -527,7 +602,13 @@ snapshot_file "$SOURCE_MANIFEST_HELPER" \
     "$snapshot_helper" 500 1048576
 if [[ $action == install ]]; then
     snapshot_file "$genesis_evidence" \
-        "$snapshot_evidence" 400 16777216
+        "$snapshot_evidence" 400 4194304
+elif [[ $action == stage-build-authority ]]; then
+    validate_genesis_mac_identity_source
+    snapshot_file "$GENESIS_MAC_IDENTITY_SOURCE" \
+        "$snapshot_identity" 400 16384
+    validate_genesis_mac_identity_material \
+        "$snapshot_identity" 0 0 400
 fi
 /usr/bin/sync -f "$snapshot"
 
@@ -542,7 +623,7 @@ validate_material \
 validate_genesis_evidence() {
     local evidence=$1
     local expected_mode=${2:-400}
-    local canonical shipper_size
+    local canonical shipper_size inventory_id inventory_manifest_sha256
     [[ -f $evidence && ! -L $evidence ]] \
         || die 'root-owned Genesis evidence snapshot is unsafe'
     [[ $(stat -c '%u:%g:%a:%h' "$evidence") == "0:0:$expected_mode:1" ]] \
@@ -557,55 +638,131 @@ validate_genesis_evidence() {
     [[ $(<"$evidence") == "$canonical" ]] \
         || die 'Genesis evidence is not the exact compact canonical producer record'
     shipper_size=$(stat -c '%s' "$snapshot_material/syntaur-ship-linux-x86_64")
+    inventory_id=$(
+        {
+            printf 'syntaur.genesis-baseline-inventory.v1\0'
+            jq -cj '
+              .baseline_inventory |
+              {
+                schema,
+                contract_sha256,
+                members:[.members[] | {id,path,sha256,size,kind,mode}]
+              }
+            ' "$evidence"
+        } | sha256sum | awk '{print $1}'
+    )
+    inventory_manifest_sha256=$(
+        {
+            printf 'syntaur.genesis-baseline-inventory-manifest.v1\0'
+            jq -cj '
+              .baseline_inventory |
+              {
+                schema,
+                contract_sha256,
+                inventory_id,
+                members:[.members[] | {id,path,sha256,size,kind,mode}]
+              }
+            ' "$evidence"
+        } | sha256sum | awk '{print $1}'
+    )
     jq -se \
         --arg version "$expected_authority_version" \
         --arg source "$expected_authority_commit" \
+        --arg source_tree "$GENESIS_AUTHORITY_TREE" \
         --arg engine "$expected_genesis_engine_commit" \
         --arg shipper "$expected_shipper_sha256" \
         --arg provisioner "$expected_provisioner_sha256" \
         --arg rustsec "$expected_rustsec_db_commit" \
+        --arg inventory_id "$inventory_id" \
+        --arg inventory_manifest_sha256 "$inventory_manifest_sha256" \
+        --argjson source_epoch "$GENESIS_AUTHORITY_SOURCE_DATE_EPOCH" \
+        --arg ssh_identity_path "$GENESIS_MAC_IDENTITY" \
+        --arg ssh_identity_sha256 "$GENESIS_MAC_IDENTITY_SHA256" \
+        --arg ssh_identity_public_sha256 \
+            "$GENESIS_MAC_IDENTITY_PUBLIC_SHA256" \
+        --arg ssh_identity_fingerprint \
+            "$GENESIS_MAC_IDENTITY_FINGERPRINT" \
         --argjson shipper_size "$shipper_size" \
+        --slurpfile manifest "$snapshot_material/release-authority-v2.json" \
         '
+        def valid_utc_timestamp:
+          type == "string" and
+          test("^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]([.][0-9]{1,9})?Z$") and
+          (try
+            (sub("[.][0-9]{1,9}Z$"; "Z") |
+              fromdateiso8601 | type == "number")
+            catch false);
         length == 1 and
         (.[0] |
-        keys == ([
-          "schema","authorizing","completed_at","host","version","source","engine",
-          "source_date_epoch","shipper","build_authority","artifacts",
-          "reproducibility_builds",
-          "runtime_generation_id","runtime_generation_manifest_sha256",
-          "production_generation_id","mac_target","mac_gateway_url","mac_smoke",
+        keys_unsorted == [
+          "schema","authorizing","completed_at","host","authority_version",
+          "authority_source","engine","authority_source_date_epoch","baseline",
+          "shipper","build_authority","reproducibility_builds",
+          "baseline_inventory","baseline_inventory_manifest_sha256",
+          "validation_artifacts","future_product_protocol",
+          "mac_target","mac_gateway_url","mac_smoke",
           "persistent_authority","release_authority_root_absent"
-        ] | sort) and
-        .schema == "syntaur.genesis-validation.v1" and
+        ] and
+        .schema == "syntaur.genesis-validation.v2" and
         .authorizing == false and
-        (.completed_at | type == "string" and
-          test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.+-]+Z$")) and
+        (.completed_at | valid_utc_timestamp) and
         .host == "claudevm" and
-        .version == $version and
-        (.source | keys == ([
+        .authority_version == $version and
+        (.authority_source | keys_unsorted == [
           "commit","tree","workspace","export_tree_sha256",
           "sealed_export_tree_sha256"
-        ] | sort)) and
-        .source.commit == $source and
-        (.source.tree | test("^[0-9a-f]{40}([0-9a-f]{24})?$")) and
-        (.source.workspace | type == "string" and startswith("/")) and
-        (.source.export_tree_sha256 | test("^[0-9a-f]{64}$")) and
-        (.source.sealed_export_tree_sha256 | test("^[0-9a-f]{64}$")) and
-        (.engine | keys == ([
+        ]) and
+        .authority_source.commit == $source and
+        .authority_source.tree == $source_tree and
+        (.authority_source.workspace |
+          type == "string" and startswith("/")) and
+        (.authority_source.export_tree_sha256 |
+          test("^[0-9a-f]{64}$")) and
+        (.authority_source.sealed_export_tree_sha256 |
+          test("^[0-9a-f]{64}$")) and
+        (.engine | keys_unsorted == [
           "commit","tree","workspace","export_tree_sha256",
           "sealed_export_tree_sha256"
-        ] | sort)) and
+        ]) and
         .engine.commit == $engine and
-        (.engine.tree | test("^[0-9a-f]{40}([0-9a-f]{24})?$")) and
+        .engine.tree == "2983054537a8fe4be36a3a8f7c73973722ed1dd1" and
         (.engine.workspace | type == "string" and startswith("/")) and
-        .engine.workspace != .source.workspace and
+        .engine.workspace != .authority_source.workspace and
         (.engine.export_tree_sha256 | test("^[0-9a-f]{64}$")) and
         (.engine.sealed_export_tree_sha256 | test("^[0-9a-f]{64}$")) and
-        (.shipper | keys == ([
+        $engine == "36f3348fc32c02d0a0091be9ea87b828306941cc" and
+        (.baseline | keys_unsorted == [
+          "schema","product_parent_commit","product_parent_tree",
+          "product_version","product_source_date_epoch","product_built_at",
+          "build_tool_count","date_shim_sha256","git_shim_sha256",
+          "engine_commit","engine_tree","member_count","contract_sha256",
+          "authorizing"
+        ]) and
+        .baseline.schema == 1 and
+        .baseline.product_parent_commit ==
+          "b003360f63707d92fd0df1fd12384282f1c3004f" and
+        .baseline.product_parent_tree ==
+          "1bf740acd5a7223e98370f668148f01ebfb6eff8" and
+        .baseline.product_version == "0.7.114" and
+        .baseline.product_source_date_epoch == 1784316447 and
+        .baseline.product_built_at == "2026-07-17T19:27:27Z" and
+        .baseline.build_tool_count == 2 and
+        .baseline.date_shim_sha256 ==
+          "8006ad3b0a1eaf63a5d8e80c04e9c7c259a435fdf44c2cd698ac6efbc335abe9" and
+        .baseline.git_shim_sha256 ==
+          "872bbdd70036c8b3992fa1f404a29ef74483004ca4baec90be8b03f4ea12b5b0" and
+        .baseline.engine_commit == $engine and
+        .baseline.engine_tree ==
+          "2983054537a8fe4be36a3a8f7c73973722ed1dd1" and
+        .baseline.member_count == 5 and
+        .baseline.contract_sha256 ==
+          "d93f9e3022dc3494434373473f461e2b2b6fba2b238f9335a407a83cd5d5f40c" and
+        .baseline.authorizing == false and
+        (.shipper | keys_unsorted == [
           "schema","executable_sha256","executable_size","build_source_commit",
           "control_plane_sha256","build_toolchain_sha256",
           "build_rustflags_sha256","build_target","build_profile","clean_build"
-        ] | sort)) and
+        ]) and
         .shipper.schema == 1 and
         .shipper.executable_sha256 == $shipper and
         .shipper.executable_size == $shipper_size and
@@ -616,7 +773,7 @@ validate_genesis_evidence() {
         .shipper.build_target == "x86_64-unknown-linux-gnu" and
         .shipper.build_profile == "release" and
         .shipper.clean_build == true and
-        (.build_authority | keys == ([
+        (.build_authority | keys_unsorted == [
           "schema","platform_image_sha256","platform_manifest_sha256",
           "dependencies_image_sha256","dependencies_manifest_sha256",
           "source_image_sha256","source_manifest_sha256","source_commit",
@@ -628,14 +785,16 @@ validate_genesis_evidence() {
           "frame_sysroot_tree_sha256","rustsec_tree_sha256",
           "rustsec_provenance_schema","rustsec_db_remote","rustsec_db_ref",
           "rustsec_db_commit","cargo_audit_sha256","rustc_vv_sha256","host_target"
-        ] | sort)) and
+        ]) and
         .build_authority.schema == 4 and
         .build_authority.source_commit == $source and
         .build_authority.source_version == $version and
-        (.source_date_epoch | type == "number" and . > 0 and floor == .) and
-        .build_authority.source_date_epoch == .source_date_epoch and
+        .authority_source_date_epoch == $source_epoch and
+        $source_epoch > 0 and
+        .build_authority.source_date_epoch == .authority_source_date_epoch and
         .build_authority.engine_commit == $engine and
-        .build_authority.source_tree_sha256 == .source.export_tree_sha256 and
+        .build_authority.source_tree_sha256 ==
+          .authority_source.export_tree_sha256 and
         .build_authority.engine_tree_sha256 == .engine.export_tree_sha256 and
         ([
           .build_authority.platform_image_sha256,
@@ -667,59 +826,152 @@ validate_genesis_evidence() {
           "3ee2c3c0b4dd9aacebfd2f0fbae44bad36348203acff78a44888dd58c05f811c" and
         .build_authority.host_target == "x86_64-unknown-linux-gnu" and
         .reproducibility_builds == 2 and
-        (.artifacts | type == "array" and length == 12) and
-        ([.artifacts[] | keys == (["id","path","sha256","size"] | sort)] | all) and
-        ([.artifacts[] | {id, path}] == [
-          {id:"rust-openclaw",path:"bin/rust-openclaw"},
-          {id:"mace",path:"bin/mace"},
-          {id:"syntaur-isolation-tests",path:"bin/syntaur-isolation-tests"},
-          {id:"syntaur_browser",path:"bin/syntaur_browser"},
-          {id:"rust-captcha-bridge",path:"bin/rust-captcha-bridge"},
-          {id:"rust-social-manager",path:"bin/rust-social-manager"},
-          {id:"runtime-compose",path:"runtime/docker-compose-prod.yml"},
-          {id:"runtime-images",path:"runtime/release-images.env"},
-          {id:"runtime-entrypoint",path:"runtime/entrypoint.sh"},
-          {id:"runtime-tailscale-entrypoint",path:"runtime/tailscale-sidecar-entrypoint.sh"},
-          {id:"runtime-searxng-settings",path:"runtime/searxng-settings.yml"},
-          {id:"syntaur-frame",path:"frame/syntaur-frame"}
+        (.baseline_inventory | keys_unsorted == [
+          "schema","contract_sha256","inventory_id","members"
         ]) and
-        ([.artifacts[].sha256 |
-            test("^[0-9a-f]{64}$")] | all) and
-        ([.artifacts[].size |
-            type == "number" and . > 0 and floor == .] | all) and
-        (.runtime_generation_id | test("^[0-9a-f]{64}$")) and
-        (.runtime_generation_manifest_sha256 | test("^[0-9a-f]{64}$")) and
-        (.production_generation_id | test("^[0-9a-f]{64}$")) and
+        .baseline_inventory.schema == .baseline.schema and
+        .baseline_inventory.contract_sha256 ==
+          .baseline.contract_sha256 and
+        .baseline_inventory.inventory_id == $inventory_id and
+        (.baseline_inventory.members | type == "array" and length == 5) and
+        ([.baseline_inventory.members[] |
+          keys_unsorted == ["id","path","sha256","size","kind","mode"]] |
+          all) and
+        ([.baseline_inventory.members[] | {id,path,kind,mode}] == [
+          {id:"rust-openclaw",path:"bin/rust-openclaw",kind:"binary",mode:365},
+          {id:"mace",path:"bin/mace",kind:"binary",mode:365},
+          {id:"syntaur_browser",path:"bin/syntaur_browser",kind:"binary",mode:365},
+          {id:"runtime-compose",path:"runtime/docker-compose-prod.yml",kind:"config",mode:420},
+          {id:"runtime-entrypoint",path:"runtime/entrypoint.sh",kind:"script",mode:365}
+        ]) and
+        ([.baseline_inventory.members[].sha256 |
+          test("^[0-9a-f]{64}$")] | all) and
+        ([.baseline_inventory.members[].size |
+          type == "number" and . > 0 and . <= 1073741824 and floor == .] |
+          all) and
+        ([.baseline_inventory.members[] |
+          select(.id == "runtime-compose")][0] |
+          .size == 4817 and
+          .sha256 ==
+            "2ae3b178f3b0c6cbb539cf61547cc3b26e5030db6a2fe378e64498325ef95390") and
+        ([.baseline_inventory.members[] |
+          select(.id == "runtime-entrypoint")][0] |
+          .size == 2913 and
+          .sha256 ==
+            "177fc537cf32a42836ba4309a2d24dfa06a99cc1669f9dbc92bc449b9ce1eb8e") and
+        .baseline_inventory_manifest_sha256 ==
+          $inventory_manifest_sha256 and
+        (.validation_artifacts | type == "array" and length == 1) and
+        ([.validation_artifacts[] |
+          keys_unsorted == ["id","path","sha256","size"]] | all) and
+        .validation_artifacts[0].id == "syntaur-isolation-tests" and
+        .validation_artifacts[0].path ==
+          "validation/syntaur-isolation-tests" and
+        (.validation_artifacts[0].sha256 |
+          test("^[0-9a-f]{64}$")) and
+        (.validation_artifacts[0].size |
+          type == "number" and . > 0 and . <= 1073741824 and floor == .) and
+        (.future_product_protocol | keys_unsorted == [
+          "schema","release_authority_manifest_schema","protocol"
+        ]) and
+        .future_product_protocol.schema ==
+          "syntaur.future-product-protocol.v2" and
+        .future_product_protocol.release_authority_manifest_schema == 2 and
+        (.future_product_protocol.protocol | keys_unsorted == [
+          "schema","provisioner_sha256","production_contract_sha256",
+          "production_member_count","receipt_schema","build_authority_schema",
+          "promotion_recovery_schema","promotion_recovery_sha256"
+        ]) and
+        .future_product_protocol.protocol.schema == 1 and
+        .future_product_protocol.protocol.provisioner_sha256 == $provisioner and
+        .future_product_protocol.protocol.provisioner_sha256 ==
+          $manifest[0].provisioner_sha256 and
+        .future_product_protocol.protocol.production_contract_sha256 ==
+          $manifest[0].production_contract_sha256 and
+        .future_product_protocol.protocol.production_member_count ==
+          $manifest[0].production_member_count and
+        .future_product_protocol.protocol.production_member_count == 12 and
+        .future_product_protocol.protocol.receipt_schema ==
+          $manifest[0].receipt_schema and
+        .future_product_protocol.protocol.receipt_schema == 6 and
+        .future_product_protocol.protocol.build_authority_schema ==
+          $manifest[0].build_authority_schema and
+        .future_product_protocol.protocol.build_authority_schema == 4 and
+        .future_product_protocol.protocol.promotion_recovery_schema ==
+          $manifest[0].promotion_recovery_schema and
+        .future_product_protocol.protocol.promotion_recovery_schema == 1 and
+        .future_product_protocol.protocol.promotion_recovery_sha256 ==
+          $manifest[0].promotion_recovery_sha256 and
         .mac_target == "sean@192.168.1.58" and
         .mac_gateway_url == "http://192.168.1.58:18789" and
-        (.mac_smoke | keys == ([
-          "completed_at","version","source_commit","gateway_sha256",
-          "frame_sha256","frame_size","frame_elf_machine",
-          "production_generation_id","runtime_generation_id",
-          "runtime_generation_manifest_sha256","canary_seconds"
-        ] | sort)) and
-        (.mac_smoke.completed_at | type == "string" and
-          test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.+-]+Z$")) and
-        .mac_smoke.version == $version and
-        .mac_smoke.source_commit == $source and
+        (.mac_smoke | keys_unsorted == [
+          "schema","completed_at","baseline_contract_sha256",
+          "baseline_inventory_id","baseline_inventory_manifest_sha256",
+          "staged_member_count","gateway_sha256","gateway_size",
+          "gateway_version","gateway_source_commit","gateway_built_at",
+          "mace_sha256","mace_size","browser_sha256","browser_size",
+          "browser_engine_commit","browser_audit_passed","isolation_sha256",
+          "isolation_size","isolation_version","ssh_known_hosts_path",
+          "ssh_known_hosts_sha256","ssh_host_key_algorithm",
+          "ssh_host_key_fingerprint","ssh_identity_path",
+          "ssh_identity_sha256","ssh_identity_public_sha256",
+          "ssh_identity_fingerprint",
+          "exact_stage_shape_verified","canary_seconds"
+        ]) and
+        .mac_smoke.schema ==
+          "syntaur.genesis-baseline-mac-smoke.v1" and
+        (.mac_smoke.completed_at | valid_utc_timestamp) and
+        .mac_smoke.baseline_contract_sha256 ==
+          .baseline.contract_sha256 and
+        .mac_smoke.baseline_inventory_id ==
+          .baseline_inventory.inventory_id and
+        .mac_smoke.baseline_inventory_manifest_sha256 ==
+          .baseline_inventory_manifest_sha256 and
+        .mac_smoke.staged_member_count == 5 and
         .mac_smoke.gateway_sha256 ==
-          ([.artifacts[] | select(.id == "rust-openclaw")][0].sha256) and
-        .mac_smoke.frame_sha256 ==
-          ([.artifacts[] | select(.id == "syntaur-frame")][0].sha256) and
-        .mac_smoke.frame_size ==
-          ([.artifacts[] | select(.id == "syntaur-frame")][0].size) and
-        .mac_smoke.frame_elf_machine == 183 and
-        .mac_smoke.runtime_generation_id == .runtime_generation_id and
-        .mac_smoke.runtime_generation_manifest_sha256 ==
-          .runtime_generation_manifest_sha256 and
-        .mac_smoke.production_generation_id == .production_generation_id and
+          .baseline_inventory.members[0].sha256 and
+        .mac_smoke.gateway_size ==
+          .baseline_inventory.members[0].size and
+        .mac_smoke.gateway_version == .baseline.product_version and
+        .mac_smoke.gateway_source_commit ==
+          .baseline.product_parent_commit and
+        .mac_smoke.gateway_built_at == .baseline.product_built_at and
+        .mac_smoke.mace_sha256 ==
+          .baseline_inventory.members[1].sha256 and
+        .mac_smoke.mace_size ==
+          .baseline_inventory.members[1].size and
+        .mac_smoke.browser_sha256 ==
+          .baseline_inventory.members[2].sha256 and
+        .mac_smoke.browser_size ==
+          .baseline_inventory.members[2].size and
+        .mac_smoke.browser_engine_commit == .baseline.engine_commit and
+        .mac_smoke.browser_audit_passed == true and
+        .mac_smoke.isolation_sha256 ==
+          .validation_artifacts[0].sha256 and
+        .mac_smoke.isolation_size ==
+          .validation_artifacts[0].size and
+        .mac_smoke.isolation_version == .baseline.product_version and
+        .mac_smoke.ssh_known_hosts_path ==
+          "/etc/syntaur/mac-mini-known-hosts" and
+        .mac_smoke.ssh_known_hosts_sha256 ==
+          "2a703ea347e6abc8e423df92ba4e2592656cf64fee467083104565a69478b1c1" and
+        .mac_smoke.ssh_host_key_algorithm == "ssh-ed25519" and
+        .mac_smoke.ssh_host_key_fingerprint ==
+          "SHA256:/SNqZRbZ8lcIPNZOvWRxvKDRgAtmYAEy4A4KX782ldU" and
+        .mac_smoke.ssh_identity_path == $ssh_identity_path and
+        .mac_smoke.ssh_identity_sha256 == $ssh_identity_sha256 and
+        .mac_smoke.ssh_identity_public_sha256 ==
+          $ssh_identity_public_sha256 and
+        .mac_smoke.ssh_identity_fingerprint ==
+          $ssh_identity_fingerprint and
+        .mac_smoke.exact_stage_shape_verified == true and
         .mac_smoke.canary_seconds == 45 and
-        (.persistent_authority | keys == ([
+        (.persistent_authority | keys_unsorted == [
           "build_authority_root_preexisting","exact_catalog_preexisting",
           "global_mutation_lock_preexisting","installed_provisioner_sha256",
           "build_authority_root_present_after","exact_catalog_present_after",
           "global_mutation_lock_present_after"
-        ] | sort)) and
+        ]) and
         (.persistent_authority.build_authority_root_preexisting | type == "boolean") and
         (.persistent_authority.exact_catalog_preexisting | type == "boolean") and
         .persistent_authority.global_mutation_lock_preexisting == true and
@@ -805,13 +1057,13 @@ validate_persistent_build_authority() {
     jq -se --slurpfile evidence "$evidence" '
       length == 1 and
       (.[0] |
-      keys == ([
+      keys_unsorted == [
         "schema","source_commit","engine_commit","rustsec_provenance_schema",
         "rustsec_db_remote","rustsec_db_ref","rustsec_db_commit",
         "platform_image_sha256","platform_manifest_sha256",
         "dependencies_image_sha256","dependencies_manifest_sha256",
         "source_image_sha256","source_manifest_sha256"
-      ] | sort) and
+      ] and
       .schema == $evidence[0].build_authority.schema and
       .source_commit == $evidence[0].build_authority.source_commit and
       .engine_commit == $evidence[0].build_authority.engine_commit and
@@ -1014,15 +1266,16 @@ install_exact_executable() {
     local temporary=$2
     local destination=$3
     local expected_digest=$4
+    local mode=${5:-755}
     if [[ -e $temporary || -L $temporary ]]; then
         [[ -f $temporary && ! -L $temporary ]] \
             || die "stale executable stage is unsafe: $temporary"
-        [[ $(stat -c '%u:%g:%a:%h' "$temporary") == 0:0:755:1 ]] \
+        [[ $(stat -c '%u:%g:%a:%h' "$temporary") == "0:0:$mode:1" ]] \
             || die "stale executable stage identity differs: $temporary"
         [[ $(sha256sum "$temporary" | awk '{print $1}') == "$expected_digest" ]] \
             || die "stale executable stage digest differs: $temporary"
     else
-        /usr/bin/install -o root -g root -m 0755 "$source" "$temporary"
+        /usr/bin/install -o root -g root -m "$mode" "$source" "$temporary"
     fi
     [[ $(sha256sum "$temporary" | awk '{print $1}') == "$expected_digest" ]] \
         || die "staged executable digest differs: $destination"
@@ -1031,16 +1284,86 @@ install_exact_executable() {
     /usr/bin/sync -f "$(dirname "$destination")"
     [[ -f $destination && ! -L $destination ]] \
         || die "installed executable is unsafe: $destination"
-    [[ $(stat -c '%u:%g:%a:%h' "$destination") == 0:0:755:1 ]] \
+    [[ $(stat -c '%u:%g:%a:%h' "$destination") == "0:0:$mode:1" ]] \
         || die "installed executable metadata differs: $destination"
 }
 
 installed_executable_is_exact() {
     local path=$1
     local expected_digest=$2
+    local mode=${3:-755}
     [[ -f $path && ! -L $path ]] \
-        && [[ $(stat -c '%u:%g:%a:%h' "$path") == 0:0:755:1 ]] \
+        && [[ $(stat -c '%u:%g:%a:%h' "$path") == "0:0:$mode:1" ]] \
         && [[ $(sha256sum "$path" | awk '{print $1}') == "$expected_digest" ]]
+}
+
+validate_genesis_mac_known_hosts() {
+    [[ -f $GENESIS_MAC_KNOWN_HOSTS && ! -L $GENESIS_MAC_KNOWN_HOSTS ]] \
+        || die 'Genesis Mac known-hosts trust is missing or unsafe'
+    [[ $(stat -c '%u:%g:%a:%h' "$GENESIS_MAC_KNOWN_HOSTS") == 0:0:444:1 ]] \
+        || die 'Genesis Mac known-hosts metadata differs'
+    [[ $(wc -l <"$GENESIS_MAC_KNOWN_HOSTS") -eq 1 ]] \
+        || die 'Genesis Mac known-hosts must contain exactly one record'
+    [[ $(<"$GENESIS_MAC_KNOWN_HOSTS") == "$GENESIS_MAC_KNOWN_HOSTS_RECORD" ]] \
+        || die 'Genesis Mac known-hosts record differs'
+    [[ $(sha256sum "$GENESIS_MAC_KNOWN_HOSTS" | awk '{print $1}') == \
+        "$GENESIS_MAC_KNOWN_HOSTS_SHA256" ]] \
+        || die 'Genesis Mac known-hosts digest differs'
+    [[ $(/usr/bin/ssh-keygen -lf "$GENESIS_MAC_KNOWN_HOSTS" \
+        | awk 'NR == 1 {print $2}') == \
+        'SHA256:/SNqZRbZ8lcIPNZOvWRxvKDRgAtmYAEy4A4KX782ldU' ]] \
+        || die 'Genesis Mac host-key fingerprint differs'
+}
+
+install_genesis_mac_known_hosts() {
+    if [[ -e $GENESIS_MAC_KNOWN_HOSTS || -L $GENESIS_MAC_KNOWN_HOSTS ]]; then
+        validate_genesis_mac_known_hosts
+        return
+    fi
+    [[ ! -e $known_hosts_stage && ! -L $known_hosts_stage ]] \
+        || die 'stale Genesis Mac known-hosts stage is unsafe'
+    printf '%s\n' "$GENESIS_MAC_KNOWN_HOSTS_RECORD" >"$known_hosts_stage"
+    /usr/bin/chown root:root "$known_hosts_stage"
+    /usr/bin/chmod 0444 "$known_hosts_stage"
+    [[ $(sha256sum "$known_hosts_stage" | awk '{print $1}') == \
+        "$GENESIS_MAC_KNOWN_HOSTS_SHA256" ]] \
+        || die 'staged Genesis Mac known-hosts digest differs'
+    /usr/bin/sync -f "$known_hosts_stage"
+    /usr/bin/mv -T "$known_hosts_stage" "$GENESIS_MAC_KNOWN_HOSTS"
+    /usr/bin/sync -f /etc/syntaur
+    validate_genesis_mac_known_hosts
+}
+
+validate_genesis_mac_identity() {
+    validate_genesis_mac_identity_material \
+        "$GENESIS_MAC_IDENTITY" \
+        0 \
+        "$operator_gid" \
+        440
+}
+
+install_genesis_mac_identity() {
+    if [[ -e $GENESIS_MAC_IDENTITY || -L $GENESIS_MAC_IDENTITY ]]; then
+        validate_genesis_mac_identity
+        return
+    fi
+    [[ ! -e $identity_stage && ! -L $identity_stage ]] \
+        || die 'stale Genesis Mac SSH identity stage is unsafe'
+    /usr/bin/install \
+        -o root \
+        -g "$operator_gid" \
+        -m 0440 \
+        "$snapshot_identity" \
+        "$identity_stage"
+    validate_genesis_mac_identity_material \
+        "$identity_stage" \
+        0 \
+        "$operator_gid" \
+        440
+    /usr/bin/sync -f "$identity_stage"
+    /usr/bin/mv -T "$identity_stage" "$GENESIS_MAC_IDENTITY"
+    /usr/bin/sync -f /etc/syntaur
+    validate_genesis_mac_identity
 }
 
 remove_exact_genesis_validator() {
@@ -1134,6 +1457,8 @@ if [[ $action == stage-build-authority ]]; then
     installed_executable_is_exact \
         "$GENESIS_VALIDATOR" "$expected_shipper_sha256" \
         || die 'pre-G1 Genesis validator staging did not persist exact bytes'
+    install_genesis_mac_known_hosts
+    install_genesis_mac_identity
     validate_global_lock
     [[ ! -e $AUTHORITY_ROOT && ! -L $AUTHORITY_ROOT ]] \
         || die 'pre-G1 staging must not publish the canonical release root'
@@ -1142,6 +1467,8 @@ if [[ $action == stage-build-authority ]]; then
     exit 0
 fi
 
+validate_genesis_mac_known_hosts
+validate_genesis_mac_identity
 installed_executable_is_exact \
     "$INSTALLED_PROVISIONER" "$expected_provisioner_sha256" \
     || die 'G1 install requires the exact pre-staged build-authority provisioner'
@@ -1159,12 +1486,13 @@ if [[ -e $AUTHORITY_ROOT || -L $AUTHORITY_ROOT ]]; then
         || die 'a different authority root already exists'
     validate_installed_authority_layout
     if ! installed_executable_is_exact \
-        "$INSTALLED_SHIPPER" "$expected_shipper_sha256"; then
+        "$INSTALLED_SHIPPER" "$expected_shipper_sha256" 1755; then
         install_exact_executable \
             "$snapshot_material/syntaur-ship-linux-x86_64" \
             "$shipper_stage" \
             "$INSTALLED_SHIPPER" \
-            "$expected_shipper_sha256"
+            "$expected_shipper_sha256" \
+            1755
     fi
     run_operator_authority_status
     remove_exact_genesis_validator
@@ -1232,7 +1560,8 @@ install_exact_executable \
     "$snapshot_material/syntaur-ship-linux-x86_64" \
     "$shipper_stage" \
     "$INSTALLED_SHIPPER" \
-    "$expected_shipper_sha256"
+    "$expected_shipper_sha256" \
+    1755
 
 run_operator_authority_status
 remove_exact_genesis_validator

@@ -336,6 +336,7 @@ authority_scripts=(
   scripts/test-process-inspector-install.sh
   scripts/test-process-inspector-install-container.sh
   scripts/validate-release-workflow.sh
+  scripts/verify-g1-authority-source.sh
   scripts/verify-release-authority-policy.sh
 )
 for authority_script in "${authority_scripts[@]}"; do
