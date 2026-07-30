@@ -371,6 +371,87 @@ authority checkpoint is created only when authority itself changes, and the
 installed predecessor must first have authorized and deployed that distinct
 successor source.
 
+## Fixed G1-G2-G3 recovery
+
+The immutable G1 release cannot produce truthful Genesis evidence for its own
+authority-only source commit. G2 corrects that source gate, while G3 contains
+the integrated product control plane that must authorize the next distinct
+product release. The versioned
+`scripts/bootstrap-release-authority-g1-g2-g3-recovery-v1.sh` is the only
+recovery for that exact published chain. It is not a generic promotion path
+and has no caller-supplied authority, protocol, toolchain, or predecessor
+override.
+
+Download the five exact immutable assets from `authority-v1-g1`,
+`authority-v1-g2`, and `authority-v1-g3` into three distinct canonical
+operator-owned directories. Each directory must be `0500`; manifests and
+bundles must be `0400`; executables must be `0500`. Then run the non-mutating
+chain check:
+
+```sh
+scripts/bootstrap-release-authority-g1-g2-g3-recovery-v1.sh verify \
+  --g1-dir "$G1_DIR" \
+  --g2-dir "$G2_DIR" \
+  --g3-dir "$G3_DIR"
+```
+
+On `claudevm`, while the authority root is absent and the exact G1
+provisioner, validator, global lock, and Mac trust are still installed, stage
+the corrected G2 Genesis tools:
+
+```sh
+sudo scripts/bootstrap-release-authority-g1-g2-g3-recovery-v1.sh \
+  stage-g2-build-authority \
+  --g1-dir "$G1_DIR" \
+  --g2-dir "$G2_DIR" \
+  --g3-dir "$G3_DIR"
+```
+
+Run the staged G2 validator as the ordinary operator from the exact G2 source
+and Engine worktrees. Capture stdout into a new one-record canonical evidence
+file and stderr separately. Do not use `sudo` around the validator:
+
+```sh
+env -i \
+  HOME=/home/sean USER=sean LOGNAME=sean \
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  LANG=C.UTF-8 LC_ALL=C.UTF-8 RUST_LOG=info \
+  SYNTAUR_WORKSPACE="$G2_SOURCE_WORKTREE" \
+  SYNTAUR_ENGINE_WORKSPACE="$GENESIS_ENGINE_WORKTREE" \
+  /opt/syntaur-genesis-validator genesis-validate \
+    --commit 5642d7bc36a4913d42d9bce1120a3a2fe604aca8 \
+    --engine-commit 36f3348fc32c02d0a0091be9ea87b828306941cc \
+    >"$GENESIS_EVIDENCE_PARTIAL" \
+    2>"$GENESIS_LOG"
+```
+
+Independently validate the complete nested evidence contract, persistent
+three-layer build catalog, source and Engine identities, RustSec provenance,
+Mac smoke bindings, and continued authority-root absence. Set the final
+evidence file to `0400`, record its SHA-256 and the exact pre-recovery
+`/usr/local/bin/syntaur-ship` SHA-256, then install:
+
+```sh
+sudo scripts/bootstrap-release-authority-g1-g2-g3-recovery-v1.sh install \
+  --g1-dir "$G1_DIR" \
+  --g2-dir "$G2_DIR" \
+  --g3-dir "$G3_DIR" \
+  --genesis-evidence "$GENESIS_EVIDENCE" \
+  --expected-genesis-evidence-sha256 "$GENESIS_EVIDENCE_SHA256" \
+  --expected-current-shipper-sha256 "$PRE_RECOVERY_SHIPPER_SHA256"
+```
+
+Installation atomically retains generations 1, 2, and 3; keeps the Genesis
+receipt truthfully bound to G2; activates G3; installs the exact G3 shipper;
+runs `authority-status` as the ordinary operator; and only then retires the G2
+validator. A status failure preserves the validator and the exact published
+root for a same-input retry. Exact reruns are idempotent. Missing predecessor
+state, changed evidence or catalog bytes, an unknown current shipper, a
+different authority root, or an inexact retained generation fails closed.
+
+The next product release must be a distinct descendant of G3. The recovery
+does not authorize G3 to release itself.
+
 ## Independent dispatch verification
 
 Record values from an independently reviewed checkout and isolated baseline,
