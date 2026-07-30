@@ -690,6 +690,8 @@ jobs:
           test "$(git -C source rev-parse HEAD)" = "$AUTHORITY_COMMIT"
           test "$(bash public-workflow/scripts/release-authority-manifest.sh \
             source-tree-sha256 source "$AUTHORITY_COMMIT")" = "$AUTHORITY_TREE_SHA256"
+          sudo chown -R 65534:65534 source
+          test "$(stat -c '%u:%g' source)" = 65534:65534
 
       - name: Prepare pinned offline builder
         shell: bash

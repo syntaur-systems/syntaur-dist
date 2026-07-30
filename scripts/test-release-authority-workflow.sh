@@ -474,6 +474,7 @@ grep -Fq \
 grep -Fq -- '--network none' "$workflow"
 grep -Fq 'release-authority-source' "$workflow"
 grep -Fq 'SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY' "$workflow"
+grep -Fq 'sudo chown -R 65534:65534 source' "$workflow"
 grep -Fq 'encrypted-authority-source-run-' "$workflow"
 grep -Fq 'assert-genesis' "$workflow"
 grep -Fq 'fetch-depth: 2' "$workflow"
