@@ -643,15 +643,16 @@ jobs:
             "$AGE_LINUX_AMD64_SHA256" "$age_root/age.tar.gz" \
             | sha256sum -c - >/dev/null
           tar -xzf "$age_root/age.tar.gz" -C "$age_root"
+          mkdir -m 0700 "$age_root/bin"
           install -m 0500 \
             "$age_root/age/age" "$age_root/age/age-keygen" \
-            "$age_root/"
+            "$age_root/bin/"
           derived_recipient=$(printf '%s\n' "$SOURCE_ARCHIVE_AGE_IDENTITY" \
-            | "$age_root/age-keygen" -y -)
+            | "$age_root/bin/age-keygen" -y -)
           test "$derived_recipient" = "$SOURCE_ARCHIVE_AGE_RECIPIENT"
           source_archive="$RUNNER_TEMP/source.tar"
           printf '%s\n' "$SOURCE_ARCHIVE_AGE_IDENTITY" \
-            | "$age_root/age" \
+            | "$age_root/bin/age" \
                 --decrypt \
                 --identity - \
                 --output "$source_archive" \
