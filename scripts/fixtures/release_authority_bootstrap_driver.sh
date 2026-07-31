@@ -622,7 +622,17 @@ assert_no_bootstrap_transients() {
         /etc/syntaur/.release-authority.recovery-v2-g1-g2-g3-g4 \
         /usr/local/bin/.syntaur-ship.recovery-v2-g1-g2-g3-g4 \
         /opt/.syntaur-build-authority-provision.recovery-v2-g4 \
-        /opt/.syntaur-genesis-validator.recovery-v2-g4; do
+        /opt/.syntaur-genesis-validator.recovery-v2-g4 \
+        /run/syntaur-release-authority-g1-g2-g3-g4-g5-recovery.snapshot \
+        /etc/syntaur/.release-authority.recovery-v3-g1-g2-g3-g4-g5 \
+        /usr/local/bin/.syntaur-ship.recovery-v3-g1-g2-g3-g4-g5 \
+        /opt/.syntaur-build-authority-provision.recovery-v3-g5 \
+        /opt/.syntaur-genesis-validator.recovery-v3-g5 \
+        /run/syntaur-release-authority-g1-g2-g3-g4-g5-g6-recovery.snapshot \
+        /etc/syntaur/.release-authority.recovery-v4-g1-g2-g3-g4-g5-g6 \
+        /usr/local/bin/.syntaur-ship.recovery-v4-g1-g2-g3-g4-g5-g6 \
+        /opt/.syntaur-build-authority-provision.recovery-v4-g6 \
+        /opt/.syntaur-genesis-validator.recovery-v4-g6; do
         [[ ! -e "$transient" && ! -L "$transient" ]]
     done
 }
@@ -633,6 +643,8 @@ run_recovery_fixture() {
     local g2_dir=${BOOTSTRAP_FIXTURE_G2_DIR:-/fixture-g2}
     local g3_dir=${BOOTSTRAP_FIXTURE_G3_DIR:-/fixture-g3}
     local g4_dir=${BOOTSTRAP_FIXTURE_G4_DIR:-/fixture-g4}
+    local g5_dir=${BOOTSTRAP_FIXTURE_G5_DIR:-/fixture-g5}
+    local g6_dir=${BOOTSTRAP_FIXTURE_G6_DIR:-/fixture-g6}
     local predecessor=${BOOTSTRAP_FIXTURE_RECOVERY_PREDECESSOR:-/recovery-predecessor/syntaur-ship}
     local stage_action=stage-g2-build-authority
     local genesis_label=G2
@@ -651,11 +663,15 @@ run_recovery_fixture() {
     local predecessor_material=$source_dir
     local authority_parent_commit=
     local authority_parent_tree=
+    local catalog_authority_commit=$genesis_authority_commit
     local genesis_evidence invalid_evidence evidence_digest invalid_digest
-    local genesis_catalog hidden_catalog current_sha marker
+    local genesis_catalog decoy_catalog hidden_catalog current_sha marker
     local name generation material workflow expected actual
     local invalid_case invalid_filter
+    local baseline_export_sha baseline_sealed_sha
     local -a recovery_args install_args
+    baseline_export_sha=$(sha256_label recovery-g5-baseline-export)
+    baseline_sealed_sha=$(sha256_label recovery-g5-baseline-sealed-export)
 
     recovery_args=(
         --g1-dir "$source_dir"
@@ -681,7 +697,54 @@ run_recovery_fixture() {
         predecessor_material=$g2_dir
         authority_parent_commit=$RECOVERY_G3_AUTHORITY_COMMIT
         authority_parent_tree=$RECOVERY_G3_AUTHORITY_GIT_TREE
+        catalog_authority_commit=$RECOVERY_G4_AUTHORITY_COMMIT
         recovery_args+=(--g4-dir "$g4_dir")
+    elif [[ $scenario == recovery-g5 ]]; then
+        recovery="$bootstrap_root/bootstrap-release-authority-g1-g2-g3-g4-g5-recovery-v3.sh"
+        stage_action=stage-g5-build-authority
+        genesis_label=G5
+        genesis_slug=g5
+        genesis_dir=$g5_dir
+        genesis_authority_commit=$RECOVERY_G5_AUTHORITY_COMMIT
+        genesis_authority_git_tree=$RECOVERY_G5_AUTHORITY_GIT_TREE
+        genesis_manifest_sha256=$RECOVERY_G5_MANIFEST_SHA256
+        genesis_provisioner_sha256=$RECOVERY_G5_PROVISIONER_SHA256
+        genesis_shipper_sha256=$RECOVERY_G5_SHIPPER_SHA256
+        genesis_source_date_epoch=$RECOVERY_G5_SOURCE_DATE_EPOCH
+        active_generation=5
+        active_dir=$g5_dir
+        active_provisioner_sha256=$RECOVERY_G5_PROVISIONER_SHA256
+        active_shipper_sha256=$RECOVERY_G5_SHIPPER_SHA256
+        predecessor_material=$g4_dir
+        authority_parent_commit=$RECOVERY_G4_AUTHORITY_COMMIT
+        authority_parent_tree=$RECOVERY_G4_AUTHORITY_GIT_TREE
+        catalog_authority_commit=$RECOVERY_G2_AUTHORITY_COMMIT
+        recovery_args+=(--g4-dir "$g4_dir" --g5-dir "$g5_dir")
+    elif [[ $scenario == recovery-g6 ]]; then
+        recovery="$bootstrap_root/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-recovery-v4.sh"
+        stage_action=stage-g6-build-authority
+        genesis_label=G6
+        genesis_slug=g6
+        genesis_dir=$g6_dir
+        genesis_authority_commit=$RECOVERY_G6_AUTHORITY_COMMIT
+        genesis_authority_git_tree=$RECOVERY_G6_AUTHORITY_GIT_TREE
+        genesis_manifest_sha256=$RECOVERY_G6_MANIFEST_SHA256
+        genesis_provisioner_sha256=$RECOVERY_G6_PROVISIONER_SHA256
+        genesis_shipper_sha256=$RECOVERY_G6_SHIPPER_SHA256
+        genesis_source_date_epoch=$RECOVERY_G6_SOURCE_DATE_EPOCH
+        active_generation=6
+        active_dir=$g6_dir
+        active_provisioner_sha256=$RECOVERY_G6_PROVISIONER_SHA256
+        active_shipper_sha256=$RECOVERY_G6_SHIPPER_SHA256
+        predecessor_material=$g5_dir
+        authority_parent_commit=$RECOVERY_G5_AUTHORITY_COMMIT
+        authority_parent_tree=$RECOVERY_G5_AUTHORITY_GIT_TREE
+        catalog_authority_commit=$RECOVERY_G2_AUTHORITY_COMMIT
+        recovery_args+=(
+            --g4-dir "$g4_dir"
+            --g5-dir "$g5_dir"
+            --g6-dir "$g6_dir"
+        )
     fi
     if [[ $operator_uid == 0 && $operator_gid == 0 ]]; then
         "$recovery" verify "${recovery_args[@]}"
@@ -722,7 +785,8 @@ run_recovery_fixture() {
     chmod -R u+rwX "$tampered"
     rm -rf "$tampered"
     [[ ! -e /etc/syntaur/release-authority ]]
-    if [[ $scenario == recovery-g4 ]]; then
+    if [[ $scenario == recovery-g4 || $scenario == recovery-g5 \
+        || $scenario == recovery-g6 ]]; then
         install -o root -g root -m 0755 \
             "$predecessor_material/syntaur-build-authority-provision" \
             /opt/syntaur-build-authority-provision
@@ -820,67 +884,162 @@ run_recovery_fixture() {
 
     chmod 0700 "$evidence_dir"
     genesis_evidence="$evidence_dir/genesis-validation-$genesis_slug.json"
-    jq -c \
-        --arg source "$genesis_authority_commit" \
-        --arg source_tree "$genesis_authority_git_tree" \
-        --arg source_workspace "/tmp/source-$genesis_slug" \
-        --arg version "$EXPECTED_AUTHORITY_VERSION" \
-        --arg shipper "$genesis_shipper_sha256" \
-        --arg provisioner "$genesis_provisioner_sha256" \
-        --arg authority_parent_commit "$authority_parent_commit" \
-        --arg authority_parent_tree "$authority_parent_tree" \
-        --argjson shipper_size \
-            "$(stat -c '%s' "$genesis_dir/syntaur-ship-linux-x86_64")" \
-        --argjson source_epoch "$genesis_source_date_epoch" \
-        --slurpfile manifest "$genesis_dir/release-authority-v2.json" '
-        .authority_source.commit = $source |
-        .authority_source.tree = $source_tree |
-        .authority_source.workspace = $source_workspace |
-        .authority_source_date_epoch = $source_epoch |
-        .shipper.executable_sha256 = $shipper |
-        .shipper.executable_size = $shipper_size |
-        .shipper.build_source_commit = $source |
-        .build_authority.source_commit = $source |
-        .build_authority.source_version = $version |
-        .build_authority.source_date_epoch = $source_epoch |
-        .future_product_protocol.protocol.provisioner_sha256 =
-          $manifest[0].provisioner_sha256 |
-        .future_product_protocol.protocol.production_contract_sha256 =
-          $manifest[0].production_contract_sha256 |
-        .future_product_protocol.protocol.production_member_count =
-          $manifest[0].production_member_count |
-        .future_product_protocol.protocol.receipt_schema =
-          $manifest[0].receipt_schema |
-        .future_product_protocol.protocol.build_authority_schema =
-          $manifest[0].build_authority_schema |
-        .future_product_protocol.protocol.promotion_recovery_schema =
-          $manifest[0].promotion_recovery_schema |
-        .future_product_protocol.protocol.promotion_recovery_sha256 =
-          $manifest[0].promotion_recovery_sha256 |
-        .persistent_authority.installed_provisioner_sha256 = $provisioner |
-        if $authority_parent_commit == "" then .
-        else (
-          to_entries |
-          .[0:6] + [
+    if [[ $scenario == recovery-g5 || $scenario == recovery-g6 ]]; then
+        jq -c \
+            --arg source "$genesis_authority_commit" \
+            --arg source_tree "$genesis_authority_git_tree" \
+            --arg source_workspace "/tmp/source-$genesis_slug" \
+            --arg authority_parent_commit "$authority_parent_commit" \
+            --arg authority_parent_tree "$authority_parent_tree" \
+            --arg baseline_source "$RECOVERY_G2_AUTHORITY_COMMIT" \
+            --arg baseline_tree "$RECOVERY_G2_AUTHORITY_GIT_TREE" \
+            --arg baseline_workspace "/tmp/source-g2-baseline" \
+            --arg baseline_export "$baseline_export_sha" \
+            --arg baseline_sealed "$baseline_sealed_sha" \
+            --arg version "$EXPECTED_AUTHORITY_VERSION" \
+            --arg shipper "$genesis_shipper_sha256" \
+            --arg provisioner "$genesis_provisioner_sha256" \
+            --arg source_lock "$RECOVERY_SOURCE_CARGO_LOCK_SHA256" \
+            --arg engine_lock "$RECOVERY_ENGINE_CARGO_LOCK_SHA256" \
+            --argjson shipper_size \
+                "$(stat -c '%s' "$genesis_dir/syntaur-ship-linux-x86_64")" \
+            --argjson source_epoch "$genesis_source_date_epoch" \
+            --argjson baseline_epoch "$RECOVERY_G2_SOURCE_DATE_EPOCH" \
+            --slurpfile manifest "$genesis_dir/release-authority-v2.json" '
+            . as $old |
+            ($old.authority_source |
+              .commit = $source |
+              .tree = $source_tree |
+              .workspace = $source_workspace) as $authority_source |
             {
-              key:"authority_parent_commit",
-              value:$authority_parent_commit
-            },
+              commit:$baseline_source,
+              tree:$baseline_tree,
+              workspace:$baseline_workspace,
+              export_tree_sha256:$baseline_export,
+              sealed_export_tree_sha256:$baseline_sealed
+            } as $baseline_source_evidence |
+            ($old.shipper |
+              .executable_sha256 = $shipper |
+              .executable_size = $shipper_size |
+              .build_source_commit = $source) as $shipper_evidence |
+            ($old.build_authority |
+              .source_commit = $baseline_source |
+              .source_version = $version |
+              .source_date_epoch = $baseline_epoch |
+              .source_tree_sha256 = $baseline_export |
+              .source_cargo_lock_sha256 = $source_lock |
+              .engine_cargo_lock_sha256 = $engine_lock) as $build_authority |
+            ($old.future_product_protocol |
+              .protocol.provisioner_sha256 =
+                $manifest[0].provisioner_sha256 |
+              .protocol.production_contract_sha256 =
+                $manifest[0].production_contract_sha256 |
+              .protocol.production_member_count =
+                $manifest[0].production_member_count |
+              .protocol.receipt_schema = $manifest[0].receipt_schema |
+              .protocol.build_authority_schema =
+                $manifest[0].build_authority_schema |
+              .protocol.promotion_recovery_schema =
+                $manifest[0].promotion_recovery_schema |
+              .protocol.promotion_recovery_sha256 =
+                $manifest[0].promotion_recovery_sha256
+            ) as $future_product_protocol |
+            ($old.persistent_authority |
+              .installed_provisioner_sha256 = $provisioner
+            ) as $persistent_authority |
             {
-              key:"authority_parent_tree",
-              value:$authority_parent_tree
+              schema:"syntaur.genesis-validation.v3",
+              authorizing:$old.authorizing,
+              completed_at:$old.completed_at,
+              host:$old.host,
+              authority_version:$version,
+              authority_source:$authority_source,
+              authority_parent_commit:$authority_parent_commit,
+              authority_parent_tree:$authority_parent_tree,
+              baseline_source:$baseline_source_evidence,
+              engine:$old.engine,
+              authority_source_date_epoch:$source_epoch,
+              baseline_source_date_epoch:$baseline_epoch,
+              baseline:$old.baseline,
+              shipper:$shipper_evidence,
+              build_authority:$build_authority,
+              reproducibility_builds:$old.reproducibility_builds,
+              baseline_inventory:$old.baseline_inventory,
+              baseline_inventory_manifest_sha256:
+                $old.baseline_inventory_manifest_sha256,
+              validation_artifacts:$old.validation_artifacts,
+              future_product_protocol:$future_product_protocol,
+              mac_target:$old.mac_target,
+              mac_gateway_url:$old.mac_gateway_url,
+              mac_smoke:$old.mac_smoke,
+              persistent_authority:$persistent_authority,
+              release_authority_root_absent:
+                $old.release_authority_root_absent
             }
-          ] + .[6:] |
-          from_entries
-        )
-        end
-        ' "$evidence" >"$genesis_evidence"
+            ' "$evidence" >"$genesis_evidence"
+    else
+        jq -c \
+            --arg source "$genesis_authority_commit" \
+            --arg source_tree "$genesis_authority_git_tree" \
+            --arg source_workspace "/tmp/source-$genesis_slug" \
+            --arg version "$EXPECTED_AUTHORITY_VERSION" \
+            --arg shipper "$genesis_shipper_sha256" \
+            --arg provisioner "$genesis_provisioner_sha256" \
+            --arg authority_parent_commit "$authority_parent_commit" \
+            --arg authority_parent_tree "$authority_parent_tree" \
+            --argjson shipper_size \
+                "$(stat -c '%s' "$genesis_dir/syntaur-ship-linux-x86_64")" \
+            --argjson source_epoch "$genesis_source_date_epoch" \
+            --slurpfile manifest "$genesis_dir/release-authority-v2.json" '
+            .authority_source.commit = $source |
+            .authority_source.tree = $source_tree |
+            .authority_source.workspace = $source_workspace |
+            .authority_source_date_epoch = $source_epoch |
+            .shipper.executable_sha256 = $shipper |
+            .shipper.executable_size = $shipper_size |
+            .shipper.build_source_commit = $source |
+            .build_authority.source_commit = $source |
+            .build_authority.source_version = $version |
+            .build_authority.source_date_epoch = $source_epoch |
+            .future_product_protocol.protocol.provisioner_sha256 =
+              $manifest[0].provisioner_sha256 |
+            .future_product_protocol.protocol.production_contract_sha256 =
+              $manifest[0].production_contract_sha256 |
+            .future_product_protocol.protocol.production_member_count =
+              $manifest[0].production_member_count |
+            .future_product_protocol.protocol.receipt_schema =
+              $manifest[0].receipt_schema |
+            .future_product_protocol.protocol.build_authority_schema =
+              $manifest[0].build_authority_schema |
+            .future_product_protocol.protocol.promotion_recovery_schema =
+              $manifest[0].promotion_recovery_schema |
+            .future_product_protocol.protocol.promotion_recovery_sha256 =
+              $manifest[0].promotion_recovery_sha256 |
+            .persistent_authority.installed_provisioner_sha256 = $provisioner |
+            if $authority_parent_commit == "" then .
+            else (
+              to_entries |
+              .[0:6] + [
+                {
+                  key:"authority_parent_commit",
+                  value:$authority_parent_commit
+                },
+                {
+                  key:"authority_parent_tree",
+                  value:$authority_parent_tree
+                }
+              ] + .[6:] |
+              from_entries
+            )
+            end
+            ' "$evidence" >"$genesis_evidence"
+    fi
     chown "$operator_uid:$operator_gid" "$genesis_evidence"
     chmod 0400 "$genesis_evidence"
     chmod 0500 "$evidence_dir"
     evidence_digest=$(sha256sum "$genesis_evidence" | awk '{print $1}')
 
-    genesis_catalog="$authority_root/catalog/$genesis_authority_commit-$engine_commit.json"
+    genesis_catalog="$authority_root/catalog/$catalog_authority_commit-$engine_commit.json"
     jq -c '.build_authority | {
       schema,source_commit,engine_commit,rustsec_provenance_schema,
       rustsec_db_remote,rustsec_db_ref,rustsec_db_commit,
@@ -890,6 +1049,23 @@ run_recovery_fixture() {
     }' "$genesis_evidence" >"$genesis_catalog"
     chown "root:$operator_gid" "$genesis_catalog"
     chmod 0440 "$genesis_catalog"
+    if [[ $scenario == recovery-g5 || $scenario == recovery-g6 ]]; then
+        decoy_catalog="$authority_root/catalog/$RECOVERY_G4_AUTHORITY_COMMIT-$engine_commit.json"
+        jq -c \
+            --arg source "$RECOVERY_G4_AUTHORITY_COMMIT" '
+            .build_authority |
+            .source_commit = $source |
+            {
+              schema,source_commit,engine_commit,rustsec_provenance_schema,
+              rustsec_db_remote,rustsec_db_ref,rustsec_db_commit,
+              platform_image_sha256,platform_manifest_sha256,
+              dependencies_image_sha256,dependencies_manifest_sha256,
+              source_image_sha256,source_manifest_sha256
+            }
+            ' "$genesis_evidence" >"$decoy_catalog"
+        chown "root:$operator_gid" "$decoy_catalog"
+        chmod 0440 "$decoy_catalog"
+    fi
 
     install_args=(
         "${recovery_args[@]}"
@@ -967,6 +1143,92 @@ run_recovery_fixture() {
                     --expected-current-shipper-sha256 \
                         "$RECOVERY_PREDECESSOR_SHIPPER_SHA256"; then
                 printf 'invalid G4 %s evidence was accepted\n' \
+                    "$invalid_case" >&2
+                exit 1
+            fi
+            [[ ! -e /etc/syntaur/release-authority ]]
+            [[ ! -e /usr/local/bin/syntaur-ship ]]
+            [[ -e /opt/syntaur-genesis-validator ]]
+            assert_no_bootstrap_transients
+        done
+    elif [[ $scenario == recovery-g5 || $scenario == recovery-g6 ]]; then
+        for invalid_case in old-schema wrong-parent-commit wrong-parent-tree \
+            missing-baseline-source \
+            missing-baseline-epoch wrong-baseline-commit wrong-baseline-tree \
+            workspace-collision shipper-source-g2 build-source-controller \
+            controller-export-as-build-tree wrong-source-lock \
+            wrong-engine-lock; do
+            case $invalid_case in
+                old-schema)
+                    invalid_filter='.schema = "syntaur.genesis-validation.v2"'
+                    ;;
+                wrong-parent-commit)
+                    invalid_filter='.authority_parent_commit = ("0" * 40)'
+                    ;;
+                wrong-parent-tree)
+                    invalid_filter='.authority_parent_tree = ("0" * 40)'
+                    ;;
+                missing-baseline-source)
+                    invalid_filter='del(.baseline_source)'
+                    ;;
+                missing-baseline-epoch)
+                    invalid_filter='del(.baseline_source_date_epoch)'
+                    ;;
+                wrong-baseline-commit)
+                    invalid_filter='.baseline_source.commit = ("0" * 40)'
+                    ;;
+                wrong-baseline-tree)
+                    invalid_filter='.baseline_source.tree = ("0" * 40)'
+                    ;;
+                workspace-collision)
+                    invalid_filter='
+                      .baseline_source.workspace =
+                        .authority_source.workspace
+                    '
+                    ;;
+                shipper-source-g2)
+                    # shellcheck disable=SC2016 # jq variable is intentional.
+                    invalid_filter='.shipper.build_source_commit = $g2_source'
+                    ;;
+                build-source-controller)
+                    # shellcheck disable=SC2016 # jq variable is intentional.
+                    invalid_filter='.build_authority.source_commit = $controller_source'
+                    ;;
+                controller-export-as-build-tree)
+                    invalid_filter='
+                      .build_authority.source_tree_sha256 =
+                        .authority_source.export_tree_sha256
+                    '
+                    ;;
+                wrong-source-lock)
+                    invalid_filter='
+                      .build_authority.source_cargo_lock_sha256 = ("0" * 64)
+                    '
+                    ;;
+                wrong-engine-lock)
+                    invalid_filter='
+                      .build_authority.engine_cargo_lock_sha256 = ("0" * 64)
+                    '
+                    ;;
+            esac
+            chmod 0700 "$evidence_dir"
+            invalid_evidence="$evidence_dir/invalid-$invalid_case.json"
+            jq -c \
+                --arg g2_source "$RECOVERY_G2_AUTHORITY_COMMIT" \
+                --arg controller_source "$genesis_authority_commit" \
+                "$invalid_filter" "$genesis_evidence" >"$invalid_evidence"
+            chown "$operator_uid:$operator_gid" "$invalid_evidence"
+            chmod 0400 "$invalid_evidence"
+            chmod 0500 "$evidence_dir"
+            invalid_digest=$(sha256sum "$invalid_evidence" | awk '{print $1}')
+            if SUDO_UID="$operator_uid" SUDO_GID="$operator_gid" \
+                "$recovery" install "${recovery_args[@]}" \
+                    --genesis-evidence "$invalid_evidence" \
+                    --expected-genesis-evidence-sha256 "$invalid_digest" \
+                    --expected-current-shipper-sha256 \
+                        "$RECOVERY_PREDECESSOR_SHIPPER_SHA256"; then
+                printf 'invalid %s %s evidence was accepted\n' \
+                    "$genesis_label" \
                     "$invalid_case" >&2
                 exit 1
             fi
@@ -1055,6 +1317,14 @@ run_recovery_fixture() {
                     material=$g4_dir
                     workflow=$RECOVERY_G4_WORKFLOW_COMMIT
                     ;;
+                5)
+                    material=$g5_dir
+                    workflow=$RECOVERY_G5_WORKFLOW_COMMIT
+                    ;;
+                6)
+                    material=$g6_dir
+                    workflow=$RECOVERY_G6_WORKFLOW_COMMIT
+                    ;;
             esac
             local installed="$authority/release-authority/generation-$generation"
             [[ $(stat -c '%u:%g:%a' "$installed") == 0:0:555 ]]
@@ -1127,7 +1397,9 @@ run_recovery_fixture() {
 }
 
 if [[ ${BOOTSTRAP_FIXTURE_SCENARIO:-genesis} == recovery \
-    || ${BOOTSTRAP_FIXTURE_SCENARIO:-genesis} == recovery-g4 ]]; then
+    || ${BOOTSTRAP_FIXTURE_SCENARIO:-genesis} == recovery-g4 \
+    || ${BOOTSTRAP_FIXTURE_SCENARIO:-genesis} == recovery-g5 \
+    || ${BOOTSTRAP_FIXTURE_SCENARIO:-genesis} == recovery-g6 ]]; then
     run_recovery_fixture
     exit 0
 fi

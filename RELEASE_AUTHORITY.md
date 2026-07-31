@@ -529,6 +529,176 @@ succeeds. Failed status checks preserve the validator and published root for
 an exact idempotent retry. The next product release must be a distinct
 descendant of G4.
 
+## Fixed G1-G2-G3-G4-G5 recovery
+
+When the authority root is still absent after G5 has been published, use only
+the versioned
+`scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-recovery-v3.sh`.
+Do not first install an earlier recovery: Genesis requires an absent authority
+root. G5 is the controller authority, while its isolated build authority
+truthfully reconstructs exact G2 source and exact Engine source in separate
+worktrees.
+
+Download and independently verify the five immutable assets from each of
+`authority-v1-g1` through `authority-v1-g5` in five distinct canonical
+directories. Normalize directories to `0500`, manifests and bundles to
+`0400`, and executables to `0500`. Verify the complete signed successor chain:
+
+```sh
+scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-recovery-v3.sh verify \
+  --g1-dir "$G1_DIR" \
+  --g2-dir "$G2_DIR" \
+  --g3-dir "$G3_DIR" \
+  --g4-dir "$G4_DIR" \
+  --g5-dir "$G5_DIR"
+```
+
+While the authority root remains absent and the exact G4 Genesis tools are
+staged, install the G5 provisioner and G5 shipper-as-validator:
+
+```sh
+sudo scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-recovery-v3.sh \
+  stage-g5-build-authority \
+  --g1-dir "$G1_DIR" \
+  --g2-dir "$G2_DIR" \
+  --g3-dir "$G3_DIR" \
+  --g4-dir "$G4_DIR" \
+  --g5-dir "$G5_DIR"
+```
+
+Run the staged validator as the ordinary operator. The controller workspace
+must be exact G5 commit
+`dc670026daf6765e01f5208b8b823ea47e4b63d5`; the distinct baseline workspace
+must be exact G2 commit
+`5642d7bc36a4913d42d9bce1120a3a2fe604aca8`; and the Engine workspace must be
+exact commit `36f3348fc32c02d0a0091be9ea87b828306941cc`.
+`SYNTAUR_GENESIS_BASELINE_WORKSPACE` is mandatory and must not resolve to
+either other workspace:
+
+```sh
+env -i \
+  HOME=/home/sean USER=sean LOGNAME=sean \
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  LANG=C.UTF-8 LC_ALL=C.UTF-8 RUST_LOG=info \
+  SYNTAUR_WORKSPACE="$G5_SOURCE_WORKTREE" \
+  SYNTAUR_GENESIS_BASELINE_WORKSPACE="$G2_SOURCE_WORKTREE" \
+  SYNTAUR_ENGINE_WORKSPACE="$GENESIS_ENGINE_WORKTREE" \
+  /opt/syntaur-genesis-validator genesis-validate \
+    --commit dc670026daf6765e01f5208b8b823ea47e4b63d5 \
+    --engine-commit 36f3348fc32c02d0a0091be9ea87b828306941cc \
+    >"$GENESIS_EVIDENCE_PARTIAL" \
+    2>"$GENESIS_LOG"
+```
+
+The canonical schema-v3 evidence binds G5 source and its G4 parent, but binds
+`baseline_source`, `build_authority.source_*`, and the persistent catalog to
+G2. Independently check those identities, both Cargo.lock digests, the
+separate workspace paths, the complete nested Genesis contract, and continued
+authority-root absence. Then install:
+
+```sh
+sudo scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-recovery-v3.sh install \
+  --g1-dir "$G1_DIR" \
+  --g2-dir "$G2_DIR" \
+  --g3-dir "$G3_DIR" \
+  --g4-dir "$G4_DIR" \
+  --g5-dir "$G5_DIR" \
+  --genesis-evidence "$GENESIS_EVIDENCE" \
+  --expected-genesis-evidence-sha256 "$GENESIS_EVIDENCE_SHA256" \
+  --expected-current-shipper-sha256 "$PRE_RECOVERY_SHIPPER_SHA256"
+```
+
+Installation atomically retains generations 1 through 5, activates G5,
+installs the exact G5 shipper and provisioner, and records the G5 controller
+with the G2 reconstruction catalog. It retires the validator only after
+unprivileged `authority-status` succeeds. Failed status checks preserve the
+validator and published root for an exact idempotent retry. The next product
+release must be a distinct descendant of G5.
+
+## Fixed G1-G2-G3-G4-G5-G6 recovery
+
+When the authority root is still absent after G6 has been published, use only
+the versioned
+`scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-recovery-v4.sh`.
+Do not first install an earlier recovery. G6 is the controller authority; its
+isolated build authority still reconstructs exact G2 source and exact Engine
+source in separate worktrees.
+
+Download the five immutable assets from each of `authority-v1-g1` through
+`authority-v1-g6` into six distinct canonical directories. Normalize
+directories to `0500`, manifests and bundles to `0400`, and executables to
+`0500`, then verify the complete signed successor chain:
+
+```sh
+scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-recovery-v4.sh verify \
+  --g1-dir "$G1_DIR" \
+  --g2-dir "$G2_DIR" \
+  --g3-dir "$G3_DIR" \
+  --g4-dir "$G4_DIR" \
+  --g5-dir "$G5_DIR" \
+  --g6-dir "$G6_DIR"
+```
+
+With the exact G5 Genesis tools staged and the authority root still absent,
+install the G6 provisioner and G6 shipper-as-validator:
+
+```sh
+sudo scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-recovery-v4.sh \
+  stage-g6-build-authority \
+  --g1-dir "$G1_DIR" \
+  --g2-dir "$G2_DIR" \
+  --g3-dir "$G3_DIR" \
+  --g4-dir "$G4_DIR" \
+  --g5-dir "$G5_DIR" \
+  --g6-dir "$G6_DIR"
+```
+
+Run the staged validator as the ordinary operator. The controller workspace
+must be exact G6 commit
+`3f57a12d405e793fc69d649146576c5989eea649`; the distinct baseline workspace
+must be exact G2 commit
+`5642d7bc36a4913d42d9bce1120a3a2fe604aca8`; and the Engine workspace must be
+exact commit `36f3348fc32c02d0a0091be9ea87b828306941cc`:
+
+```sh
+env -i \
+  HOME=/home/sean USER=sean LOGNAME=sean \
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  LANG=C.UTF-8 LC_ALL=C.UTF-8 RUST_LOG=info \
+  SYNTAUR_WORKSPACE="$G6_SOURCE_WORKTREE" \
+  SYNTAUR_GENESIS_BASELINE_WORKSPACE="$G2_SOURCE_WORKTREE" \
+  SYNTAUR_ENGINE_WORKSPACE="$GENESIS_ENGINE_WORKTREE" \
+  /opt/syntaur-genesis-validator genesis-validate \
+    --commit 3f57a12d405e793fc69d649146576c5989eea649 \
+    --engine-commit 36f3348fc32c02d0a0091be9ea87b828306941cc \
+    >"$GENESIS_EVIDENCE_PARTIAL" \
+    2>"$GENESIS_LOG"
+```
+
+The canonical schema-v3 evidence binds G6 source and its G5 parent while
+binding `baseline_source`, `build_authority.source_*`, and the persistent
+catalog to G2. Independently record its digest and the current shipper digest,
+then install:
+
+```sh
+sudo scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-recovery-v4.sh \
+  install \
+  --g1-dir "$G1_DIR" \
+  --g2-dir "$G2_DIR" \
+  --g3-dir "$G3_DIR" \
+  --g4-dir "$G4_DIR" \
+  --g5-dir "$G5_DIR" \
+  --g6-dir "$G6_DIR" \
+  --genesis-evidence "$GENESIS_EVIDENCE" \
+  --expected-genesis-evidence-sha256 "$GENESIS_EVIDENCE_SHA256" \
+  --expected-current-shipper-sha256 "$PRE_RECOVERY_SHIPPER_SHA256"
+```
+
+Installation atomically retains generations 1 through 6, activates G6,
+installs the exact G6 shipper and provisioner, and records the G6 controller
+with the G2 reconstruction catalog. It retires the validator only after
+unprivileged `authority-status` succeeds.
+
 ## Independent dispatch verification
 
 Record values from an independently reviewed checkout and isolated baseline,
