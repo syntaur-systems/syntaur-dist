@@ -332,6 +332,7 @@ bash scripts/test-release-workflow-recovery.sh "$workflow"
 authority_scripts=(
   scripts/bootstrap-release-authority-g1-g2-g3-recovery-v1.sh
   scripts/bootstrap-release-authority-g1-g2-g3-g4-recovery-v2.sh
+  scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-recovery-v3.sh
   scripts/bootstrap-release-authority-genesis-v2.sh
   scripts/fixtures/release_authority_bootstrap_driver.sh
   scripts/fixtures/release_authority_fake_cosign.sh
