@@ -884,6 +884,103 @@ installs the exact G8 shipper and provisioner, and records the G8 controller
 with the G2 reconstruction catalog. It retires only the exact G8 validator,
 and only after unprivileged `authority-status` succeeds.
 
+## Fixed G1-G2-G3-G4-G5-G6-G7-G8-G9 recovery
+
+When the authority root is still absent after G9 has been published, use only
+the versioned
+`scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-recovery-v7.sh`.
+Do not first install an earlier recovery. G9 is the controller authority; its
+isolated build authority still reconstructs exact G2 source and exact Engine
+source in separate worktrees.
+
+Download the five immutable assets from each of `authority-v1-g1` through
+`authority-v1-g9` into nine distinct canonical directories. Normalize
+directories to `0500`, manifests and bundles to `0400`, and executables to
+`0500`, then verify the complete signed successor chain:
+
+```sh
+scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-recovery-v7.sh verify \
+  --g1-dir "$G1_DIR" \
+  --g2-dir "$G2_DIR" \
+  --g3-dir "$G3_DIR" \
+  --g4-dir "$G4_DIR" \
+  --g5-dir "$G5_DIR" \
+  --g6-dir "$G6_DIR" \
+  --g7-dir "$G7_DIR" \
+  --g8-dir "$G8_DIR" \
+  --g9-dir "$G9_DIR"
+```
+
+With the exact G8 Genesis tools staged and the authority root still absent,
+install the G9 provisioner and G9 shipper-as-validator:
+
+```sh
+sudo scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-recovery-v7.sh \
+  stage-g9-build-authority \
+  --g1-dir "$G1_DIR" \
+  --g2-dir "$G2_DIR" \
+  --g3-dir "$G3_DIR" \
+  --g4-dir "$G4_DIR" \
+  --g5-dir "$G5_DIR" \
+  --g6-dir "$G6_DIR" \
+  --g7-dir "$G7_DIR" \
+  --g8-dir "$G8_DIR" \
+  --g9-dir "$G9_DIR"
+```
+
+The G8 and G9 provisioners are intentionally byte-identical; staging accepts
+that shared exact digest without requiring a false binary distinction. The G9
+shipper-as-validator must have the distinct G9 digest.
+
+Run the staged validator as the ordinary operator. The controller workspace
+must be exact G9 commit
+`4df26d1b2ef231bed39e1e1e105445bcc46b93fb`; the distinct baseline workspace
+must be exact G2 commit
+`5642d7bc36a4913d42d9bce1120a3a2fe604aca8`; and the Engine workspace must be
+exact commit `36f3348fc32c02d0a0091be9ea87b828306941cc`:
+
+```sh
+env -i \
+  HOME=/home/sean USER=sean LOGNAME=sean \
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  LANG=C.UTF-8 LC_ALL=C.UTF-8 RUST_LOG=info \
+  SYNTAUR_WORKSPACE="$G9_SOURCE_WORKTREE" \
+  SYNTAUR_GENESIS_BASELINE_WORKSPACE="$G2_SOURCE_WORKTREE" \
+  SYNTAUR_ENGINE_WORKSPACE="$GENESIS_ENGINE_WORKTREE" \
+  /opt/syntaur-genesis-validator genesis-validate \
+    --commit 4df26d1b2ef231bed39e1e1e105445bcc46b93fb \
+    --engine-commit 36f3348fc32c02d0a0091be9ea87b828306941cc \
+    >"$GENESIS_EVIDENCE_PARTIAL" \
+    2>"$GENESIS_LOG"
+```
+
+The canonical schema-v3 evidence binds G9 source and its exact G8 parent while
+binding `baseline_source`, `build_authority.source_*`, and the persistent
+catalog to G2. Independently record its digest and the current shipper digest,
+then install:
+
+```sh
+sudo scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-recovery-v7.sh \
+  install \
+  --g1-dir "$G1_DIR" \
+  --g2-dir "$G2_DIR" \
+  --g3-dir "$G3_DIR" \
+  --g4-dir "$G4_DIR" \
+  --g5-dir "$G5_DIR" \
+  --g6-dir "$G6_DIR" \
+  --g7-dir "$G7_DIR" \
+  --g8-dir "$G8_DIR" \
+  --g9-dir "$G9_DIR" \
+  --genesis-evidence "$GENESIS_EVIDENCE" \
+  --expected-genesis-evidence-sha256 "$GENESIS_EVIDENCE_SHA256" \
+  --expected-current-shipper-sha256 "$PRE_RECOVERY_SHIPPER_SHA256"
+```
+
+Installation atomically retains generations 1 through 9, activates G9,
+installs the exact G9 shipper and provisioner, and records the G9 controller
+with the G2 reconstruction catalog. It retires only the exact G9 validator,
+and only after unprivileged `authority-status` succeeds.
+
 ## Independent dispatch verification
 
 Record values from an independently reviewed checkout and isolated baseline,
