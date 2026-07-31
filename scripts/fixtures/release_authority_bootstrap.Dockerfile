@@ -29,6 +29,7 @@ COPY --chown=root:root bootstrap-release-authority-g1-g2-g3-recovery-v1.sh /boot
 COPY --chown=root:root bootstrap-release-authority-g1-g2-g3-g4-recovery-v2.sh /bootstrap/bootstrap-release-authority-g1-g2-g3-g4-recovery-v2.sh
 COPY --chown=root:root bootstrap-release-authority-g1-g2-g3-g4-g5-recovery-v3.sh /bootstrap/bootstrap-release-authority-g1-g2-g3-g4-g5-recovery-v3.sh
 COPY --chown=root:root bootstrap-release-authority-g1-g2-g3-g4-g5-g6-recovery-v4.sh /bootstrap/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-recovery-v4.sh
+COPY --chown=root:root bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-recovery-v5.sh /bootstrap/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-recovery-v5.sh
 COPY --chown=root:root release-authority-manifest.sh /bootstrap/release-authority-manifest.sh
 COPY --chown=root:root release-authority-fake-cosign.sh /usr/local/bin/cosign
 COPY --chown=root:root release-authority-bootstrap-driver.sh /bootstrap/driver.sh
@@ -38,6 +39,7 @@ COPY --chown=1000:1000 fixture-g3/ /fixture-g3/
 COPY --chown=1000:1000 fixture-g4/ /fixture-g4/
 COPY --chown=1000:1000 fixture-g5/ /fixture-g5/
 COPY --chown=1000:1000 fixture-g6/ /fixture-g6/
+COPY --chown=1000:1000 fixture-g7/ /fixture-g7/
 COPY --chown=root:root expected-shipper/ /expected/
 COPY --chown=root:root recovery-predecessor/ /recovery-predecessor/
 COPY --chown=1000:1000 operator-ssh/ /home/sean/.ssh/
@@ -53,6 +55,7 @@ RUN install -d -o 1000 -g 1000 -m 0755 /home/sean \
       /bootstrap/bootstrap-release-authority-g1-g2-g3-g4-recovery-v2.sh \
       /bootstrap/bootstrap-release-authority-g1-g2-g3-g4-g5-recovery-v3.sh \
       /bootstrap/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-recovery-v4.sh \
+      /bootstrap/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-recovery-v5.sh \
       /bootstrap/release-authority-manifest.sh \
       /bootstrap/driver.sh \
     && chmod 0755 /usr/local/bin/cosign \
@@ -65,7 +68,7 @@ RUN install -d -o 1000 -g 1000 -m 0755 /home/sean \
       /fixture/syntaur-ship-linux-x86_64 \
       /fixture/syntaur-verify-linux-x86_64 \
     && chmod 0500 /expected/syntaur-ship-linux-x86_64 \
-    && chmod 0500 /fixture-g2 /fixture-g3 /fixture-g4 /fixture-g5 /fixture-g6 \
+    && chmod 0500 /fixture-g2 /fixture-g3 /fixture-g4 /fixture-g5 /fixture-g6 /fixture-g7 \
     && chmod 0400 \
       /fixture-g2/release-authority-v2.json \
       /fixture-g2/release-authority-v2.json.cosign.bundle \
@@ -77,6 +80,8 @@ RUN install -d -o 1000 -g 1000 -m 0755 /home/sean \
       /fixture-g5/release-authority-v2.json.cosign.bundle \
       /fixture-g6/release-authority-v2.json \
       /fixture-g6/release-authority-v2.json.cosign.bundle \
+      /fixture-g7/release-authority-v2.json \
+      /fixture-g7/release-authority-v2.json.cosign.bundle \
     && chmod 0500 \
       /fixture-g2/syntaur-build-authority-provision \
       /fixture-g2/syntaur-ship-linux-x86_64 \
@@ -93,6 +98,9 @@ RUN install -d -o 1000 -g 1000 -m 0755 /home/sean \
       /fixture-g6/syntaur-build-authority-provision \
       /fixture-g6/syntaur-ship-linux-x86_64 \
       /fixture-g6/syntaur-verify-linux-x86_64 \
+      /fixture-g7/syntaur-build-authority-provision \
+      /fixture-g7/syntaur-ship-linux-x86_64 \
+      /fixture-g7/syntaur-verify-linux-x86_64 \
       /recovery-predecessor/syntaur-ship
 
 ENTRYPOINT ["/bootstrap/driver.sh"]
