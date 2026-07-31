@@ -335,6 +335,7 @@ authority_scripts=(
   scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-recovery-v3.sh
   scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-recovery-v4.sh
   scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-recovery-v5.sh
+  scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-recovery-v6.sh
   scripts/bootstrap-release-authority-genesis-v2.sh
   scripts/fixtures/release_authority_bootstrap_driver.sh
   scripts/fixtures/release_authority_fake_cosign.sh
