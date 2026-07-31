@@ -23,6 +23,7 @@ fixture_g6="$context/fixture-g6"
 fixture_g7="$context/fixture-g7"
 fixture_g8="$context/fixture-g8"
 fixture_g9="$context/fixture-g9"
+fixture_g10="$context/fixture-g10"
 expected_shipper="$context/expected-shipper"
 recovery_predecessor="$context/recovery-predecessor"
 operator_ssh="$context/operator-ssh"
@@ -36,6 +37,7 @@ mkdir -p \
     "$fixture_g7" \
     "$fixture_g8" \
     "$fixture_g9" \
+    "$fixture_g10" \
     "$expected_shipper" \
     "$recovery_predecessor" \
     "$operator_ssh"
@@ -137,6 +139,13 @@ cc -std=c11 -O2 -Wall -Wextra -Werror \
     -o "$fixture_g9/syntaur-ship-linux-x86_64"
 cp "$fixture_g8/syntaur-verify-linux-x86_64" \
     "$fixture_g9/syntaur-verify-linux-x86_64"
+cc -std=c11 -O2 -Wall -Wextra -Werror \
+    -DFIXTURE_ROLE_MARKER='"shipper-g10"' \
+    -DFIXTURE_AUTHORITY_GENERATIONS=10 \
+    "$repo_root/scripts/fixtures/release_authority_bootstrap.c" \
+    -o "$fixture_g10/syntaur-ship-linux-x86_64"
+cp "$fixture_g9/syntaur-verify-linux-x86_64" \
+    "$fixture_g10/syntaur-verify-linux-x86_64"
 cp "$fixture/syntaur-ship-linux-x86_64" \
     "$expected_shipper/syntaur-ship-linux-x86_64"
 cp "$fixture/syntaur-verify-linux-x86_64" \
@@ -159,6 +168,8 @@ cp "$fixture_g7/syntaur-build-authority-provision" \
     "$fixture_g8/syntaur-build-authority-provision"
 cp "$fixture_g8/syntaur-build-authority-provision" \
     "$fixture_g9/syntaur-build-authority-provision"
+cp "$fixture_g9/syntaur-build-authority-provision" \
+    "$fixture_g10/syntaur-build-authority-provision"
 printf '#!/usr/bin/bash\nexit 64\n# fixed recovery predecessor\n' \
     >"$recovery_predecessor/syntaur-ship"
 
@@ -216,6 +227,12 @@ G9_VERIFIER_SHA256=$(sha256sum \
     "$fixture_g9/syntaur-verify-linux-x86_64" | awk '{print $1}')
 G9_PROVISIONER_SHA256=$(sha256sum \
     "$fixture_g9/syntaur-build-authority-provision" | awk '{print $1}')
+G10_SHIPPER_SHA256=$(sha256sum \
+    "$fixture_g10/syntaur-ship-linux-x86_64" | awk '{print $1}')
+G10_VERIFIER_SHA256=$(sha256sum \
+    "$fixture_g10/syntaur-verify-linux-x86_64" | awk '{print $1}')
+G10_PROVISIONER_SHA256=$(sha256sum \
+    "$fixture_g10/syntaur-build-authority-provision" | awk '{print $1}')
 RECOVERY_PREDECESSOR_SHIPPER_SHA256=$(sha256sum \
     "$recovery_predecessor/syntaur-ship" | awk '{print $1}')
 [[ $SHIPPER_SHA256 != "$VERIFIER_SHA256" ]]
@@ -237,6 +254,9 @@ RECOVERY_PREDECESSOR_SHIPPER_SHA256=$(sha256sum \
 [[ $G8_SHIPPER_SHA256 != "$G9_SHIPPER_SHA256" ]]
 [[ $G8_VERIFIER_SHA256 == "$G9_VERIFIER_SHA256" ]]
 [[ $G8_PROVISIONER_SHA256 == "$G9_PROVISIONER_SHA256" ]]
+[[ $G9_SHIPPER_SHA256 != "$G10_SHIPPER_SHA256" ]]
+[[ $G9_VERIFIER_SHA256 == "$G10_VERIFIER_SHA256" ]]
+[[ $G9_PROVISIONER_SHA256 == "$G10_PROVISIONER_SHA256" ]]
 PRODUCTION_CONTRACT_SHA256=$(printf production-contract | sha256sum | awk '{print $1}')
 PROMOTION_RECOVERY_SHA256=$(printf promotion-recovery | sha256sum | awk '{print $1}')
 AUTHORITY_VERSION=0.7.114
@@ -312,6 +332,13 @@ G9_AUTHORITY_TREE_SHA256=$(
 )
 G9_WORKFLOW_COMMIT=$(printf 'de%.0s' {1..20})
 G9_SOURCE_DATE_EPOCH=7
+G10_AUTHORITY_COMMIT=$(printf 'f1%.0s' {1..20})
+G10_AUTHORITY_GIT_TREE=$(printf '23%.0s' {1..20})
+G10_AUTHORITY_TREE_SHA256=$(
+    printf authority-tree-g10 | sha256sum | awk '{print $1}'
+)
+G10_WORKFLOW_COMMIT=$(printf '45%.0s' {1..20})
+G10_SOURCE_DATE_EPOCH=8
 G2_SOURCE_DATE_EPOCH=1
 RECOVERY_SOURCE_CARGO_LOCK_SHA256=$(
     printf source-cargo-lock | sha256sum | awk '{print $1}'
@@ -354,6 +381,8 @@ export G8_AUTHORITY_COMMIT G8_AUTHORITY_GIT_TREE G8_AUTHORITY_TREE_SHA256
 export G8_WORKFLOW_COMMIT G8_SOURCE_DATE_EPOCH
 export G9_AUTHORITY_COMMIT G9_AUTHORITY_GIT_TREE G9_AUTHORITY_TREE_SHA256
 export G9_WORKFLOW_COMMIT G9_SOURCE_DATE_EPOCH
+export G10_AUTHORITY_COMMIT G10_AUTHORITY_GIT_TREE G10_AUTHORITY_TREE_SHA256
+export G10_WORKFLOW_COMMIT G10_SOURCE_DATE_EPOCH
 export G2_SHIPPER_SHA256 G2_VERIFIER_SHA256 G2_PROVISIONER_SHA256
 export G3_SHIPPER_SHA256 G3_VERIFIER_SHA256 G3_PROVISIONER_SHA256
 export G4_SHIPPER_SHA256 G4_VERIFIER_SHA256 G4_PROVISIONER_SHA256
@@ -362,6 +391,7 @@ export G6_SHIPPER_SHA256 G6_VERIFIER_SHA256 G6_PROVISIONER_SHA256
 export G7_SHIPPER_SHA256 G7_VERIFIER_SHA256 G7_PROVISIONER_SHA256
 export G8_SHIPPER_SHA256 G8_VERIFIER_SHA256 G8_PROVISIONER_SHA256
 export G9_SHIPPER_SHA256 G9_VERIFIER_SHA256 G9_PROVISIONER_SHA256
+export G10_SHIPPER_SHA256 G10_VERIFIER_SHA256 G10_PROVISIONER_SHA256
 export RECOVERY_PREDECESSOR_SHIPPER_SHA256 RECOVERY_RUSTSEC_DB_COMMIT
 export RECOVERY_RUSTSEC_TREE_SHA256 RECOVERY_SYSTEM_USR_TREE_SHA256
 export RECOVERY_SOURCE_CARGO_LOCK_SHA256 RECOVERY_ENGINE_CARGO_LOCK_SHA256
@@ -499,6 +529,22 @@ env \
         render-v2 "$fixture_g9/release-authority-v2.json"
 printf '{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}\n' \
     >"$fixture_g9/release-authority-v2.json.cosign.bundle"
+g9_manifest_sha256=$(sha256sum \
+    "$fixture_g9/release-authority-v2.json" | awk '{print $1}')
+env \
+    SHIPPER_SHA256="$G10_SHIPPER_SHA256" \
+    VERIFIER_SHA256="$G10_VERIFIER_SHA256" \
+    PROVISIONER_SHA256="$G10_PROVISIONER_SHA256" \
+    AUTHORITY_COMMIT="$G10_AUTHORITY_COMMIT" \
+    AUTHORITY_TREE_SHA256="$G10_AUTHORITY_TREE_SHA256" \
+    GITHUB_SHA="$G10_WORKFLOW_COMMIT" \
+    AUTHORITY_GENERATION=10 \
+    PREVIOUS_AUTHORITY_GENERATION=9 \
+    PREVIOUS_AUTHORITY_MANIFEST_SHA256="$g9_manifest_sha256" \
+    "$repo_root/scripts/release-authority-manifest.sh" \
+        render-v2 "$fixture_g10/release-authority-v2.json"
+printf '{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}\n' \
+    >"$fixture_g10/release-authority-v2.json.cosign.bundle"
 
 fake_cosign_sha256=$(sha256sum \
     "$repo_root/scripts/fixtures/release_authority_fake_cosign.sh" \
@@ -531,10 +577,12 @@ g7_bundle_sha256=$(sha256sum \
     "$fixture_g7/release-authority-v2.json.cosign.bundle" | awk '{print $1}')
 g8_bundle_sha256=$(sha256sum \
     "$fixture_g8/release-authority-v2.json.cosign.bundle" | awk '{print $1}')
-g9_manifest_sha256=$(sha256sum \
-    "$fixture_g9/release-authority-v2.json" | awk '{print $1}')
 g9_bundle_sha256=$(sha256sum \
     "$fixture_g9/release-authority-v2.json.cosign.bundle" | awk '{print $1}')
+g10_manifest_sha256=$(sha256sum \
+    "$fixture_g10/release-authority-v2.json" | awk '{print $1}')
+g10_bundle_sha256=$(sha256sum \
+    "$fixture_g10/release-authority-v2.json.cosign.bundle" | awk '{print $1}')
 recovery_helper_sha256=$(sha256sum \
     "$repo_root/scripts/release-authority-manifest.sh" | awk '{print $1}')
 sed \
@@ -954,6 +1002,36 @@ sed \
     >"$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-recovery-v7.sh"
 rm -f \
     "$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-recovery-v7.common"
+declare -A recovery_v7_readonly=()
+while IFS= read -r readonly_line; do
+    if [[ $readonly_line =~ ^readonly[[:space:]]+([A-Z0-9_]+)= ]]; then
+        recovery_v7_readonly["${BASH_REMATCH[1]}"]=$readonly_line
+    fi
+done <"$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-recovery-v7.sh"
+while IFS= read -r readonly_line; do
+    if [[ $readonly_line =~ ^readonly[[:space:]]+([A-Z0-9_]+)= ]] \
+        && [[ -v recovery_v7_readonly["${BASH_REMATCH[1]}"] ]]; then
+        printf '%s\n' "${recovery_v7_readonly["${BASH_REMATCH[1]}"]}"
+    else
+        printf '%s\n' "$readonly_line"
+    fi
+done <"$repo_root/scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-g10-recovery-v8.sh" \
+    >"$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-g10-recovery-v8.common"
+sed \
+    -e "s/^readonly G10_MANIFEST_SHA256=.*/readonly G10_MANIFEST_SHA256=$g10_manifest_sha256/" \
+    -e "s/^readonly G10_BUNDLE_SHA256=.*/readonly G10_BUNDLE_SHA256=$g10_bundle_sha256/" \
+    -e "s/^readonly G10_WORKFLOW_COMMIT=.*/readonly G10_WORKFLOW_COMMIT=$G10_WORKFLOW_COMMIT/" \
+    -e "s/^readonly G10_AUTHORITY_COMMIT=.*/readonly G10_AUTHORITY_COMMIT=$G10_AUTHORITY_COMMIT/" \
+    -e "s/^readonly G10_AUTHORITY_GIT_TREE=.*/readonly G10_AUTHORITY_GIT_TREE=$G10_AUTHORITY_GIT_TREE/" \
+    -e "s/^readonly G10_AUTHORITY_TREE_SHA256=.*/readonly G10_AUTHORITY_TREE_SHA256=$G10_AUTHORITY_TREE_SHA256/" \
+    -e "s/^readonly G10_SOURCE_DATE_EPOCH=.*/readonly G10_SOURCE_DATE_EPOCH=$G10_SOURCE_DATE_EPOCH/" \
+    -e "s/^readonly G10_SHIPPER_SHA256=.*/readonly G10_SHIPPER_SHA256=$G10_SHIPPER_SHA256/" \
+    -e "s/^readonly G10_VERIFIER_SHA256=.*/readonly G10_VERIFIER_SHA256=$G10_VERIFIER_SHA256/" \
+    -e "s/^readonly G10_PROVISIONER_SHA256=.*/readonly G10_PROVISIONER_SHA256=$G10_PROVISIONER_SHA256/" \
+    "$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-g10-recovery-v8.common" \
+    >"$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-g10-recovery-v8.sh"
+rm -f \
+    "$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-g10-recovery-v8.common"
 cp "$repo_root/scripts/release-authority-manifest.sh" \
     "$context/release-authority-manifest.sh"
 cp "$repo_root/scripts/fixtures/release_authority_fake_cosign.sh" \
@@ -971,11 +1049,12 @@ chmod 0555 \
     "$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-recovery-v5.sh" \
     "$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-recovery-v6.sh" \
     "$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-recovery-v7.sh" \
+    "$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-g10-recovery-v8.sh" \
     "$context/release-authority-manifest.sh" \
     "$context/release-authority-bootstrap-driver.sh"
 chmod 0755 "$context/release-authority-fake-cosign.sh"
 chmod 0500 "$fixture" "$fixture_g2" "$fixture_g3" "$fixture_g4" "$fixture_g5" \
-    "$fixture_g6" "$fixture_g7" "$fixture_g8" "$fixture_g9" \
+    "$fixture_g6" "$fixture_g7" "$fixture_g8" "$fixture_g9" "$fixture_g10" \
     "$recovery_predecessor"
 chmod 0400 \
     "$fixture/release-authority-v2.json" \
@@ -995,7 +1074,9 @@ chmod 0400 \
     "$fixture_g8/release-authority-v2.json" \
     "$fixture_g8/release-authority-v2.json.cosign.bundle" \
     "$fixture_g9/release-authority-v2.json" \
-    "$fixture_g9/release-authority-v2.json.cosign.bundle"
+    "$fixture_g9/release-authority-v2.json.cosign.bundle" \
+    "$fixture_g10/release-authority-v2.json" \
+    "$fixture_g10/release-authority-v2.json.cosign.bundle"
 chmod 0500 \
     "$fixture/syntaur-build-authority-provision" \
     "$fixture/syntaur-ship-linux-x86_64" \
@@ -1024,6 +1105,9 @@ chmod 0500 \
     "$fixture_g9/syntaur-build-authority-provision" \
     "$fixture_g9/syntaur-ship-linux-x86_64" \
     "$fixture_g9/syntaur-verify-linux-x86_64" \
+    "$fixture_g10/syntaur-build-authority-provision" \
+    "$fixture_g10/syntaur-ship-linux-x86_64" \
+    "$fixture_g10/syntaur-verify-linux-x86_64" \
     "$expected_shipper/syntaur-ship-linux-x86_64" \
     "$recovery_predecessor/syntaur-ship"
 
@@ -1361,10 +1445,11 @@ if command -v docker >/dev/null \
         --env "RECOVERY_ENGINE_CARGO_LOCK_SHA256=$RECOVERY_ENGINE_CARGO_LOCK_SHA256" \
         --env "RECOVERY_PREDECESSOR_SHIPPER_SHA256=$RECOVERY_PREDECESSOR_SHIPPER_SHA256" \
         "$image"
-    docker run --rm --hostname claudevm \
+    for recovery_scenario in recovery-g9 recovery-g10; do
+        docker run --rm --hostname claudevm \
         --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
         --env BOOTSTRAP_FIXTURE_REQUIRE_RUN_NOEXEC=1 \
-        --env BOOTSTRAP_FIXTURE_SCENARIO=recovery-g9 \
+        --env "BOOTSTRAP_FIXTURE_SCENARIO=$recovery_scenario" \
         --env "EXPECTED_MANIFEST_SHA256=$manifest_sha256" \
         --env "EXPECTED_WORKFLOW_COMMIT=$GITHUB_SHA" \
         --env "EXPECTED_AUTHORITY_VERSION=$AUTHORITY_VERSION" \
@@ -1433,10 +1518,18 @@ if command -v docker >/dev/null \
         --env "RECOVERY_G9_SHIPPER_SHA256=$G9_SHIPPER_SHA256" \
         --env "RECOVERY_G9_SOURCE_DATE_EPOCH=$G9_SOURCE_DATE_EPOCH" \
         --env "RECOVERY_G9_WORKFLOW_COMMIT=$G9_WORKFLOW_COMMIT" \
+        --env "RECOVERY_G10_AUTHORITY_COMMIT=$G10_AUTHORITY_COMMIT" \
+        --env "RECOVERY_G10_AUTHORITY_GIT_TREE=$G10_AUTHORITY_GIT_TREE" \
+        --env "RECOVERY_G10_MANIFEST_SHA256=$g10_manifest_sha256" \
+        --env "RECOVERY_G10_PROVISIONER_SHA256=$G10_PROVISIONER_SHA256" \
+        --env "RECOVERY_G10_SHIPPER_SHA256=$G10_SHIPPER_SHA256" \
+        --env "RECOVERY_G10_SOURCE_DATE_EPOCH=$G10_SOURCE_DATE_EPOCH" \
+        --env "RECOVERY_G10_WORKFLOW_COMMIT=$G10_WORKFLOW_COMMIT" \
         --env "RECOVERY_SOURCE_CARGO_LOCK_SHA256=$RECOVERY_SOURCE_CARGO_LOCK_SHA256" \
         --env "RECOVERY_ENGINE_CARGO_LOCK_SHA256=$RECOVERY_ENGINE_CARGO_LOCK_SHA256" \
         --env "RECOVERY_PREDECESSOR_SHIPPER_SHA256=$RECOVERY_PREDECESSOR_SHIPPER_SHA256" \
         "$image"
+    done
     docker image rm "$image" >/dev/null
     image=
 else
@@ -1520,6 +1613,16 @@ else
         "$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-recovery-v7.sh"
     chmod 0555 \
         "$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-recovery-v7.sh"
+    # shellcheck disable=SC2016 # This test rewrite matches literal source text.
+    sed -E 's/\^\[1-9\]\[0-9\]\*\$/^[0-9]+$/g' \
+        "$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-g10-recovery-v8.sh" \
+        | sed \
+            's/\[\[ $owner == 0 || $owner == "$operator_uid" \]\]/[[ $owner == 0 || $owner == 65534 || $owner == "$operator_uid" ]]/' \
+        >"$context/bootstrap-single-uid"
+    mv -f "$context/bootstrap-single-uid" \
+        "$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-g10-recovery-v8.sh"
+    chmod 0555 \
+        "$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-g10-recovery-v8.sh"
     printf 'claudevm\n' >"$context/hostname"
     chmod 0444 "$context/hostname"
     alternatives_bind=()
@@ -1532,7 +1635,7 @@ else
         if [[ $scenario == recovery || $scenario == recovery-g4 \
             || $scenario == recovery-g5 || $scenario == recovery-g6 \
             || $scenario == recovery-g7 || $scenario == recovery-g8 \
-            || $scenario == recovery-g9 ]]; then
+            || $scenario == recovery-g9 || $scenario == recovery-g10 ]]; then
             scenario_args=(
                 --setenv BOOTSTRAP_FIXTURE_SCENARIO "$scenario"
             )
@@ -1566,6 +1669,7 @@ else
             --dir /tmp/fixture-g7 \
             --dir /tmp/fixture-g8 \
             --dir /tmp/fixture-g9 \
+            --dir /tmp/fixture-g10 \
             --dir /tmp/bootstrap \
             --dir /tmp/expected \
             --dir /tmp/recovery-predecessor \
@@ -1583,6 +1687,7 @@ else
             --bind "$fixture_g7" /tmp/fixture-g7 \
             --bind "$fixture_g8" /tmp/fixture-g8 \
             --bind "$fixture_g9" /tmp/fixture-g9 \
+            --bind "$fixture_g10" /tmp/fixture-g10 \
             --ro-bind "$context" /tmp/bootstrap \
             --ro-bind "$expected_shipper" /tmp/expected \
             --ro-bind "$recovery_predecessor" /tmp/recovery-predecessor \
@@ -1595,6 +1700,7 @@ else
             --setenv BOOTSTRAP_FIXTURE_G7_DIR /tmp/fixture-g7 \
             --setenv BOOTSTRAP_FIXTURE_G8_DIR /tmp/fixture-g8 \
             --setenv BOOTSTRAP_FIXTURE_G9_DIR /tmp/fixture-g9 \
+            --setenv BOOTSTRAP_FIXTURE_G10_DIR /tmp/fixture-g10 \
             --setenv BOOTSTRAP_FIXTURE_BOOTSTRAP_ROOT /tmp/bootstrap \
             --setenv BOOTSTRAP_FIXTURE_EXPECTED_DIR /tmp/expected \
             --setenv BOOTSTRAP_FIXTURE_RECOVERY_PREDECESSOR \
@@ -1729,6 +1835,20 @@ else
                 "$G9_SOURCE_DATE_EPOCH" \
             --setenv RECOVERY_G9_WORKFLOW_COMMIT \
                 "$G9_WORKFLOW_COMMIT" \
+            --setenv RECOVERY_G10_AUTHORITY_COMMIT \
+                "$G10_AUTHORITY_COMMIT" \
+            --setenv RECOVERY_G10_AUTHORITY_GIT_TREE \
+                "$G10_AUTHORITY_GIT_TREE" \
+            --setenv RECOVERY_G10_MANIFEST_SHA256 \
+                "$g10_manifest_sha256" \
+            --setenv RECOVERY_G10_PROVISIONER_SHA256 \
+                "$G10_PROVISIONER_SHA256" \
+            --setenv RECOVERY_G10_SHIPPER_SHA256 \
+                "$G10_SHIPPER_SHA256" \
+            --setenv RECOVERY_G10_SOURCE_DATE_EPOCH \
+                "$G10_SOURCE_DATE_EPOCH" \
+            --setenv RECOVERY_G10_WORKFLOW_COMMIT \
+                "$G10_WORKFLOW_COMMIT" \
             --setenv RECOVERY_SOURCE_CARGO_LOCK_SHA256 \
                 "$RECOVERY_SOURCE_CARGO_LOCK_SHA256" \
             --setenv RECOVERY_ENGINE_CARGO_LOCK_SHA256 \
@@ -1746,4 +1866,5 @@ else
     run_bwrap_fixture recovery-g7
     run_bwrap_fixture recovery-g8
     run_bwrap_fixture recovery-g9
+    run_bwrap_fixture recovery-g10
 fi

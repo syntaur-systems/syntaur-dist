@@ -647,7 +647,12 @@ assert_no_bootstrap_transients() {
         /etc/syntaur/.release-authority.recovery-v7-g1-g2-g3-g4-g5-g6-g7-g8-g9 \
         /usr/local/bin/.syntaur-ship.recovery-v7-g1-g2-g3-g4-g5-g6-g7-g8-g9 \
         /opt/.syntaur-build-authority-provision.recovery-v7-g9 \
-        /opt/.syntaur-genesis-validator.recovery-v7-g9; do
+        /opt/.syntaur-genesis-validator.recovery-v7-g9 \
+        /run/syntaur-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-g10-recovery.snapshot \
+        /etc/syntaur/.release-authority.recovery-v8-g1-g2-g3-g4-g5-g6-g7-g8-g9-g10 \
+        /usr/local/bin/.syntaur-ship.recovery-v8-g1-g2-g3-g4-g5-g6-g7-g8-g9-g10 \
+        /opt/.syntaur-build-authority-provision.recovery-v8-g10 \
+        /opt/.syntaur-genesis-validator.recovery-v8-g10; do
         [[ ! -e "$transient" && ! -L "$transient" ]]
     done
 }
@@ -663,6 +668,7 @@ run_recovery_fixture() {
     local g7_dir=${BOOTSTRAP_FIXTURE_G7_DIR:-/fixture-g7}
     local g8_dir=${BOOTSTRAP_FIXTURE_G8_DIR:-/fixture-g8}
     local g9_dir=${BOOTSTRAP_FIXTURE_G9_DIR:-/fixture-g9}
+    local g10_dir=${BOOTSTRAP_FIXTURE_G10_DIR:-/fixture-g10}
     local predecessor=${BOOTSTRAP_FIXTURE_RECOVERY_PREDECESSOR:-/recovery-predecessor/syntaur-ship}
     local stage_action=stage-g2-build-authority
     local genesis_label=G2
@@ -844,6 +850,35 @@ run_recovery_fixture() {
             --g8-dir "$g8_dir"
             --g9-dir "$g9_dir"
         )
+    elif [[ $scenario == recovery-g10 ]]; then
+        recovery="$bootstrap_root/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-g10-recovery-v8.sh"
+        stage_action=stage-g10-build-authority
+        genesis_label=G10
+        genesis_slug=g10
+        genesis_dir=$g10_dir
+        genesis_authority_commit=$RECOVERY_G10_AUTHORITY_COMMIT
+        genesis_authority_git_tree=$RECOVERY_G10_AUTHORITY_GIT_TREE
+        genesis_manifest_sha256=$RECOVERY_G10_MANIFEST_SHA256
+        genesis_provisioner_sha256=$RECOVERY_G10_PROVISIONER_SHA256
+        genesis_shipper_sha256=$RECOVERY_G10_SHIPPER_SHA256
+        genesis_source_date_epoch=$RECOVERY_G10_SOURCE_DATE_EPOCH
+        active_generation=10
+        active_dir=$g10_dir
+        active_provisioner_sha256=$RECOVERY_G10_PROVISIONER_SHA256
+        active_shipper_sha256=$RECOVERY_G10_SHIPPER_SHA256
+        predecessor_material=$g9_dir
+        authority_parent_commit=$RECOVERY_G9_AUTHORITY_COMMIT
+        authority_parent_tree=$RECOVERY_G9_AUTHORITY_GIT_TREE
+        catalog_authority_commit=$RECOVERY_G2_AUTHORITY_COMMIT
+        recovery_args+=(
+            --g4-dir "$g4_dir"
+            --g5-dir "$g5_dir"
+            --g6-dir "$g6_dir"
+            --g7-dir "$g7_dir"
+            --g8-dir "$g8_dir"
+            --g9-dir "$g9_dir"
+            --g10-dir "$g10_dir"
+        )
     fi
     if [[ $operator_uid == 0 && $operator_gid == 0 ]]; then
         "$recovery" verify "${recovery_args[@]}"
@@ -886,7 +921,8 @@ run_recovery_fixture() {
     [[ ! -e /etc/syntaur/release-authority ]]
     if [[ $scenario == recovery-g4 || $scenario == recovery-g5 \
         || $scenario == recovery-g6 || $scenario == recovery-g7 \
-        || $scenario == recovery-g8 || $scenario == recovery-g9 ]]; then
+        || $scenario == recovery-g8 || $scenario == recovery-g9 \
+        || $scenario == recovery-g10 ]]; then
         install -o root -g root -m 0755 \
             "$predecessor_material/syntaur-build-authority-provision" \
             /opt/syntaur-build-authority-provision
@@ -986,7 +1022,7 @@ run_recovery_fixture() {
     genesis_evidence="$evidence_dir/genesis-validation-$genesis_slug.json"
     if [[ $scenario == recovery-g5 || $scenario == recovery-g6 \
         || $scenario == recovery-g7 || $scenario == recovery-g8 \
-        || $scenario == recovery-g9 ]]; then
+        || $scenario == recovery-g9 || $scenario == recovery-g10 ]]; then
         jq -c \
             --arg source "$genesis_authority_commit" \
             --arg source_tree "$genesis_authority_git_tree" \
@@ -1153,7 +1189,7 @@ run_recovery_fixture() {
     chmod 0440 "$genesis_catalog"
     if [[ $scenario == recovery-g5 || $scenario == recovery-g6 \
         || $scenario == recovery-g7 || $scenario == recovery-g8 \
-        || $scenario == recovery-g9 ]]; then
+        || $scenario == recovery-g9 || $scenario == recovery-g10 ]]; then
         decoy_catalog="$authority_root/catalog/$RECOVERY_G4_AUTHORITY_COMMIT-$engine_commit.json"
         jq -c \
             --arg source "$RECOVERY_G4_AUTHORITY_COMMIT" '
@@ -1257,7 +1293,7 @@ run_recovery_fixture() {
         done
     elif [[ $scenario == recovery-g5 || $scenario == recovery-g6 \
         || $scenario == recovery-g7 || $scenario == recovery-g8 \
-        || $scenario == recovery-g9 ]]; then
+        || $scenario == recovery-g9 || $scenario == recovery-g10 ]]; then
         for invalid_case in old-schema wrong-parent-commit wrong-parent-tree \
             missing-baseline-source \
             missing-baseline-epoch wrong-baseline-commit wrong-baseline-tree \
@@ -1443,6 +1479,10 @@ run_recovery_fixture() {
                     material=$g9_dir
                     workflow=$RECOVERY_G9_WORKFLOW_COMMIT
                     ;;
+                10)
+                    material=$g10_dir
+                    workflow=$RECOVERY_G10_WORKFLOW_COMMIT
+                    ;;
             esac
             local installed="$authority/release-authority/generation-$generation"
             [[ $(stat -c '%u:%g:%a' "$installed") == 0:0:555 ]]
@@ -1520,7 +1560,8 @@ if [[ ${BOOTSTRAP_FIXTURE_SCENARIO:-genesis} == recovery \
     || ${BOOTSTRAP_FIXTURE_SCENARIO:-genesis} == recovery-g6 \
     || ${BOOTSTRAP_FIXTURE_SCENARIO:-genesis} == recovery-g7 \
     || ${BOOTSTRAP_FIXTURE_SCENARIO:-genesis} == recovery-g8 \
-    || ${BOOTSTRAP_FIXTURE_SCENARIO:-genesis} == recovery-g9 ]]; then
+    || ${BOOTSTRAP_FIXTURE_SCENARIO:-genesis} == recovery-g9 \
+    || ${BOOTSTRAP_FIXTURE_SCENARIO:-genesis} == recovery-g10 ]]; then
     run_recovery_fixture
     exit 0
 fi

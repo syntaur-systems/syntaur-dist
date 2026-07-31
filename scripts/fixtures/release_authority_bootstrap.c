@@ -16,8 +16,8 @@
 #define FIXTURE_AUTHORITY_GENERATIONS 1
 #endif
 
-#if FIXTURE_AUTHORITY_GENERATIONS < 1 || FIXTURE_AUTHORITY_GENERATIONS > 9
-#error "FIXTURE_AUTHORITY_GENERATIONS must be between 1 and 9"
+#if FIXTURE_AUTHORITY_GENERATIONS < 1 || FIXTURE_AUTHORITY_GENERATIONS > 10
+#error "FIXTURE_AUTHORITY_GENERATIONS must be between 1 and 10"
 #endif
 
 static int has_exact_metadata(const char *path, mode_t mode, int directory) {
