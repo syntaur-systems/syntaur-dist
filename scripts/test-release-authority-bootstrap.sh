@@ -1042,6 +1042,10 @@ cp "$repo_root/scripts/fixtures/release_authority_g10_g11_driver.sh" \
     "$context/release-authority-g10-g11-driver.sh"
 cp "$repo_root/scripts/recover-release-authority-g10-g11-canary-root-v1.sh" \
     "$context/recover-release-authority-g10-g11-canary-root-v1.sh"
+cp "$repo_root/scripts/fixtures/release_authority_g11_g12_driver.sh" \
+    "$context/release-authority-g11-g12-driver.sh"
+cp "$repo_root/scripts/recover-release-authority-g11-g12-canary-root-v1.sh" \
+    "$context/recover-release-authority-g11-g12-canary-root-v1.sh"
 cp "$repo_root/scripts/fixtures/release_authority_bootstrap.Dockerfile" \
     "$context/Dockerfile"
 chmod 0555 \
@@ -1055,9 +1059,11 @@ chmod 0555 \
     "$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-recovery-v7.sh" \
     "$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-g10-recovery-v8.sh" \
     "$context/recover-release-authority-g10-g11-canary-root-v1.sh" \
+    "$context/recover-release-authority-g11-g12-canary-root-v1.sh" \
     "$context/release-authority-manifest.sh" \
     "$context/release-authority-bootstrap-driver.sh" \
-    "$context/release-authority-g10-g11-driver.sh"
+    "$context/release-authority-g10-g11-driver.sh" \
+    "$context/release-authority-g11-g12-driver.sh"
 chmod 0755 "$context/release-authority-fake-cosign.sh"
 chmod 0500 "$fixture" "$fixture_g2" "$fixture_g3" "$fixture_g4" "$fixture_g5" \
     "$fixture_g6" "$fixture_g7" "$fixture_g8" "$fixture_g9" "$fixture_g10" \
@@ -1169,6 +1175,50 @@ if command -v docker >/dev/null \
             --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
             --entrypoint /bootstrap/g10-g11-driver.sh \
             --env "G10_G11_FIXTURE_SCENARIO=$g10_g11_scenario" \
+            "$image"
+    done
+    g11_g12_scenarios=(
+        normal
+        lock-root
+        lock-global
+        lock-deploy
+        root-lock-bootstrap
+        acquisition-lock-replace
+        acquisition-lock-metadata
+        tamper
+        resume-prepared
+        resume-generation_published
+        resume-shipper_published
+        resume-provisioner_published
+        resume-trust_published
+        resume-bundle_published
+        resume-manifest_published
+        fence-before-journal
+        journal-without-fence
+        normal-promotion-pending
+        normal-promotion-temp-pending
+        tampered-fence
+        crash-window-prepared-generation
+        crash-window-generation-shipper
+        crash-window-shipper-provisioner
+        crash-window-provisioner-trust
+        crash-window-trust-bundle
+        crash-window-bundle-manifest
+        pre-receipt-product-change
+        terminal-product-update
+        retirement-crash-no-sources
+        provisioner-state-mismatch
+        predecessor-recovery-incomplete
+        phase-mismatch
+        status-lock-replace
+        status-lock-replace-final
+        stale-temporaries
+    )
+    for g11_g12_scenario in "${g11_g12_scenarios[@]}"; do
+        docker run --rm --hostname claudevm \
+            --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
+            --entrypoint /bootstrap/g11-g12-driver.sh \
+            --env "G11_G12_FIXTURE_SCENARIO=$g11_g12_scenario" \
             "$image"
     done
     docker run --rm --hostname claudevm \
