@@ -371,9 +371,11 @@ authority_scripts=(
   scripts/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-g10-recovery-v8.sh
   scripts/bootstrap-release-authority-genesis-v2.sh
   scripts/recover-release-authority-g10-g11-canary-root-v1.sh
+  scripts/recover-release-authority-g11-g12-canary-root-v1.sh
   scripts/fixtures/release_authority_bootstrap_driver.sh
   scripts/fixtures/release_authority_fake_cosign.sh
   scripts/fixtures/release_authority_g10_g11_driver.sh
+  scripts/fixtures/release_authority_g11_g12_driver.sh
   scripts/release-authority-manifest.sh
   scripts/test-release-authority-bootstrap.sh
   scripts/test-release-authority-workflow.sh
