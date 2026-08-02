@@ -1447,10 +1447,10 @@ jobs:
               "$RUNNER_TEMP/authority-ref-inventory.XXXXXX")
             gh api --paginate \
               "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-              --jq '.[]' >"$release_inventory"
+              --jq '.[]' >"$release_inventory" || return 1
             gh api --paginate \
               "/repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/authority-v1-g?per_page=100" \
-              --jq '.[]' >"$ref_inventory"
+              --jq '.[]' >"$ref_inventory" || return 1
             for inventory in "$release_inventory" "$ref_inventory"; do
               jq -e -s \
                 --argjson previous "$PREVIOUS_GENERATION" \
@@ -1485,8 +1485,24 @@ jobs:
                       exact_through($generation)
                     end
                   )
-                ' "$inventory" >/dev/null
+                ' "$inventory" >/dev/null || return 1
             done
+          }
+          snapshot_authority_namespace_consistent() {
+            local release_inventory=$1 attempt
+            for attempt in {1..10}; do
+              if snapshot_authority_namespace \
+                "$release_inventory" true; then
+                return
+              fi
+              if (( attempt < 10 )); then
+                printf 'authority namespace has not converged after mutation; retry %s/10\n' \
+                  "$attempt" >&2
+                sleep 2
+              fi
+            done
+            printf 'authority namespace did not converge after 10 checks\n' >&2
+            return 1
           }
 
           tag="authority-v1-g${GENERATION}"
@@ -1582,7 +1598,7 @@ jobs:
             done <<<"$expected_assets"
             release_id=$(jq -er '.id' <<<"$release")
             prepublish_inventory="$RUNNER_TEMP/prepublish-release-inventory.jsons"
-            snapshot_authority_namespace "$prepublish_inventory" true
+            snapshot_authority_namespace_consistent "$prepublish_inventory"
             prepublish_file="$RUNNER_TEMP/prepublish-release.json"
             test "$(release_by_tag \
               "$prepublish_inventory" "$tag" "$prepublish_file")" = present
