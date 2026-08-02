@@ -1038,6 +1038,10 @@ cp "$repo_root/scripts/fixtures/release_authority_fake_cosign.sh" \
     "$context/release-authority-fake-cosign.sh"
 cp "$repo_root/scripts/fixtures/release_authority_bootstrap_driver.sh" \
     "$context/release-authority-bootstrap-driver.sh"
+cp "$repo_root/scripts/fixtures/release_authority_g10_g11_driver.sh" \
+    "$context/release-authority-g10-g11-driver.sh"
+cp "$repo_root/scripts/recover-release-authority-g10-g11-canary-root-v1.sh" \
+    "$context/recover-release-authority-g10-g11-canary-root-v1.sh"
 cp "$repo_root/scripts/fixtures/release_authority_bootstrap.Dockerfile" \
     "$context/Dockerfile"
 chmod 0555 \
@@ -1050,8 +1054,10 @@ chmod 0555 \
     "$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-recovery-v6.sh" \
     "$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-recovery-v7.sh" \
     "$context/bootstrap-release-authority-g1-g2-g3-g4-g5-g6-g7-g8-g9-g10-recovery-v8.sh" \
+    "$context/recover-release-authority-g10-g11-canary-root-v1.sh" \
     "$context/release-authority-manifest.sh" \
-    "$context/release-authority-bootstrap-driver.sh"
+    "$context/release-authority-bootstrap-driver.sh" \
+    "$context/release-authority-g10-g11-driver.sh"
 chmod 0755 "$context/release-authority-fake-cosign.sh"
 chmod 0500 "$fixture" "$fixture_g2" "$fixture_g3" "$fixture_g4" "$fixture_g5" \
     "$fixture_g6" "$fixture_g7" "$fixture_g8" "$fixture_g9" "$fixture_g10" \
@@ -1124,6 +1130,33 @@ if command -v docker >/dev/null \
         --build-arg "BASE_IMAGE=$base_image" \
         --tag "$image" \
         "$context"
+    g10_g11_scenarios=(
+        normal
+        lock-root
+        lock-global
+        lock-deploy
+        tamper
+        resume-prepared
+        resume-generation_published
+        resume-shipper_published
+        resume-provisioner_published
+        resume-trust_published
+        resume-bundle_published
+        resume-manifest_published
+        pre-receipt-product-change
+        terminal-product-update
+        retirement-crash-no-sources
+        phase-mismatch
+        status-lock-replace
+        stale-temporaries
+    )
+    for g10_g11_scenario in "${g10_g11_scenarios[@]}"; do
+        docker run --rm --hostname claudevm \
+            --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
+            --entrypoint /bootstrap/g10-g11-driver.sh \
+            --env "G10_G11_FIXTURE_SCENARIO=$g10_g11_scenario" \
+            "$image"
+    done
     docker run --rm --hostname claudevm \
         --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
         --env BOOTSTRAP_FIXTURE_REQUIRE_RUN_NOEXEC=1 \

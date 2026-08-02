@@ -541,4 +541,31 @@ for step_name in \
     unset -f release_by_tag
 done
 
+retry_step="$tmp_root/publish-consistency-step.sh"
+retry_function="$tmp_root/publish-consistency-function.sh"
+yq -r \
+    '.jobs[].steps[]? |
+     select(.name == "Recover draft and publish immutable exact successor") |
+     .run' "$workflow" >"$retry_step"
+awk '
+    /^snapshot_authority_namespace_consistent\(\) \{$/ { copying=1 }
+    copying { print }
+    copying && /^}$/ { exit }
+' "$retry_step" >"$retry_function"
+[[ -s $retry_function ]] || fail 'missing namespace consistency retry'
+# shellcheck disable=SC1090 # Function is extracted from the workflow under test.
+source "$retry_function"
+retry_calls=0
+# shellcheck disable=SC2317,SC2329 # Called indirectly by the extracted retry function.
+snapshot_authority_namespace() {
+    retry_calls=$((retry_calls + 1))
+    (( retry_calls >= 3 ))
+}
+# shellcheck disable=SC2317,SC2329 # Called indirectly by the extracted retry function.
+sleep() { :; }
+snapshot_authority_namespace_consistent "$tmp_root/retry-inventory"
+[[ $retry_calls -eq 3 ]] \
+    || fail 'namespace consistency retry did not recover after convergence'
+unset -f snapshot_authority_namespace snapshot_authority_namespace_consistent sleep
+
 printf 'release authority workflow fixture tests passed\n'

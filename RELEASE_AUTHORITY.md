@@ -1082,6 +1082,62 @@ installs the exact G10 shipper and provisioner, and records the G10 controller
 with the G2 reconstruction catalog. It retires only the exact G10 validator,
 and only after unprivileged `authority-status` succeeds.
 
+## Fixed active-root G10-G11 recovery
+
+Use this path only when the installed root is exact healthy G10 but G10 cannot
+run an ordinary successor promotion because its frozen controller cannot
+complete the required product-release proof. The script accepts only the
+published immutable G10 manifest and its exact immutable G11 direct successor;
+it is not a generic promotion, rollback, or force path.
+
+First verify the two operator-owned, mode-`0500` release directories as the
+ordinary operator:
+
+```sh
+scripts/recover-release-authority-g10-g11-canary-root-v1.sh verify \
+  --g10-dir "$G10_DIR" \
+  --g11-dir "$G11_DIR"
+```
+
+Installation must not execute the group-writable checkout as root. Seal the
+reviewed script and its digest-pinned helper into the fixed root-owned runtime,
+then invoke only that copy:
+
+```sh
+sudo install -d -o root -g root -m 0700 \
+  /etc/syntaur/release-authority-g10-g11-recovery-v1.runtime
+sudo install -o root -g root -m 0500 \
+  scripts/recover-release-authority-g10-g11-canary-root-v1.sh \
+  scripts/release-authority-manifest.sh \
+  /etc/syntaur/release-authority-g10-g11-recovery-v1.runtime/
+sudo /etc/syntaur/release-authority-g10-g11-recovery-v1.runtime/\
+recover-release-authority-g10-g11-canary-root-v1.sh install \
+  --g10-dir "$G10_DIR" \
+  --g11-dir "$G11_DIR" \
+  --expected-current-shipper-sha256 \
+    336640d1564b364cbbc783b8121ed6018f653666f0c6006d4040f86495285f19
+```
+
+The recovery holds the root-promotion, global-mutation, and operator-deployment
+locks. Before journaling it snapshots and revalidates both signed generations
+under root ownership, proves the complete retained chain, and requires the
+exact shared provisioner and exact G10 live shipper. It publishes generation
+11, the G11 shipper, workflow trust, bundle, and active manifest in that order,
+with the manifest last. A monotonic root-owned journal permits only the exact
+current phase or its immediate crash window. Re-run the identical command after
+interruption; do not delete its journal or snapshot.
+
+The script does not build or deploy product bytes. It fences and hashes the
+current product-release records before and after both unprivileged authority
+status checks, writes a fixed non-authorizing receipt, and crash-safely retires
+its input snapshot only after G11 is complete. Confirm the final state before
+using G11 for the next product release:
+
+```sh
+/usr/local/bin/syntaur-ship authority-status
+sha256sum /etc/syntaur/release-authority-g10-g11-recovery-v1.receipt.json
+```
+
 ## Independent dispatch verification
 
 Record values from an independently reviewed checkout and isolated baseline,
