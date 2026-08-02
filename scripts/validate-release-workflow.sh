@@ -135,6 +135,37 @@ for toolchain in "${toolchains[@]}"; do
   }
 done
 
+product_environment_jobs=$(yq -r '
+  .jobs | to_entries[] |
+  select(.value.environment == "product-release-source") |
+  .key
+' "$workflow" | sort)
+[ "$product_environment_jobs" = $'build\nbuild-engine' ] || {
+  echo "private product builds must use only the protected product-release-source environment" >&2
+  exit 1
+}
+product_source_key_jobs=$(yq -r '
+  .jobs | to_entries[] |
+  select(.value | tostring |
+    contains("secrets.SYNTAUR_PRODUCT_SOURCE_DEPLOY_KEY")) |
+  .key
+' "$workflow" | sort)
+product_engine_key_jobs=$(yq -r '
+  .jobs | to_entries[] |
+  select(.value | tostring |
+    contains("secrets.SYNTAUR_PRODUCT_ENGINE_DEPLOY_KEY")) |
+  .key
+' "$workflow" | sort)
+if [ "$product_source_key_jobs" != $'build\nbuild-engine' ] \
+    || [ "$product_engine_key_jobs" != build-engine ]; then
+  echo "product deploy keys escaped their protected build jobs" >&2
+  exit 1
+fi
+if grep -Eq 'secrets\.SYNTAUR_(SOURCE|ENGINE)_DEPLOY_KEY' "$workflow"; then
+  echo "legacy repository-wide product deploy key names are forbidden" >&2
+  exit 1
+fi
+
 mapfile -t cosign_releases < <(
   yq -r '.jobs[].steps[]? | select(.uses == "sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac") | .with["cosign-release"]' "$workflow"
 )

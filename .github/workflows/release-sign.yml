@@ -236,18 +236,19 @@ jobs:
             binary: syntaur-viewer.exe
             artifact_name: syntaur-viewer-windows-x86_64.exe
     runs-on: ${{ matrix.os }}
+    environment: product-release-source
     timeout-minutes: 90
     steps:
       # Check out the PRIVATE application source via the read-only deploy
-      # key. The key's private half is stored as the SYNTAUR_SOURCE_DEPLOY_KEY
-      # secret in this (syntaur-dist) repo; its public half is registered
+      # key. Its private half is isolated in the main-only protected
+      # product-release-source environment; its public half is registered
       # read-only on the private application source repository.
       - name: Checkout private source
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           repository: buddyholly007/syntaur
           ref: ${{ env.SRC_COMMIT }}
-          ssh-key: ${{ secrets.SYNTAUR_SOURCE_DEPLOY_KEY }}
+          ssh-key: ${{ secrets.SYNTAUR_PRODUCT_SOURCE_DEPLOY_KEY }}
           persist-credentials: false
 
       - name: Verify exact application source checkout
@@ -519,6 +520,7 @@ jobs:
             features: gpu-paint
             smoke_prefix: ''
     runs-on: ${{ matrix.os }}
+    environment: product-release-source
     timeout-minutes: 120
     steps:
       - name: Checkout private application source dependency
@@ -527,7 +529,7 @@ jobs:
           repository: buddyholly007/syntaur
           ref: ${{ env.SRC_COMMIT }}
           path: openclaw-workspace
-          ssh-key: ${{ secrets.SYNTAUR_SOURCE_DEPLOY_KEY }}
+          ssh-key: ${{ secrets.SYNTAUR_PRODUCT_SOURCE_DEPLOY_KEY }}
           persist-credentials: false
 
       - name: Checkout private engine source
@@ -536,7 +538,7 @@ jobs:
           repository: buddyholly007/syntaur-engine
           ref: ${{ env.ENGINE_COMMIT }}
           path: syntaur-engine
-          ssh-key: ${{ secrets.SYNTAUR_ENGINE_DEPLOY_KEY }}
+          ssh-key: ${{ secrets.SYNTAUR_PRODUCT_ENGINE_DEPLOY_KEY }}
           persist-credentials: false
 
       - name: Verify exact application and Engine checkouts
