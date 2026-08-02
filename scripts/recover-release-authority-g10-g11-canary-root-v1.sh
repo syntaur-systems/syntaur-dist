@@ -36,6 +36,7 @@ readonly RECOVERY_STAGE=$ARTIFACT_ROOT/.generation-11-g10-g11-recovery-v1.staged
 readonly RECOVERY_SNAPSHOT=$AUTHORITY_ROOT/.authority-g10-g11-recovery-v1.inputs
 readonly RECOVERY_SNAPSHOT_STAGE=$AUTHORITY_ROOT/.authority-g10-g11-recovery-v1.inputs.staged
 readonly RECOVERY_SNAPSHOT_RETIRED=$AUTHORITY_ROOT/.authority-g10-g11-recovery-v1.inputs.retiring
+readonly RECOVERY_FENCE_TEMP=$AUTHORITY_ROOT/.authority-g10-g11-recovery-v1.fence.tmp
 readonly RECOVERY_RECEIPT=/etc/syntaur/release-authority-g10-g11-recovery-v1.receipt.json
 readonly GLOBAL_MUTATION_LOCK=/etc/syntaur/syntaur-ship-mutation.lock
 readonly OPERATOR_STATE=/home/sean/.syntaur/ship
@@ -150,6 +151,8 @@ preflight_recovery_temporaries() {
         'recovery journal temporary file'
     discard_safe_root_temporary "$RECOVERY_RECEIPT.tmp" 4096 \
         'recovery receipt temporary file'
+    discard_safe_root_temporary "$RECOVERY_FENCE_TEMP" 4096 \
+        'recovery mutation fence temporary file'
     temporary=$(publication_temporary_path "$INSTALLED_SHIPPER")
     discard_safe_root_temporary "$temporary" 268435456 \
         'shipper publication temporary file'
@@ -167,6 +170,32 @@ preflight_recovery_temporaries() {
     discard_recovery_stage
 }
 
+require_no_recovery_transients() {
+    local destination path temporary
+    for path in \
+        "$NORMAL_PROMOTION_JOURNAL_TEMP" \
+        "$RECOVERY_JOURNAL" \
+        "$RECOVERY_JOURNAL_TEMP" \
+        "$RECOVERY_STAGE" \
+        "$RECOVERY_SNAPSHOT" \
+        "$RECOVERY_SNAPSHOT_STAGE" \
+        "$RECOVERY_SNAPSHOT_RETIRED" \
+        "$RECOVERY_FENCE_TEMP" \
+        "$RECOVERY_RECEIPT.tmp"; do
+        [[ ! -e $path && ! -L $path ]] \
+            || die 'completed recovery has a recovery transient'
+    done
+    for destination in \
+        "$INSTALLED_SHIPPER" \
+        "$AUTHORITY_ROOT/trusted-workflow-commit" \
+        "$AUTHORITY_ROOT/release-authority-v2.json.cosign.bundle" \
+        "$AUTHORITY_ROOT/release-authority-v2.json"; do
+        temporary=$(publication_temporary_path "$destination")
+        [[ ! -e $temporary && ! -L $temporary ]] \
+            || die 'completed recovery has a publication transient'
+    done
+}
+
 retire_recovery_snapshot() {
     [[ -e $RECOVERY_SNAPSHOT || -L $RECOVERY_SNAPSHOT ]] \
         || die 'recovery input snapshot is missing at retirement'
@@ -177,6 +206,7 @@ retire_recovery_snapshot() {
     /usr/bin/mv -T "$RECOVERY_SNAPSHOT" "$RECOVERY_SNAPSHOT_RETIRED"
     sync_path "$AUTHORITY_ROOT"
     discard_snapshot_tree "$RECOVERY_SNAPSHOT_RETIRED"
+    manifest_helper=$SOURCE_MANIFEST_HELPER
 }
 
 validate_source_ancestors() {
@@ -703,6 +733,92 @@ product_state_digest() {
     } | /usr/bin/sha256sum | /usr/bin/awk '{print $1}'
 }
 
+recovery_fence_json() {
+    local product_digest=$1
+    /usr/bin/jq -cjn \
+        --arg schema syntaur.authority-g10-g11-normal-mutation-fence.v1 \
+        --arg recovery_journal authority-g10-g11-recovery-v1.json \
+        --arg g10_manifest "$G10_MANIFEST_SHA256" \
+        --arg g10_shipper "$G10_SHIPPER_SHA256" \
+        --arg g11_manifest "$G11_MANIFEST_SHA256" \
+        --arg g11_bundle "$G11_BUNDLE_SHA256" \
+        --arg g11_workflow "$G11_WORKFLOW_COMMIT" \
+        --arg g11_shipper "$G11_SHIPPER_SHA256" \
+        --arg g11_provisioner "$G11_PROVISIONER_SHA256" \
+        --arg product_state "$product_digest" \
+        '{schema:$schema,normal_mutations_blocked:true,
+          recovery_journal:$recovery_journal,
+          previous_generation:10,previous_manifest_sha256:$g10_manifest,
+          previous_shipper_sha256:$g10_shipper,
+          target_generation:11,target_manifest_sha256:$g11_manifest,
+          target_bundle_sha256:$g11_bundle,
+          target_workflow_commit:$g11_workflow,
+          target_shipper_sha256:$g11_shipper,
+          target_provisioner_sha256:$g11_provisioner,
+          product_state_sha256:$product_state}'
+}
+
+validate_recovery_fence() {
+    local product_digest=$1 expected
+    valid_sha256 "$product_digest" \
+        || die 'recovery mutation fence product digest is malformed'
+    require_regular "$NORMAL_PROMOTION_JOURNAL" 0 0 600 1 \
+        'recovery mutation fence'
+    [[ $(/usr/bin/stat -c '%s' "$NORMAL_PROMOTION_JOURNAL") -le 4096 ]] \
+        || die 'recovery mutation fence is oversized'
+    expected=$(recovery_fence_json "$product_digest")
+    [[ $(<"$NORMAL_PROMOTION_JOURNAL") == "$expected" \
+        && $(/usr/bin/wc -l <"$NORMAL_PROMOTION_JOURNAL") -eq 0 ]] \
+        || die 'normal authority promotion is pending or the recovery mutation fence differs'
+}
+
+recovery_fence_recorded_product_digest() {
+    local digest
+    require_regular "$NORMAL_PROMOTION_JOURNAL" 0 0 600 1 \
+        'recovery mutation fence'
+    digest=$(/usr/bin/jq -er '.product_state_sha256' \
+        "$NORMAL_PROMOTION_JOURNAL")
+    valid_sha256 "$digest" \
+        || die 'recovery mutation fence product digest is malformed'
+    validate_recovery_fence "$digest"
+    /usr/bin/printf '%s\n' "$digest"
+}
+
+publish_recovery_fence() {
+    local product_digest=$1
+    if [[ -e $NORMAL_PROMOTION_JOURNAL \
+        || -L $NORMAL_PROMOTION_JOURNAL ]]; then
+        validate_recovery_fence "$product_digest"
+        return 0
+    fi
+    [[ ! -e $RECOVERY_FENCE_TEMP && ! -L $RECOVERY_FENCE_TEMP ]] \
+        || die 'recovery mutation fence temporary path exists'
+    recovery_fence_json "$product_digest" >"$RECOVERY_FENCE_TEMP"
+    /usr/bin/chown root:root "$RECOVERY_FENCE_TEMP"
+    /usr/bin/chmod 0600 "$RECOVERY_FENCE_TEMP"
+    sync_path "$RECOVERY_FENCE_TEMP"
+    /usr/bin/mv -T "$RECOVERY_FENCE_TEMP" "$NORMAL_PROMOTION_JOURNAL"
+    sync_path "$AUTHORITY_ROOT"
+    validate_recovery_fence "$product_digest"
+}
+
+retire_recovery_fence() {
+    local expected_identity=$1 product_digest=$2
+    validate_recovery_fence "$product_digest"
+    [[ $(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h' \
+        "$NORMAL_PROMOTION_JOURNAL") == "$expected_identity" ]] \
+        || die 'recovery mutation fence changed before retirement'
+    validate_receipt "$product_digest"
+    require_no_recovery_transients
+    /usr/bin/rm -f -- "$NORMAL_PROMOTION_JOURNAL"
+    sync_path "$AUTHORITY_ROOT"
+    [[ ! -e $NORMAL_PROMOTION_JOURNAL \
+        && ! -L $NORMAL_PROMOTION_JOURNAL ]] \
+        || die 'recovery mutation fence was not retired'
+    recovery_fence_identity=
+    recovery_fence_product_digest=
+}
+
 journal_json() {
     local phase=$1 product_digest=$2
     /usr/bin/jq -cjn \
@@ -971,15 +1087,46 @@ run_operator_authority_status() {
 
 assert_locks() {
     local root_identity=$1 global_identity=$2 deploy_identity=$3
-    [[ $(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h' "$ROOT_LOCK") == \
+    local deploy_pattern deploy_size
+    [[ $root_identity =~ ^[0-9]+:[0-9]+:0:0:600:1:0$ ]] \
+        || die 'root promotion lock expected identity is unsafe'
+    [[ $global_identity =~ \
+        ^[0-9]+:[0-9]+:0:${operator_gid}:440:1:0$ ]] \
+        || die 'global mutation lock expected identity is unsafe'
+    deploy_pattern="^[0-9]+:[0-9]+:${operator_uid}:${operator_gid}:600:1:([0-9]+)$"
+    [[ $deploy_identity =~ $deploy_pattern ]] \
+        || die 'operator deployment lock expected identity is unsafe'
+    deploy_size=${BASH_REMATCH[1]}
+    (( deploy_size <= 64 )) \
+        || die 'operator deployment lock expected size is unsafe'
+    [[ -f $ROOT_LOCK && ! -L $ROOT_LOCK ]] \
+        || die 'root promotion lock path is unsafe'
+    [[ -f $GLOBAL_MUTATION_LOCK && ! -L $GLOBAL_MUTATION_LOCK ]] \
+        || die 'global mutation lock path is unsafe'
+    [[ -f $DEPLOYMENT_LOCK && ! -L $DEPLOYMENT_LOCK ]] \
+        || die 'operator deployment lock path is unsafe'
+    [[ $(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' "$ROOT_LOCK") == \
         "$root_identity" ]] || die 'root promotion lock changed'
-    [[ $(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h' "$GLOBAL_MUTATION_LOCK") == \
+    [[ $(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' \
+        "$GLOBAL_MUTATION_LOCK") == \
         "$global_identity" ]] || die 'global mutation lock changed'
-    [[ $(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h' "$DEPLOYMENT_LOCK") == \
+    [[ $(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' "$DEPLOYMENT_LOCK") == \
         "$deploy_identity" ]] || die 'operator deployment lock changed'
+    [[ $(/usr/bin/stat -Lc '%d:%i:%u:%g:%a:%h:%s' "/proc/$$/fd/7") == \
+        "$root_identity" ]] || die 'root promotion lock descriptor differs'
+    [[ $(/usr/bin/stat -Lc '%d:%i:%u:%g:%a:%h:%s' "/proc/$$/fd/8") == \
+        "$global_identity" ]] || die 'global mutation lock descriptor differs'
+    [[ $(/usr/bin/stat -Lc '%d:%i:%u:%g:%a:%h:%s' "/proc/$$/fd/9") == \
+        "$deploy_identity" ]] || die 'operator deployment lock descriptor differs'
     /usr/bin/flock -n 7 || die 'root promotion lock was lost'
     /usr/bin/flock -n 8 || die 'global mutation lock was lost'
     /usr/bin/flock -n 9 || die 'operator deployment lock was lost'
+    if [[ -n $recovery_fence_identity ]]; then
+        validate_recovery_fence "$recovery_fence_product_digest"
+        [[ $(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h' \
+            "$NORMAL_PROMOTION_JOURNAL") == "$recovery_fence_identity" ]] \
+            || die 'recovery mutation fence changed'
+    fi
 }
 
 [[ $# -ge 1 ]] || usage
@@ -1027,17 +1174,19 @@ require_directory "$AUTHORITY_ROOT" 0 0 755 'installed authority root'
 require_directory "$ARTIFACT_ROOT" 0 0 755 'installed authority artifact root'
 require_directory "$OPERATOR_STATE" "$operator_uid" "$operator_gid" 700 \
     'operator ship state'
-[[ ! -e $NORMAL_PROMOTION_JOURNAL && ! -L $NORMAL_PROMOTION_JOURNAL \
-    && ! -e $NORMAL_PROMOTION_JOURNAL_TEMP \
+[[ ! -e $NORMAL_PROMOTION_JOURNAL_TEMP \
     && ! -L $NORMAL_PROMOTION_JOURNAL_TEMP ]] \
-    || die 'normal authority promotion is pending'
+    || die 'normal authority promotion temporary state is pending'
+
+recovery_fence_identity=
+recovery_fence_product_digest=
 
 if [[ ! -e $ROOT_LOCK && ! -L $ROOT_LOCK ]]; then
-    /usr/bin/install -o root -g root -m 0600 /dev/null "$ROOT_LOCK"
+    (set -o noclobber; : >"$ROOT_LOCK") 2>/dev/null || true
     sync_path "$AUTHORITY_ROOT"
 fi
 require_regular "$ROOT_LOCK" 0 0 600 1 'root promotion lock'
-exec 7<>"$ROOT_LOCK"
+exec 7<"$ROOT_LOCK"
 /usr/bin/flock -n 7 || die 'another authority promotion holds the root lock'
 
 require_regular "$GLOBAL_MUTATION_LOCK" 0 "$operator_gid" 440 1 \
@@ -1051,18 +1200,34 @@ require_regular "$DEPLOYMENT_LOCK" "$operator_uid" "$operator_gid" 600 1 \
     'operator deployment lock'
 [[ $(/usr/bin/stat -c '%s' "$DEPLOYMENT_LOCK") -le 64 ]] \
     || die 'operator deployment lock is oversized'
-exec 9<>"$DEPLOYMENT_LOCK"
+exec 9<"$DEPLOYMENT_LOCK"
 /usr/bin/flock -n 9 || die 'another deployment holds the operator lock'
 
-root_lock_identity=$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h' "$ROOT_LOCK")
-global_lock_identity=$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h' "$GLOBAL_MUTATION_LOCK")
-deploy_lock_identity=$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h' "$DEPLOYMENT_LOCK")
+root_lock_identity=$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' "$ROOT_LOCK")
+global_lock_identity=$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' \
+    "$GLOBAL_MUTATION_LOCK")
+deploy_lock_identity=$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' \
+    "$DEPLOYMENT_LOCK")
 assert_locks "$root_lock_identity" "$global_lock_identity" "$deploy_lock_identity"
+[[ ! -e $NORMAL_PROMOTION_JOURNAL_TEMP \
+    && ! -L $NORMAL_PROMOTION_JOURNAL_TEMP ]] \
+    || die 'normal authority promotion temporary state is pending under lock'
 
+fence_present=false
+if [[ -e $NORMAL_PROMOTION_JOURNAL || -L $NORMAL_PROMOTION_JOURNAL ]]; then
+    fence_present=true
+    recovery_fence_product_digest=$(recovery_fence_recorded_product_digest)
+    recovery_fence_identity=$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h' \
+        "$NORMAL_PROMOTION_JOURNAL")
+    assert_locks "$root_lock_identity" "$global_lock_identity" \
+        "$deploy_lock_identity"
+fi
 journal_present=false
 if [[ -e $RECOVERY_JOURNAL || -L $RECOVERY_JOURNAL ]]; then
     journal_present=true
 fi
+[[ $journal_present == false || $fence_present == true ]] \
+    || die 'journaled recovery is missing its durable mutation fence'
 receipt_present=false
 if [[ -e $RECOVERY_RECEIPT || -L $RECOVERY_RECEIPT ]]; then
     receipt_present=true
@@ -1078,6 +1243,13 @@ if [[ $receipt_present == true \
         "$G11_SHIPPER_SHA256" 1755; then
     transaction_product_digest=$(receipt_recorded_product_digest)
     validate_receipt "$transaction_product_digest"
+    if [[ $fence_present == true ]]; then
+        [[ $recovery_fence_product_digest == \
+            "$transaction_product_digest" ]] \
+            || die 'recovery receipt and mutation fence product digests differ'
+    else
+        require_no_recovery_transients
+    fi
     if [[ $journal_present == true ]]; then
         [[ $(journal_recorded_product_digest) == \
             "$transaction_product_digest" ]] \
@@ -1092,18 +1264,28 @@ if [[ $receipt_present == true \
         || die 'G11 authority status changed product or deployment state'
     assert_locks "$root_lock_identity" "$global_lock_identity" \
         "$deploy_lock_identity"
-    preflight_recovery_temporaries
-    if [[ $journal_present == true ]]; then
-        /usr/bin/rm -f -- "$RECOVERY_JOURNAL"
-        sync_path "$AUTHORITY_ROOT"
-        [[ ! -e $RECOVERY_JOURNAL && ! -L $RECOVERY_JOURNAL ]] \
-            || die 'completed recovery journal was not retired'
+    if [[ $fence_present == true ]]; then
+        preflight_recovery_temporaries
+        if [[ $journal_present == true ]]; then
+            /usr/bin/rm -f -- "$RECOVERY_JOURNAL"
+            sync_path "$AUTHORITY_ROOT"
+            [[ ! -e $RECOVERY_JOURNAL && ! -L $RECOVERY_JOURNAL ]] \
+                || die 'completed recovery journal was not retired'
+        fi
+        if [[ -e $RECOVERY_SNAPSHOT || -L $RECOVERY_SNAPSHOT ]]; then
+            retire_recovery_snapshot
+        fi
+        assert_locks "$root_lock_identity" "$global_lock_identity" \
+            "$deploy_lock_identity"
+        [[ $(product_state_digest) == "$product_digest" ]] \
+            || die 'completed recovery cleanup changed product or deployment state'
+        retire_recovery_fence "$recovery_fence_identity" \
+            "$transaction_product_digest"
+        assert_locks "$root_lock_identity" "$global_lock_identity" \
+            "$deploy_lock_identity"
+    else
+        require_no_recovery_transients
     fi
-    if [[ -e $RECOVERY_SNAPSHOT || -L $RECOVERY_SNAPSHOT ]]; then
-        retire_recovery_snapshot
-    fi
-    assert_locks "$root_lock_identity" "$global_lock_identity" \
-        "$deploy_lock_identity"
     [[ $(product_state_digest) == "$product_digest" ]] \
         || die 'completed recovery cleanup changed product or deployment state'
     /usr/bin/printf 'G10-G11 authority recovery already installed: active_generation=11 manifest_sha256=%s transaction_product_state_sha256=%s current_product_state_sha256=%s\n' \
@@ -1112,11 +1294,11 @@ if [[ $receipt_present == true \
     exit 0
 fi
 
+[[ $receipt_present == false ]] \
+    || die 'recovery receipt exists while exact G11 is not complete'
 preflight_recovery_temporaries
-snapshot_resume=$journal_present
-if [[ $journal_present == false \
-    && ( -e $RECOVERY_SNAPSHOT || -L $RECOVERY_SNAPSHOT ) \
-    && ( -e $RECOVERY_RECEIPT || -L $RECOVERY_RECEIPT ) ]]; then
+snapshot_resume=false
+if [[ $journal_present == true || $fence_present == true ]]; then
     snapshot_resume=true
 fi
 prepare_recovery_snapshot \
@@ -1128,10 +1310,15 @@ installed_executable_is_exact "$INSTALLED_PROVISIONER" \
     "$G11_PROVISIONER_SHA256" 755 \
     || die 'G10/G11 shared provisioner differs before recovery'
 transaction_product_digest=$product_digest
-if [[ $journal_present == true ]]; then
-    transaction_product_digest=$(journal_recorded_product_digest)
+if [[ $fence_present == true ]]; then
+    transaction_product_digest=$recovery_fence_product_digest
 fi
-if [[ $journal_present == true && $receipt_present == false ]]; then
+if [[ $journal_present == true ]]; then
+    recorded_product_digest=$(journal_recorded_product_digest)
+    [[ $recorded_product_digest == "$transaction_product_digest" ]] \
+        || die 'recovery journal and mutation fence product digests differ'
+fi
+if [[ $fence_present == true ]]; then
     [[ $product_digest == "$transaction_product_digest" ]] \
         || die 'product or deployment state changed during incomplete recovery'
 fi
@@ -1140,25 +1327,8 @@ if [[ $journal_present == false ]]; then
     if [[ $active_manifest == "$G11_MANIFEST_SHA256" ]] \
         && installed_executable_is_exact "$INSTALLED_SHIPPER" \
             "$G11_SHIPPER_SHA256" 1755; then
-        [[ $receipt_present == true ]] \
-            || die 'complete un-journaled G11 is missing its recovery receipt'
-        recorded_product_digest=$(receipt_recorded_product_digest)
-        validate_receipt "$recorded_product_digest"
-        validate_phase_state manifest_published
-        validate_retained_chain 11
-        validate_active_copy 11 "$g11_material" "$G11_WORKFLOW_COMMIT"
-        run_operator_authority_status "$operator_uid" "$operator_gid"
-        [[ $(product_state_digest) == "$product_digest" ]] \
-            || die 'G11 authority status changed product or deployment state'
-        assert_locks "$root_lock_identity" "$global_lock_identity" \
-            "$deploy_lock_identity"
-        retire_recovery_snapshot
-        /usr/bin/printf 'G10-G11 authority recovery already installed: active_generation=11 manifest_sha256=%s\n' \
-            "$G11_MANIFEST_SHA256"
-        exit 0
+        die 'complete un-journaled G11 is missing its recovery receipt'
     fi
-    [[ $receipt_present == false ]] \
-        || die 'recovery receipt exists while exact G11 is not complete'
     [[ $active_manifest == "$G10_MANIFEST_SHA256" ]] \
         || die 'un-journaled active manifest is neither exact G10 nor complete G11'
     installed_executable_is_exact "$INSTALLED_SHIPPER" \
@@ -1172,16 +1342,17 @@ if [[ $journal_present == false ]]; then
         || die 'G10 authority status changed product or deployment state'
     assert_locks "$root_lock_identity" "$global_lock_identity" \
         "$deploy_lock_identity"
+    publish_recovery_fence "$transaction_product_digest"
+    recovery_fence_product_digest=$transaction_product_digest
+    recovery_fence_identity=$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h' \
+        "$NORMAL_PROMOTION_JOURNAL")
+    fence_present=true
+    assert_locks "$root_lock_identity" "$global_lock_identity" \
+        "$deploy_lock_identity"
     write_journal prepared "$transaction_product_digest"
     validate_current_journal_state "$transaction_product_digest"
 else
     validate_current_journal_state "$transaction_product_digest"
-    if [[ $receipt_present == true ]]; then
-        validate_receipt "$transaction_product_digest"
-        [[ $(/usr/bin/jq -er '.phase' "$RECOVERY_JOURNAL") == \
-            manifest_published ]] \
-            || die 'recovery receipt exists before the terminal journal phase'
-    fi
 fi
 
 assert_locks "$root_lock_identity" "$global_lock_identity" "$deploy_lock_identity"
@@ -1233,7 +1404,7 @@ installed_executable_is_exact "$INSTALLED_SHIPPER" \
 installed_executable_is_exact "$INSTALLED_PROVISIONER" \
     "$G11_PROVISIONER_SHA256" 755 || die 'final G11 provisioner differs'
 run_operator_authority_status "$operator_uid" "$operator_gid"
-[[ $(product_state_digest) == "$product_digest" ]] \
+[[ $(product_state_digest) == "$transaction_product_digest" ]] \
     || die 'product or deployment state changed during authority recovery'
 assert_locks "$root_lock_identity" "$global_lock_identity" \
     "$deploy_lock_identity"
@@ -1244,5 +1415,18 @@ sync_path "$AUTHORITY_ROOT"
 [[ ! -e $RECOVERY_JOURNAL && ! -L $RECOVERY_JOURNAL ]] \
     || die 'completed recovery journal was not retired'
 retire_recovery_snapshot
+assert_locks "$root_lock_identity" "$global_lock_identity" \
+    "$deploy_lock_identity"
+validate_complete_installed_g11
+run_operator_authority_status "$operator_uid" "$operator_gid"
+[[ $(product_state_digest) == "$transaction_product_digest" ]] \
+    || die 'completed recovery cleanup changed product or deployment state'
+retire_recovery_fence "$recovery_fence_identity" \
+    "$transaction_product_digest"
+assert_locks "$root_lock_identity" "$global_lock_identity" \
+    "$deploy_lock_identity"
+[[ $(product_state_digest) == "$transaction_product_digest" ]] \
+    || die 'recovery fence retirement changed product or deployment state'
 /usr/bin/printf 'G10-G11 authority recovery installed: active_generation=11 manifest_sha256=%s transaction_product_state_sha256=%s current_product_state_sha256=%s\n' \
-    "$G11_MANIFEST_SHA256" "$transaction_product_digest" "$product_digest"
+    "$G11_MANIFEST_SHA256" "$transaction_product_digest" \
+    "$transaction_product_digest"

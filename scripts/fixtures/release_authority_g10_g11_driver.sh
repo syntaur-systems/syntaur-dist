@@ -49,10 +49,12 @@ int main(void) {
 }
 EOF
 cat >/run/fixture-shipper.c <<'EOF'
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define STRINGIFY_INNER(value) #value
@@ -62,15 +64,40 @@ static const char generation_marker[] = "generation-" STRINGIFY(GENERATION);
 
 int main(int argc, char **argv) {
     const char *lock = "/home/sean/.syntaur/ship/deploy.lock";
+    const char *promotion_journal =
+        "/etc/syntaur/release-authority/authority-promotion-v1.json";
+    const char *generation_lock_marker =
+        GENERATION == 10 ? "/run/syntaur-replace-deploy-lock-g10" :
+            "/run/syntaur-replace-deploy-lock-g11";
+    struct stat metadata;
     int descriptor;
 
-    if (argc != 2 || strcmp(argv[1], "authority-status") != 0) {
+    if (argc != 2) {
+        return 64;
+    }
+    if (strcmp(argv[1], "normal-mutation-probe") == 0) {
+        if (lstat(promotion_journal, &metadata) == 0) {
+            fprintf(stderr,
+                "an authority promotion recovery journal is pending at %s; "
+                "resume that exact authority-promote transaction before any "
+                "other mutation\n",
+                promotion_journal);
+            return 75;
+        }
+        if (errno == ENOENT) {
+            return 0;
+        }
+        perror("normal mutation promotion-journal probe");
+        return 74;
+    }
+    if (strcmp(argv[1], "authority-status") != 0) {
         return 64;
     }
     if (geteuid() != 1000) {
         return 65;
     }
-    if (access("/run/syntaur-replace-deploy-lock", F_OK) == 0) {
+    if (access("/run/syntaur-replace-deploy-lock", F_OK) == 0 ||
+        access(generation_lock_marker, F_OK) == 0) {
         if (unlink(lock) != 0) {
             return 66;
         }
@@ -314,8 +341,11 @@ assert_complete() {
         /etc/syntaur/release-authority-g10-g11-recovery-v1.receipt.json) \
         == 0:0:444:1 ]]
     for transient in \
+        "$authority_root/authority-promotion-v1.json" \
+        "$authority_root/.authority-promotion-v1.json.tmp" \
         "$authority_root/authority-g10-g11-recovery-v1.json" \
         "$authority_root/.authority-g10-g11-recovery-v1.json.tmp" \
+        "$authority_root/.authority-g10-g11-recovery-v1.fence.tmp" \
         "$authority_root/.authority-g10-g11-recovery-v1.inputs" \
         "$authority_root/.authority-g10-g11-recovery-v1.inputs.staged" \
         "$authority_root/.authority-g10-g11-recovery-v1.inputs.retiring" \
@@ -323,6 +353,19 @@ assert_complete() {
         [[ ! -e $transient && ! -L $transient ]]
     done
     [[ $(product_digest) == "$state_before" ]]
+    /usr/local/bin/syntaur-ship normal-mutation-probe
+}
+
+assert_normal_mutation_blocked() {
+    local before
+    before=$(product_digest)
+    expect_failure normal-mutation-blocked \
+        /usr/local/bin/syntaur-ship normal-mutation-probe
+    grep -Fq 'an authority promotion recovery journal is pending' \
+        /run/normal-mutation-blocked.err \
+        || die 'normal mutation did not fail for the durable recovery fence'
+    [[ $(product_digest) == "$before" ]] \
+        || die 'blocked normal mutation changed product state'
 }
 
 snapshot_inputs() {
@@ -384,6 +427,30 @@ seed_journal() {
     chmod 0600 "$authority_root/authority-g10-g11-recovery-v1.json"
 }
 
+seed_fence() {
+    jq -cjn \
+        --arg recovery_journal authority-g10-g11-recovery-v1.json \
+        --arg g10_manifest "$g10_manifest_sha" \
+        --arg g10_shipper "$g10_shipper_sha" \
+        --arg g11_manifest "$g11_manifest_sha" \
+        --arg g11_bundle "$g11_bundle_sha" \
+        --arg g11_workflow "$g11_workflow" \
+        --arg g11_shipper "$g11_shipper_sha" \
+        --arg provisioner "$provisioner_sha" \
+        --arg product "$state_before" \
+        '{schema:"syntaur.authority-g10-g11-normal-mutation-fence.v1",
+          normal_mutations_blocked:true,recovery_journal:$recovery_journal,
+          previous_generation:10,previous_manifest_sha256:$g10_manifest,
+          previous_shipper_sha256:$g10_shipper,target_generation:11,
+          target_manifest_sha256:$g11_manifest,target_bundle_sha256:$g11_bundle,
+          target_workflow_commit:$g11_workflow,target_shipper_sha256:$g11_shipper,
+          target_provisioner_sha256:$provisioner,
+          product_state_sha256:$product}' \
+        >"$authority_root/authority-promotion-v1.json"
+    chown root:root "$authority_root/authority-promotion-v1.json"
+    chmod 0600 "$authority_root/authority-promotion-v1.json"
+}
+
 seed_receipt() {
     jq -cjn \
         --arg previous_manifest "$g10_manifest_sha" \
@@ -409,9 +476,9 @@ seed_receipt() {
 }
 
 seed_resume_state() {
-    local phase=$1
+    local state=$1 phase=$1
     snapshot_inputs
-    case $phase in
+    case $state in
         prepared) ;;
         generation_published) publish_generation_11_fixture ;;
         shipper_published|provisioner_published)
@@ -455,9 +522,60 @@ seed_resume_state() {
                 "$g11/release-authority-v2.json" \
                 "$authority_root/release-authority-v2.json"
             ;;
-        *) die "unknown resume phase: $phase" ;;
+        window-prepared-generation)
+            phase=prepared
+            publish_generation_11_fixture
+            ;;
+        window-generation-shipper)
+            phase=generation_published
+            publish_generation_11_fixture
+            install -o root -g root -m 1755 \
+                "$g11/syntaur-ship-linux-x86_64" /usr/local/bin/syntaur-ship
+            ;;
+        window-provisioner-trust)
+            phase=provisioner_published
+            publish_generation_11_fixture
+            install -o root -g root -m 1755 \
+                "$g11/syntaur-ship-linux-x86_64" /usr/local/bin/syntaur-ship
+            printf '%s\n' "$g11_workflow" \
+                >"$authority_root/trusted-workflow-commit"
+            chown root:root "$authority_root/trusted-workflow-commit"
+            chmod 0444 "$authority_root/trusted-workflow-commit"
+            ;;
+        window-trust-bundle)
+            phase=trust_published
+            publish_generation_11_fixture
+            install -o root -g root -m 1755 \
+                "$g11/syntaur-ship-linux-x86_64" /usr/local/bin/syntaur-ship
+            printf '%s\n' "$g11_workflow" \
+                >"$authority_root/trusted-workflow-commit"
+            chown root:root "$authority_root/trusted-workflow-commit"
+            chmod 0444 "$authority_root/trusted-workflow-commit"
+            install -o root -g root -m 0444 \
+                "$g11/release-authority-v2.json.cosign.bundle" \
+                "$authority_root/release-authority-v2.json.cosign.bundle"
+            ;;
+        window-bundle-manifest)
+            phase=bundle_published
+            publish_generation_11_fixture
+            install -o root -g root -m 1755 \
+                "$g11/syntaur-ship-linux-x86_64" /usr/local/bin/syntaur-ship
+            printf '%s\n' "$g11_workflow" \
+                >"$authority_root/trusted-workflow-commit"
+            chown root:root "$authority_root/trusted-workflow-commit"
+            chmod 0444 "$authority_root/trusted-workflow-commit"
+            install -o root -g root -m 0444 \
+                "$g11/release-authority-v2.json.cosign.bundle" \
+                "$authority_root/release-authority-v2.json.cosign.bundle"
+            install -o root -g root -m 0444 \
+                "$g11/release-authority-v2.json" \
+                "$authority_root/release-authority-v2.json"
+            ;;
+        *) die "unknown resume state: $state" ;;
     esac
+    seed_fence
     seed_journal "$phase"
+    assert_normal_mutation_blocked
 }
 
 case $scenario in
@@ -478,6 +596,79 @@ case $scenario in
         flock -n 20
         expect_failure "$scenario" install_exact
         assert_g10_unchanged
+        ;;
+    root-lock-bootstrap)
+        rm -f "$authority_root/.authority-promotion.lock"
+        install_exact
+        assert_complete
+        ;;
+    acquisition-lock-replace)
+        replacement=$operator_state/deploy.lock.replacement
+        install -o "$operator_uid" -g "$operator_gid" -m 0600 /dev/null \
+            "$replacement"
+        SUDO_UID=$operator_uid SUDO_GID=$operator_gid \
+            "$recovery" install \
+            --g10-dir "$g10" --g11-dir "$g11" \
+            --expected-current-shipper-sha256 "$g10_shipper_sha" \
+            >/run/acquisition-lock-replace.out \
+            2>/run/acquisition-lock-replace.err &
+        recovery_pid=$!
+        replaced=false
+        for ((attempt = 0; attempt < 1000000; attempt++)); do
+            if [[ -e /proc/$recovery_pid/fd/9 ]]; then
+                mv -fT "$replacement" "$operator_state/deploy.lock"
+                replaced=true
+                break
+            fi
+            kill -0 "$recovery_pid" 2>/dev/null || break
+        done
+        [[ $replaced == true ]] \
+            || die 'did not observe the recovery deployment-lock descriptor'
+        if wait "$recovery_pid"; then
+            die 'deployment-lock acquisition replacement unexpectedly succeeded'
+        fi
+        grep -Fq 'operator deployment lock descriptor differs' \
+            /run/acquisition-lock-replace.err \
+            || die 'deployment-lock descriptor/path split was not rejected'
+        [[ ! -e $authority_root/authority-promotion-v1.json ]]
+        [[ ! -e $authority_root/authority-g10-g11-recovery-v1.json ]]
+        install_exact
+        assert_complete
+        ;;
+    acquisition-lock-metadata)
+        SUDO_UID=$operator_uid SUDO_GID=$operator_gid \
+            "$recovery" install \
+            --g10-dir "$g10" --g11-dir "$g11" \
+            --expected-current-shipper-sha256 "$g10_shipper_sha" \
+            >/run/acquisition-lock-metadata.out \
+            2>/run/acquisition-lock-metadata.err &
+        recovery_pid=$!
+        mutated=false
+        for ((attempt = 0; attempt < 1000000; attempt++)); do
+            if [[ -e /proc/$recovery_pid/fd/9 ]]; then
+                printf 'unsafe same-inode mutation\n' \
+                    >"$operator_state/deploy.lock"
+                chmod 0666 "$operator_state/deploy.lock"
+                mutated=true
+                break
+            fi
+            kill -0 "$recovery_pid" 2>/dev/null || break
+        done
+        [[ $mutated == true ]] \
+            || die 'did not observe the recovery deployment-lock descriptor'
+        if wait "$recovery_pid"; then
+            die 'deployment-lock metadata mutation unexpectedly succeeded'
+        fi
+        grep -Eq 'operator deployment lock (expected identity is unsafe|expected size is unsafe|changed|descriptor differs)' \
+            /run/acquisition-lock-metadata.err \
+            || die 'same-inode deployment-lock metadata mutation was not rejected'
+        [[ ! -e $authority_root/authority-promotion-v1.json ]]
+        [[ ! -e $authority_root/authority-g10-g11-recovery-v1.json ]]
+        : >"$operator_state/deploy.lock"
+        chown "$operator_uid:$operator_gid" "$operator_state/deploy.lock"
+        chmod 0600 "$operator_state/deploy.lock"
+        install_exact
+        assert_complete
         ;;
     tamper)
         tampered=/home/sean/tampered
@@ -532,6 +723,59 @@ case $scenario in
         install_exact /home/sean/removed-g10 /home/sean/removed-g11
         assert_complete
         ;;
+    fence-before-journal)
+        snapshot_inputs
+        seed_fence
+        assert_normal_mutation_blocked
+        install_exact /home/sean/removed-g10 /home/sean/removed-g11
+        assert_complete
+        ;;
+    journal-without-fence)
+        snapshot_inputs
+        seed_journal prepared
+        expect_failure journal-without-fence install_exact \
+            /home/sean/removed-g10 /home/sean/removed-g11
+        [[ $(product_digest) == "$state_before" ]]
+        [[ $(sha256_file "$authority_root/release-authority-v2.json") == \
+            "$g10_manifest_sha" ]]
+        ;;
+    normal-promotion-pending)
+        printf '%s' '{"schema":"syntaur.authority-promotion.v1"}' \
+            >"$authority_root/authority-promotion-v1.json"
+        chown root:root "$authority_root/authority-promotion-v1.json"
+        chmod 0600 "$authority_root/authority-promotion-v1.json"
+        expect_failure normal-promotion-pending install_exact
+        [[ $(product_digest) == "$state_before" ]]
+        [[ $(sha256_file "$authority_root/release-authority-v2.json") == \
+            "$g10_manifest_sha" ]]
+        ;;
+    normal-promotion-temp-pending)
+        printf '%s' '{"schema":"syntaur.authority-promotion.v1"}' \
+            >"$authority_root/.authority-promotion-v1.json.tmp"
+        chown root:root "$authority_root/.authority-promotion-v1.json.tmp"
+        chmod 0600 "$authority_root/.authority-promotion-v1.json.tmp"
+        expect_failure normal-promotion-temp-pending install_exact
+        [[ $(product_digest) == "$state_before" ]]
+        [[ $(sha256_file "$authority_root/release-authority-v2.json") == \
+            "$g10_manifest_sha" ]]
+        ;;
+    tampered-fence)
+        snapshot_inputs
+        seed_fence
+        chmod 0600 "$authority_root/authority-promotion-v1.json"
+        printf ' ' >>"$authority_root/authority-promotion-v1.json"
+        expect_failure tampered-fence install_exact \
+            /home/sean/removed-g10 /home/sean/removed-g11
+        [[ $(product_digest) == "$state_before" ]]
+        [[ $(sha256_file "$authority_root/release-authority-v2.json") == \
+            "$g10_manifest_sha" ]]
+        ;;
+    crash-window-*)
+        window=${scenario#crash-window-}
+        seed_resume_state "window-$window"
+        install_exact /home/sean/removed-g10 /home/sean/removed-g11
+        assert_complete
+        ;;
     pre-receipt-product-change)
         seed_resume_state bundle_published
         printf 'concurrent pre-receipt product update\n' \
@@ -546,6 +790,7 @@ case $scenario in
         [[ $(jq -er '.phase' \
             "$authority_root/authority-g10-g11-recovery-v1.json") == \
             bundle_published ]]
+        assert_normal_mutation_blocked
         ;;
     terminal-product-update)
         seed_resume_state manifest_published
@@ -584,9 +829,26 @@ case $scenario in
         install_exact
         assert_complete
         ;;
+    status-lock-replace-final)
+        seed_resume_state manifest_published
+        : >/run/syntaur-replace-deploy-lock-g11
+        expect_failure replaced-final-deploy-lock install_exact \
+            /home/sean/removed-g10 /home/sean/removed-g11
+        [[ $(jq -er '.phase' \
+            "$authority_root/authority-g10-g11-recovery-v1.json") == \
+            manifest_published ]]
+        [[ -e $authority_root/authority-promotion-v1.json ]]
+        [[ ! -e /etc/syntaur/release-authority-g10-g11-recovery-v1.receipt.json ]]
+        assert_normal_mutation_blocked
+        rm -f /run/syntaur-replace-deploy-lock-g11
+        install_exact /home/sean/removed-g10 /home/sean/removed-g11
+        assert_complete
+        ;;
     stale-temporaries)
         : >"$authority_root/.authority-g10-g11-recovery-v1.json.tmp"
         chmod 0600 "$authority_root/.authority-g10-g11-recovery-v1.json.tmp"
+        : >"$authority_root/.authority-g10-g11-recovery-v1.fence.tmp"
+        chmod 0600 "$authority_root/.authority-g10-g11-recovery-v1.fence.tmp"
         : >/etc/syntaur/release-authority-g10-g11-recovery-v1.receipt.json.tmp
         chmod 0600 \
             /etc/syntaur/release-authority-g10-g11-recovery-v1.receipt.json.tmp

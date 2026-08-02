@@ -1135,6 +1135,9 @@ if command -v docker >/dev/null \
         lock-root
         lock-global
         lock-deploy
+        root-lock-bootstrap
+        acquisition-lock-replace
+        acquisition-lock-metadata
         tamper
         resume-prepared
         resume-generation_published
@@ -1143,11 +1146,22 @@ if command -v docker >/dev/null \
         resume-trust_published
         resume-bundle_published
         resume-manifest_published
+        fence-before-journal
+        journal-without-fence
+        normal-promotion-pending
+        normal-promotion-temp-pending
+        tampered-fence
+        crash-window-prepared-generation
+        crash-window-generation-shipper
+        crash-window-provisioner-trust
+        crash-window-trust-bundle
+        crash-window-bundle-manifest
         pre-receipt-product-change
         terminal-product-update
         retirement-crash-no-sources
         phase-mismatch
         status-lock-replace
+        status-lock-replace-final
         stale-temporaries
     )
     for g10_g11_scenario in "${g10_g11_scenarios[@]}"; do

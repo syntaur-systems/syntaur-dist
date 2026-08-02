@@ -1121,17 +1121,23 @@ recover-release-authority-g10-g11-canary-root-v1.sh install \
 The recovery holds the root-promotion, global-mutation, and operator-deployment
 locks. Before journaling it snapshots and revalidates both signed generations
 under root ownership, proves the complete retained chain, and requires the
-exact shared provisioner and exact G10 live shipper. It publishes generation
-11, the G11 shipper, workflow trust, bundle, and active manifest in that order,
-with the manifest last. A monotonic root-owned journal permits only the exact
-current phase or its immediate crash window. Re-run the identical command after
-interruption; do not delete its journal or snapshot.
+exact shared provisioner and exact G10 live shipper. Before the first authority
+mutation it atomically places an exact recovery-owned fence at the normal
+promotion-journal path, so the frozen shipper blocks every ordinary mutation
+even if recovery or the host stops and its process locks disappear. It
+publishes generation 11, the G11 shipper, workflow trust, bundle, and active
+manifest in that order, with the manifest last. A monotonic root-owned journal
+permits only the exact current phase or its immediate crash window. Re-run the
+identical command after interruption; do not delete its fence, journal, or
+snapshot.
 
 The script does not build or deploy product bytes. It fences and hashes the
 current product-release records before and after both unprivileged authority
 status checks, writes a fixed non-authorizing receipt, and crash-safely retires
-its input snapshot only after G11 is complete. Confirm the final state before
-using G11 for the next product release:
+its journal and input snapshot only after G11 is complete. The ordinary-
+mutation fence is validated throughout and retired last, after the receipt and
+all terminal cleanup are durable. Confirm the final state before using G11 for
+the next product release:
 
 ```sh
 /usr/local/bin/syntaur-ship authority-status
