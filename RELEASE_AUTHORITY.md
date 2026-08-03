@@ -1209,6 +1209,72 @@ Confirm the terminal state before using G12 for a product release:
 sha256sum /etc/syntaur/release-authority-g11-g12-recovery-v1.receipt.json
 ```
 
+## Fixed active-root G12-G13 recovery
+
+Use this historical path only when the installed root is exact healthy G12 and
+the immutable G13 publication is its direct signed successor. The predecessor
+G11-G12 recovery must be terminal and free of journals, staging directories,
+or input-snapshot transients. This is not a generic promotion, rollback, or
+force path.
+
+Verify the operator-owned, mode-`0500` G12 and G13 release directories first:
+
+```sh
+scripts/recover-release-authority-g12-g13-canary-root-v1.sh verify \
+  --g12-dir "$G12_DIR" \
+  --g13-dir "$G13_DIR"
+```
+
+Seal the reviewed script and digest-pinned manifest helper in its dedicated
+root-owned runtime. Installation must execute only that sealed copy:
+
+```sh
+sudo install -d -o root -g root -m 0700 \
+  /etc/syntaur/release-authority-g12-g13-recovery-v1.runtime
+sudo install -o root -g root -m 0500 \
+  scripts/recover-release-authority-g12-g13-canary-root-v1.sh \
+  scripts/release-authority-manifest.sh \
+  /etc/syntaur/release-authority-g12-g13-recovery-v1.runtime/
+sudo /etc/syntaur/release-authority-g12-g13-recovery-v1.runtime/\
+recover-release-authority-g12-g13-canary-root-v1.sh install \
+  --g12-dir "$G12_DIR" \
+  --g13-dir "$G13_DIR" \
+  --expected-current-shipper-sha256 \
+    1d9a88bb83d968d09bab362c095173aab20f8be455d151f0d04081ac210f01d5
+```
+
+The recovery holds the root-promotion, global-mutation, and
+operator-deployment locks for the whole transaction. It seals and revalidates
+only generations 12 and 13 plus the manifest helper, while separately proving
+the installed retained chain from generation 1 through 12. Before its first
+authority mutation it publishes the fixed recovery fence at the shared normal
+promotion-journal path. Re-run the identical sealed command after interruption;
+never delete its fence, journal, or snapshot.
+
+G13 changes the live shipper but retains the exact G12 build-authority
+provisioner. Publication therefore proceeds in this fixed order: retained
+generation 13, G13 shipper, the shared-provisioner checkpoint, workflow trust,
+Cosign bundle, and active manifest last. The root-owned journal keeps the
+provisioner checkpoint without rewriting the unchanged executable and accepts
+only the exact phase state or its immediate crash-ahead state. The active
+manifest cannot identify G13 until the shipper and signed trust material are
+durable.
+
+The script does not build, release, or deploy product bytes. It hashes the
+bounded v0.7.114 and v0.7.115 product-release state before the transaction and
+after both unprivileged `authority-status` checks. Once generations 1 through
+13, the active copies, and both live executables are exact, it writes the fixed
+receipt, retires the recovery journal, retires the sealed input snapshot, and
+retires the shared mutation fence last. The completed G11-G12 receipt and
+runtime are preserved as historical evidence.
+
+Confirm the terminal state before using G13 for a product release:
+
+```sh
+/usr/local/bin/syntaur-ship authority-status
+sha256sum /etc/syntaur/release-authority-g12-g13-recovery-v1.receipt.json
+```
+
 ## Independent dispatch verification
 
 Record values from an independently reviewed checkout and isolated baseline,
