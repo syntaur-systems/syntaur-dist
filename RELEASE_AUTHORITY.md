@@ -1341,6 +1341,72 @@ Confirm the terminal state before using G14 for a product release:
 sha256sum /etc/syntaur/release-authority-g13-g14-recovery-v1.receipt.json
 ```
 
+## Fixed active-root G14-G15 recovery
+
+Use this path only when the installed root is exact healthy G14 and the
+immutable G15 publication is its direct signed successor. The predecessor
+G13-G14 recovery must be terminal and free of journals, staging directories,
+or input-snapshot transients. This is not a generic promotion, rollback, or
+force path.
+
+Verify the operator-owned, mode-`0500` G14 and G15 release directories first:
+
+```sh
+scripts/recover-release-authority-g14-g15-canary-root-v1.sh verify \
+  --g14-dir "$G14_DIR" \
+  --g15-dir "$G15_DIR"
+```
+
+Seal the reviewed script and digest-pinned manifest helper in its dedicated
+root-owned runtime. Installation must execute only that sealed copy:
+
+```sh
+sudo install -d -o root -g root -m 0700 \
+  /etc/syntaur/release-authority-g14-g15-recovery-v1.runtime
+sudo install -o root -g root -m 0500 \
+  scripts/recover-release-authority-g14-g15-canary-root-v1.sh \
+  scripts/release-authority-manifest.sh \
+  /etc/syntaur/release-authority-g14-g15-recovery-v1.runtime/
+sudo /etc/syntaur/release-authority-g14-g15-recovery-v1.runtime/\
+recover-release-authority-g14-g15-canary-root-v1.sh install \
+  --g14-dir "$G14_DIR" \
+  --g15-dir "$G15_DIR" \
+  --expected-current-shipper-sha256 \
+    591e37ae154078974126ca1640991494c8d211cd2fc403a941dfa59193a94f2a
+```
+
+The recovery holds the root-promotion, global-mutation, and
+operator-deployment locks for the whole transaction. It seals and revalidates
+only generations 14 and 15 plus the manifest helper, while separately proving
+the installed retained chain from generation 1 through 14. Before its first
+authority mutation it publishes the fixed recovery fence at the shared normal
+promotion-journal path. Re-run the identical sealed command after interruption;
+never delete its fence, journal, or snapshot.
+
+G15 changes the live shipper but retains the exact G14 build-authority
+provisioner and verifier. Publication therefore proceeds in this fixed order:
+retained generation 15, G15 shipper, the shared-provisioner checkpoint,
+workflow trust, Cosign bundle, and active manifest last. The root-owned journal
+keeps the provisioner checkpoint without rewriting the unchanged executable
+and accepts only the exact phase state or its immediate crash-ahead state. The
+active manifest cannot identify G15 until the shipper and signed trust material
+are durable.
+
+The script does not build, release, or deploy product bytes. It hashes the
+bounded v0.7.114 and v0.7.115 product-release state before the transaction and
+after both unprivileged `authority-status` checks. Once generations 1 through
+15, the active copies, and both live executables are exact, it writes the fixed
+receipt, retires the recovery journal, retires the sealed input snapshot, and
+retires the shared mutation fence last. The completed G13-G14 receipt and
+runtime are preserved as historical evidence.
+
+Confirm the terminal state before using G15 for a product release:
+
+```sh
+/usr/local/bin/syntaur-ship authority-status
+sha256sum /etc/syntaur/release-authority-g14-g15-recovery-v1.receipt.json
+```
+
 ## Independent dispatch verification
 
 Record values from an independently reviewed checkout and isolated baseline,
