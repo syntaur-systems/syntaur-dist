@@ -1050,6 +1050,10 @@ cp "$repo_root/scripts/fixtures/release_authority_g12_g13_driver.sh" \
     "$context/release-authority-g12-g13-driver.sh"
 cp "$repo_root/scripts/recover-release-authority-g12-g13-canary-root-v1.sh" \
     "$context/recover-release-authority-g12-g13-canary-root-v1.sh"
+cp "$repo_root/scripts/fixtures/release_authority_g13_g14_driver.sh" \
+    "$context/release-authority-g13-g14-driver.sh"
+cp "$repo_root/scripts/recover-release-authority-g13-g14-canary-root-v1.sh" \
+    "$context/recover-release-authority-g13-g14-canary-root-v1.sh"
 cp "$repo_root/scripts/fixtures/release_authority_bootstrap.Dockerfile" \
     "$context/Dockerfile"
 chmod 0555 \
@@ -1065,11 +1069,13 @@ chmod 0555 \
     "$context/recover-release-authority-g10-g11-canary-root-v1.sh" \
     "$context/recover-release-authority-g11-g12-canary-root-v1.sh" \
     "$context/recover-release-authority-g12-g13-canary-root-v1.sh" \
+    "$context/recover-release-authority-g13-g14-canary-root-v1.sh" \
     "$context/release-authority-manifest.sh" \
     "$context/release-authority-bootstrap-driver.sh" \
     "$context/release-authority-g10-g11-driver.sh" \
     "$context/release-authority-g11-g12-driver.sh" \
-    "$context/release-authority-g12-g13-driver.sh"
+    "$context/release-authority-g12-g13-driver.sh" \
+    "$context/release-authority-g13-g14-driver.sh"
 chmod 0755 "$context/release-authority-fake-cosign.sh"
 chmod 0500 "$fixture" "$fixture_g2" "$fixture_g3" "$fixture_g4" "$fixture_g5" \
     "$fixture_g6" "$fixture_g7" "$fixture_g8" "$fixture_g9" "$fixture_g10" \
@@ -1236,6 +1242,16 @@ if command -v docker >/dev/null \
             --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
             --entrypoint /bootstrap/g12-g13-driver.sh \
             --env "G12_G13_FIXTURE_SCENARIO=$g12_g13_scenario" \
+            "$image"
+    done
+    g13_g14_scenarios=(
+        "${g12_g13_scenarios[@]}"
+    )
+    for g13_g14_scenario in "${g13_g14_scenarios[@]}"; do
+        docker run --rm --hostname claudevm \
+            --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
+            --entrypoint /bootstrap/g13-g14-driver.sh \
+            --env "G13_G14_FIXTURE_SCENARIO=$g13_g14_scenario" \
             "$image"
     done
     docker run --rm --hostname claudevm \
