@@ -22,11 +22,15 @@ prepare_step="$temporary/prepare-operation.sh"
 publish_step="$temporary/publish-draft.sh"
 stage_installers_step="$temporary/stage-installers.sh"
 verify_gateway_identity_step="$temporary/verify-gateway-identity.sh"
+smoke_gateway_step="$temporary/smoke-gateway.sh"
+smoke_gateway_windows_step="$temporary/smoke-gateway.ps1"
 extract_step 'Validate inputs' "$validate_step"
 extract_step 'Prepare canonical release operation metadata' "$prepare_step"
 extract_step 'Create draft release + upload assets (with retry + verification)' "$publish_step"
 extract_step 'Stage install scripts into dist' "$stage_installers_step"
 extract_step 'Verify public gateway build identity' "$verify_gateway_identity_step"
+extract_step 'Smoke test (non-Windows)' "$smoke_gateway_step"
+extract_step 'Smoke test (Windows)' "$smoke_gateway_windows_step"
 
 version=0.7.112
 tag=v${version}
@@ -38,6 +42,12 @@ correlation=$(
     "$version" "$tag" "$source_commit" "$engine_commit" "$dist_commit" \
     | sha256sum | awk '{print $1}'
 )
+
+# The compile-time provenance input must be the same exact dispatch field that
+# validation closes into the release correlation. This is required on Windows,
+# where the Rust build script cannot use its Unix Git fallback.
+test "$(yq -r '.jobs.build.steps[] | select(.name == "Build release") | .env.SYNTAUR_SOURCE_COMMIT' "$workflow")" = \
+  '${{ env.SRC_COMMIT }}'
 
 run_validate() {
   env \
@@ -133,6 +143,62 @@ if run_gateway_identity "$plain_identity" managed-runtime >/dev/null 2>&1; then
   echo 'public gateway identity accepted the wrong feature set' >&2
   exit 1
 fi
+
+# The public smoke must model the installer-created private data root. A bare
+# HOME used to make startup lease acquisition fail before /health even though
+# the release binary itself had compiled and reported the right identity.
+grep -Fq 'SMOKE_HOME=$(mktemp -d "${RUNNER_TEMP}/syntaur-smoke.XXXXXXXX")' "$smoke_gateway_step"
+grep -Fq 'mkdir -m 700 "$SMOKE_HOME/.syntaur"' "$smoke_gateway_step"
+grep -Fq 'HOME="$SMOKE_HOME" SYNTAUR_MAINTENANCE=1' "$smoke_gateway_step"
+grep -Fq 'New-Item -ItemType Directory -Path (Join-Path $SmokeHome ".syntaur")' "$smoke_gateway_windows_step"
+grep -Fq '$env:HOME = $SmokeHome' "$smoke_gateway_windows_step"
+grep -Fq '$env:USERPROFILE = $SmokeHome' "$smoke_gateway_windows_step"
+
+smoke_case="$temporary/gateway-smoke"
+mkdir -p "$smoke_case/dist" "$smoke_case/bin" "$smoke_case/runner-temp"
+sed 's/${{ matrix.artifact_name }}/syntaur-gateway/g' \
+  "$smoke_gateway_step" >"$smoke_case/run-smoke.sh"
+bash -n "$smoke_case/run-smoke.sh"
+cat >"$smoke_case/dist/syntaur-gateway" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+test -n "${HOME:-}"
+test -d "$HOME/.syntaur"
+test ! -L "$HOME/.syntaur"
+test "$(stat -c '%a' "$HOME/.syntaur")" = 700
+printf '%s\n' "$HOME" >"$SMOKE_PROOF"
+while :; do sleep 1; done
+EOF
+cat >"$smoke_case/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+for _ in {1..50}; do
+  if [[ -s $SMOKE_PROOF ]]; then
+    printf '%s\n' '{"status":"ok"}'
+    exit 0
+  fi
+  sleep 0.1
+done
+exit 1
+EOF
+chmod +x "$smoke_case/dist/syntaur-gateway" "$smoke_case/bin/curl"
+(
+  cd "$smoke_case"
+  PATH="$smoke_case/bin:$system_path" \
+    RUNNER_TEMP="$smoke_case/runner-temp" \
+    SMOKE_PROOF="$smoke_case/proof" \
+    bash "$smoke_case/run-smoke.sh" >/dev/null
+)
+test -s "$smoke_case/proof"
+smoke_home=$(<"$smoke_case/proof")
+case "$smoke_home" in
+  "$smoke_case/runner-temp"/syntaur-smoke.*) ;;
+  *)
+    echo 'public gateway smoke did not use an isolated runner-owned HOME' >&2
+    exit 1
+    ;;
+esac
+test ! -e "$smoke_home"
 
 stage_case="$temporary/stage-installers"
 git clone --quiet --no-hardlinks "$repository" "$stage_case"

@@ -303,6 +303,9 @@ jobs:
         shell: bash
         env:
           CARGO_FEATURES: ${{ matrix.features || '' }}
+          # Native Windows cannot use the build script's /usr/bin/git fallback.
+          # Bind compilation directly to the validated release authority.
+          SYNTAUR_SOURCE_COMMIT: ${{ env.SRC_COMMIT }}
         run: |
           set -euo pipefail
           if [ -n "$CARGO_FEATURES" ]; then
@@ -380,47 +383,92 @@ jobs:
         if: runner.os != 'Windows' && matrix.package == 'syntaur-gateway' && matrix.artifact_name != 'syntaur-gateway-managed-linux-x86_64'
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           # The public release smoke test runs in a bare CI home with no real
-          # config/vault files. Maintenance mode keeps the fail-closed
-          # durability reconciler from turning that intentional absence into a
-          # release-blocking crash loop while still exercising boot + /health.
-          SYNTAUR_MAINTENANCE=1 ./dist/${{ matrix.artifact_name }} &
+          # config/vault files. Reproduce the installer's one permitted
+          # pre-start mutation: an exact private data root. Maintenance mode
+          # then keeps the fail-closed durability reconciler from turning the
+          # intentionally absent configuration into a release-blocking crash
+          # loop while still exercising startup lease acquisition + /health.
+          SMOKE_HOME=
+          PID=
+          cleanup() {
+            if [[ -n ${PID:-} ]]; then
+              kill "$PID" 2>/dev/null || true
+              wait "$PID" 2>/dev/null || true
+            fi
+            if [[ -d $SMOKE_HOME && ! -L $SMOKE_HOME && $SMOKE_HOME == "$RUNNER_TEMP"/syntaur-smoke.* ]]; then
+              chmod -R u+rwX -- "$SMOKE_HOME" 2>/dev/null || true
+              rm -rf -- "$SMOKE_HOME"
+            fi
+          }
+          trap cleanup EXIT
+          SMOKE_HOME=$(mktemp -d "${RUNNER_TEMP}/syntaur-smoke.XXXXXXXX")
+          chmod 700 "$SMOKE_HOME"
+          mkdir -m 700 "$SMOKE_HOME/.syntaur"
+          HEALTH_JSON="$SMOKE_HOME/health.json"
+          HOME="$SMOKE_HOME" SYNTAUR_MAINTENANCE=1 ./dist/${{ matrix.artifact_name }} &
           PID=$!
+          STATUS=1
           for _ in {1..20}; do
-            if curl -fsS http://127.0.0.1:18789/health >/tmp/health.json 2>/dev/null; then
-              echo "health:"; cat /tmp/health.json
-              kill $PID 2>/dev/null || true
-              exit 0
+            if curl -fsS http://127.0.0.1:18789/health >"$HEALTH_JSON" 2>/dev/null; then
+              echo "health:"; cat "$HEALTH_JSON"
+              STATUS=0
+              break
             fi
             sleep 1
           done
-          echo "gateway failed to become healthy in 20s"
-          kill $PID 2>/dev/null || true
-          exit 1
+          if (( STATUS != 0 )); then
+            echo "gateway failed to become healthy in 20s"
+          fi
+          cleanup
+          trap - EXIT
+          exit "$STATUS"
 
       - name: Smoke test (Windows)
         if: runner.os == 'Windows' && matrix.package == 'syntaur-gateway' && matrix.artifact_name != 'syntaur-gateway-managed-linux-x86_64'
         shell: pwsh
         run: |
           # See the non-Windows smoke test: CI intentionally has no production
-          # config/vault files, so boot in maintenance mode for smoke only.
-          $env:SYNTAUR_MAINTENANCE = "1"
-          $p = Start-Process -FilePath "dist\${{ matrix.artifact_name }}" -PassThru -WindowStyle Hidden
-          for ($i = 0; $i -lt 20; $i++) {
-            try {
-              $r = Invoke-WebRequest -Uri http://127.0.0.1:18789/health -UseBasicParsing -TimeoutSec 2
-              if ($r.StatusCode -eq 200) {
-                Write-Host "health: $($r.Content)"
-                Stop-Process -Id $p.Id -Force
-                exit 0
-              }
-            } catch {}
-            Start-Sleep -Seconds 1
+          # config/vault files, but it must model the installer's exact private
+          # data-root preparation before exercising startup lease acquisition.
+          $SmokeHome = Join-Path $env:RUNNER_TEMP ("syntaur-smoke-" + [Guid]::NewGuid().ToString("N"))
+          $OriginalHome = $env:HOME
+          $OriginalUserProfile = $env:USERPROFILE
+          $p = $null
+          $Healthy = $false
+          try {
+            New-Item -ItemType Directory -Path (Join-Path $SmokeHome ".syntaur") -Force | Out-Null
+            $env:HOME = $SmokeHome
+            $env:USERPROFILE = $SmokeHome
+            $env:SYNTAUR_MAINTENANCE = "1"
+            $p = Start-Process -FilePath "dist\${{ matrix.artifact_name }}" -PassThru -WindowStyle Hidden
+            for ($i = 0; $i -lt 20; $i++) {
+              try {
+                $r = Invoke-WebRequest -Uri http://127.0.0.1:18789/health -UseBasicParsing -TimeoutSec 2
+                if ($r.StatusCode -eq 200) {
+                  Write-Host "health: $($r.Content)"
+                  $Healthy = $true
+                  break
+                }
+              } catch {}
+              Start-Sleep -Seconds 1
+            }
+          } finally {
+            if ($null -ne $p -and -not $p.HasExited) {
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+              Wait-Process -Id $p.Id -ErrorAction SilentlyContinue
+            }
+            $env:HOME = $OriginalHome
+            $env:USERPROFILE = $OriginalUserProfile
+            Remove-Item Env:SYNTAUR_MAINTENANCE -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $SmokeHome -PathType Container) {
+              Remove-Item -LiteralPath $SmokeHome -Recurse -Force
+            }
           }
-          Write-Host "gateway failed to become healthy in 20s"
-          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-          exit 1
+          if (-not $Healthy) {
+            throw "gateway failed to become healthy in 20s"
+          }
 
       - name: Upload built binary
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
