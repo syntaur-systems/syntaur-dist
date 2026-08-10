@@ -32,9 +32,9 @@ pretag_key_jobs=$(yq -r '
 }
 grep -Fq '55a29ebe5bee50b9a192527a56093f01694fd7b8c768caf2389b9836796195d2' \
   "$source_pretag_workflow"
-grep -Fq 'SYNTAUR_SOURCE_COMMIT: ${{ needs.validate.outputs.source_commit }}' \
+grep -Fq "SYNTAUR_SOURCE_COMMIT: \${{ needs.validate.outputs.source_commit }}" \
   "$source_pretag_workflow"
-grep -Fq '& $HarnessPath @Smoke' "$source_pretag_workflow"
+grep -Fq "& \$HarnessPath @Smoke" "$source_pretag_workflow"
 
 mapfile -t actions < <(
   for workflow_file in "${workflow_files[@]}"; do
