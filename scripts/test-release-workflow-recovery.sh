@@ -149,10 +149,23 @@ fi
 # the release binary itself had compiled and reported the right identity.
 grep -Fq 'SMOKE_HOME=$(mktemp -d "${RUNNER_TEMP}/syntaur-smoke.XXXXXXXX")' "$smoke_gateway_step"
 grep -Fq 'mkdir -m 700 "$SMOKE_HOME/.syntaur"' "$smoke_gateway_step"
-grep -Fq 'HOME="$SMOKE_HOME" SYNTAUR_MAINTENANCE=1' "$smoke_gateway_step"
-grep -Fq 'New-Item -ItemType Directory -Path (Join-Path $SmokeHome ".syntaur")' "$smoke_gateway_windows_step"
-grep -Fq '$env:HOME = $SmokeHome' "$smoke_gateway_windows_step"
-grep -Fq '$env:USERPROFILE = $SmokeHome' "$smoke_gateway_windows_step"
+grep -Fq 'HOME="$SMOKE_HOME" ./dist/${{ matrix.artifact_name }} &' "$smoke_gateway_step"
+if grep -Fq 'SYNTAUR_MAINTENANCE' "$smoke_gateway_step"; then
+  echo 'public Unix smoke still relies on a nonexistent maintenance override' >&2
+  exit 1
+fi
+grep -Fq '$HarnessPath = ".\scripts\test-windows-installed-startup.ps1"' "$smoke_gateway_windows_step"
+grep -Fq '$ExpectedHarnessSha256 = "55a29ebe5bee50b9a192527a56093f01694fd7b8c768caf2389b9836796195d2"' "$smoke_gateway_windows_step"
+grep -Fq 'Get-FileHash -Algorithm SHA256 -LiteralPath $HarnessPath' "$smoke_gateway_windows_step"
+grep -Fq '$GatewaySha256Before = (Get-FileHash' "$smoke_gateway_windows_step"
+grep -Fq '& $HarnessPath @Smoke' "$smoke_gateway_windows_step"
+grep -Fq '$GatewaySha256After = (Get-FileHash' "$smoke_gateway_windows_step"
+grep -Fq 'ExpectedVersion = $env:REL_VERSION' "$smoke_gateway_windows_step"
+grep -Fq 'ExpectedSourceCommit = $env:SRC_COMMIT' "$smoke_gateway_windows_step"
+if grep -Fq 'Start-Process' "$smoke_gateway_windows_step"; then
+  echo 'public Windows workflow bypassed the source-owned standard-user harness' >&2
+  exit 1
+fi
 
 smoke_case="$temporary/gateway-smoke"
 mkdir -p "$smoke_case/dist" "$smoke_case/bin" "$smoke_case/runner-temp"

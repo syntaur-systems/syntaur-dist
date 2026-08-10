@@ -28,6 +28,40 @@ $EulaSha256 = "3e417ea33bc2d6296070222df816a6d145846743c1d98e7e4d20c7c2c8e9a720"
 $EulaRecordFormat = "1"
 $EulaRecordMaxBytes = 4096
 
+function Test-SupportedWindowsInstallToken {
+    try {
+        $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        return (
+            $null -ne $Identity.User -and
+            $null -ne $Identity.Owner -and
+            $Identity.User.Value -ceq $Identity.Owner.Value
+        )
+    } catch {
+        return $false
+    }
+}
+
+function Test-SupportedExistingPrivateRoot {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+    if (-not (Test-Path -LiteralPath $LiteralPath)) {
+        return $true
+    }
+    try {
+        $Item = Get-Item -LiteralPath $LiteralPath -Force
+        if (-not [bool]$Item.PSIsContainer -or
+            ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            return $false
+        }
+        $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        if ($null -eq $Identity.User) {
+            return $false
+        }
+        return (Get-OwnerSid -LiteralPath $LiteralPath).Value -ceq $Identity.User.Value
+    } catch {
+        return $false
+    }
+}
+
 function Get-OwnerSid {
     param([Parameter(Mandatory = $true)][string]$LiteralPath)
     $Owner = (Get-Acl -LiteralPath $LiteralPath).Owner
@@ -300,6 +334,26 @@ function Confirm-EulaAcceptance {
 
 if ($env:SYNTAUR_INSTALL_TEST_LIBRARY_ONLY -eq "1") {
     return
+}
+
+# The gateway's private Windows data authority requires new objects to be
+# owned by the launching user. An elevated/UAC-disabled shell can instead use
+# BUILTIN\Administrators as its token owner and create state that a later
+# normal login must reject. Refuse before EULA or filesystem mutation.
+if (-not (Test-SupportedWindowsInstallToken)) {
+    Write-Host ""
+    Write-Host "Error: Syntaur must be installed from a normal, unelevated PowerShell session." -ForegroundColor Red
+    Write-Host "Close this administrator window, open PowerShell normally, and run the installer again."
+    exit 1
+}
+
+$PrivateDataRoot = Join-Path $env:USERPROFILE ".syntaur"
+if (-not (Test-SupportedExistingPrivateRoot -LiteralPath $PrivateDataRoot)) {
+    Write-Host ""
+    Write-Host "Error: the existing $PrivateDataRoot directory is not owned by this Windows account or is a reparse point." -ForegroundColor Red
+    Write-Host "Syntaur will not modify or take ownership of an untrusted data directory automatically."
+    Write-Host "Back up and audit that directory, then move it aside or restore this account as its owner before reinstalling."
+    exit 1
 }
 
 Write-Host ""

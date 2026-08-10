@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 $Repository = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Temporary = Join-Path ([IO.Path]::GetTempPath()) ("syntaur-eula-test-" + [Guid]::NewGuid().ToString("N"))
 $OriginalUserProfile = $env:USERPROFILE
+$OriginalLocalAppData = $env:LOCALAPPDATA
 $OriginalLibraryOnly = $env:SYNTAUR_INSTALL_TEST_LIBRARY_ONLY
 
 function Assert-True {
@@ -94,6 +95,42 @@ try {
     $env:SYNTAUR_INSTALL_TEST_LIBRARY_ONLY = "1"
     . (Join-Path $Repository "install.ps1")
     Assert-True ($EulaSha256 -eq $ExpectedHash) "installer EULA hash is stale"
+    $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $ExpectedTokenSupport = (
+        $null -ne $Identity.User -and
+        $null -ne $Identity.Owner -and
+        $Identity.User.Value -ceq $Identity.Owner.Value
+    )
+    Assert-True ((Test-SupportedWindowsInstallToken) -eq $ExpectedTokenSupport) "installer token-owner guard disagrees with the current Windows token"
+
+    # Start-Process creates a fresh token whose default owner can differ from
+    # the hosted runner process, so a child process cannot faithfully exercise
+    # the parent's mismatched-owner condition. Prove the guard itself against
+    # the current token above, and prove here that the executable path invokes
+    # it before inspecting private state or requesting EULA acceptance.
+    $InstallerSource = [IO.File]::ReadAllText((Join-Path $Repository "install.ps1"))
+    $LibraryReturnIndex = $InstallerSource.LastIndexOf('if ($env:SYNTAUR_INSTALL_TEST_LIBRARY_ONLY -eq "1") {')
+    $TokenGuardIndex = $InstallerSource.IndexOf('if (-not (Test-SupportedWindowsInstallToken)) {')
+    $PrivateRootIndex = $InstallerSource.IndexOf('$PrivateDataRoot = Join-Path $env:USERPROFILE ".syntaur"')
+    $EulaGateIndex = $InstallerSource.IndexOf('if (-not (Confirm-EulaAcceptance -AcceptByFlag ($args -contains "--accept-eula"))) {')
+    Assert-True ($LibraryReturnIndex -ge 0) "installer executable entry point was not found"
+    Assert-True ($TokenGuardIndex -gt $LibraryReturnIndex) "installer token-owner guard is not on the executable path"
+    Assert-True ($PrivateRootIndex -gt $TokenGuardIndex) "installer inspects private state before the token-owner guard"
+    Assert-True ($EulaGateIndex -gt $PrivateRootIndex) "installer requests or records EULA acceptance before private-root validation"
+
+    $OwnedPrivateRoot = Join-Path $Temporary "owned-profile\.syntaur"
+    New-Item -ItemType Directory -Path $OwnedPrivateRoot -Force | Out-Null
+    Protect-TestDirectory -LiteralPath $OwnedPrivateRoot
+    Assert-True (Test-SupportedExistingPrivateRoot -LiteralPath $OwnedPrivateRoot) "current-user private root was rejected"
+    $LegacyPrivateRoot = Join-Path $Temporary "legacy-admin-profile\.syntaur"
+    New-Item -ItemType Directory -Path $LegacyPrivateRoot -Force | Out-Null
+    $LegacyAcl = Get-Acl -LiteralPath $LegacyPrivateRoot
+    $LegacyAcl.SetOwner(
+        (New-Object -TypeName System.Security.Principal.SecurityIdentifier -ArgumentList @("S-1-5-32-544"))
+    )
+    Set-Acl -LiteralPath $LegacyPrivateRoot -AclObject $LegacyAcl
+    Assert-True (-not (Test-SupportedExistingPrivateRoot -LiteralPath $LegacyPrivateRoot)) "Administrators-owned legacy private root was accepted"
+
     $ExpectedUrl = "https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/$EulaSourceCommit/EULA.md"
     Assert-True ($EulaUrl -eq $ExpectedUrl) "installer EULA URL is not commit-pinned"
     git -C $Repository diff --quiet $EulaSourceCommit -- EULA.md
@@ -268,6 +305,7 @@ try {
     Write-Host "EULA acceptance tests passed"
 } finally {
     $env:USERPROFILE = $OriginalUserProfile
+    $env:LOCALAPPDATA = $OriginalLocalAppData
     $env:SYNTAUR_INSTALL_TEST_LIBRARY_ONLY = $OriginalLibraryOnly
     Remove-Item -LiteralPath $Temporary -Recurse -Force -ErrorAction SilentlyContinue
 }
