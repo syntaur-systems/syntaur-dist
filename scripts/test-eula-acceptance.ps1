@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 $Repository = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Temporary = Join-Path ([IO.Path]::GetTempPath()) ("syntaur-eula-test-" + [Guid]::NewGuid().ToString("N"))
 $OriginalUserProfile = $env:USERPROFILE
+$OriginalLocalAppData = $env:LOCALAPPDATA
 $OriginalLibraryOnly = $env:SYNTAUR_INSTALL_TEST_LIBRARY_ONLY
 
 function Assert-True {
@@ -94,6 +95,66 @@ try {
     $env:SYNTAUR_INSTALL_TEST_LIBRARY_ONLY = "1"
     . (Join-Path $Repository "install.ps1")
     Assert-True ($EulaSha256 -eq $ExpectedHash) "installer EULA hash is stale"
+    $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $ExpectedTokenSupport = (
+        $null -ne $Identity.User -and
+        $null -ne $Identity.Owner -and
+        $Identity.User.Value -ceq $Identity.Owner.Value
+    )
+    Assert-True ((Test-SupportedWindowsInstallToken) -eq $ExpectedTokenSupport) "installer token-owner guard disagrees with the current Windows token"
+
+    $OwnedPrivateRoot = Join-Path $Temporary "owned-profile\.syntaur"
+    New-Item -ItemType Directory -Path $OwnedPrivateRoot -Force | Out-Null
+    Protect-TestDirectory -LiteralPath $OwnedPrivateRoot
+    Assert-True (Test-SupportedExistingPrivateRoot -LiteralPath $OwnedPrivateRoot) "current-user private root was rejected"
+    $LegacyPrivateRoot = Join-Path $Temporary "legacy-admin-profile\.syntaur"
+    New-Item -ItemType Directory -Path $LegacyPrivateRoot -Force | Out-Null
+    $LegacyAcl = Get-Acl -LiteralPath $LegacyPrivateRoot
+    $LegacyAcl.SetOwner(
+        (New-Object -TypeName System.Security.Principal.SecurityIdentifier -ArgumentList @("S-1-5-32-544"))
+    )
+    Set-Acl -LiteralPath $LegacyPrivateRoot -AclObject $LegacyAcl
+    Assert-True (-not (Test-SupportedExistingPrivateRoot -LiteralPath $LegacyPrivateRoot)) "Administrators-owned legacy private root was accepted"
+
+    # GitHub's hosted Windows parent has TokenOwner=Administrators and must be
+    # rejected by the real, non-library installer before EULA or install-root
+    # mutation. Exercise that process boundary instead of only retesting the
+    # guard function's expression in this process.
+    if (-not $ExpectedTokenSupport) {
+        $GuardProfile = Join-Path $Temporary "guard-profile"
+        $GuardLocalAppData = Join-Path $Temporary "guard-local"
+        New-Item -ItemType Directory -Path $GuardProfile | Out-Null
+        New-Item -ItemType Directory -Path $GuardLocalAppData | Out-Null
+        $GuardStdout = Join-Path $Temporary "guard.stdout.log"
+        $GuardStderr = Join-Path $Temporary "guard.stderr.log"
+        $env:USERPROFILE = $GuardProfile
+        $env:LOCALAPPDATA = $GuardLocalAppData
+        $env:SYNTAUR_INSTALL_TEST_LIBRARY_ONLY = $null
+        $GuardProcess = Start-Process -FilePath (Get-Command pwsh.exe).Source `
+            -ArgumentList @(
+                "-NoLogo", "-NoProfile", "-NonInteractive",
+                "-ExecutionPolicy", "Bypass",
+                "-File", (Join-Path $Repository "install.ps1"),
+                "--server", "--accept-eula"
+            ) `
+            -RedirectStandardOutput $GuardStdout `
+            -RedirectStandardError $GuardStderr `
+            -WindowStyle Hidden `
+            -PassThru
+        if (-not $GuardProcess.WaitForExit(30000)) {
+            $GuardProcess.Kill($true)
+            [void]$GuardProcess.WaitForExit(5000)
+            throw "real installer token-owner guard exceeded its 30s deadline"
+        }
+        Assert-True ($GuardProcess.ExitCode -eq 1) "real installer did not reject the mismatched owner token"
+        $GuardOutput = [IO.File]::ReadAllText($GuardStdout)
+        Assert-True ($GuardOutput -like "*normal, unelevated PowerShell session*") "real installer did not explain the token-owner rejection"
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $GuardProfile ".syntaur"))) "rejected installer mutated EULA/private state"
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $GuardLocalAppData "Syntaur"))) "rejected installer mutated its install root"
+        $env:USERPROFILE = $OriginalUserProfile
+        $env:LOCALAPPDATA = $OriginalLocalAppData
+        $env:SYNTAUR_INSTALL_TEST_LIBRARY_ONLY = "1"
+    }
     $ExpectedUrl = "https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/$EulaSourceCommit/EULA.md"
     Assert-True ($EulaUrl -eq $ExpectedUrl) "installer EULA URL is not commit-pinned"
     git -C $Repository diff --quiet $EulaSourceCommit -- EULA.md
@@ -268,6 +329,7 @@ try {
     Write-Host "EULA acceptance tests passed"
 } finally {
     $env:USERPROFILE = $OriginalUserProfile
+    $env:LOCALAPPDATA = $OriginalLocalAppData
     $env:SYNTAUR_INSTALL_TEST_LIBRARY_ONLY = $OriginalLibraryOnly
     Remove-Item -LiteralPath $Temporary -Recurse -Force -ErrorAction SilentlyContinue
 }

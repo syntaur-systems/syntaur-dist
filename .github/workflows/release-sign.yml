@@ -385,11 +385,8 @@ jobs:
         run: |
           set -euo pipefail
           # The public release smoke test runs in a bare CI home with no real
-          # config/vault files. Reproduce the installer's one permitted
-          # pre-start mutation: an exact private data root. Maintenance mode
-          # then keeps the fail-closed durability reconciler from turning the
-          # intentionally absent configuration into a release-blocking crash
-          # loop while still exercising startup lease acquisition + /health.
+          # config/vault files. Reproduce the installer-created private data
+          # root, then exercise normal startup lease acquisition + /health.
           SMOKE_HOME=
           PID=
           cleanup() {
@@ -407,7 +404,7 @@ jobs:
           chmod 700 "$SMOKE_HOME"
           mkdir -m 700 "$SMOKE_HOME/.syntaur"
           HEALTH_JSON="$SMOKE_HOME/health.json"
-          HOME="$SMOKE_HOME" SYNTAUR_MAINTENANCE=1 ./dist/${{ matrix.artifact_name }} &
+          HOME="$SMOKE_HOME" ./dist/${{ matrix.artifact_name }} &
           PID=$!
           STATUS=1
           for _ in {1..20}; do
@@ -429,45 +426,27 @@ jobs:
         if: runner.os == 'Windows' && matrix.package == 'syntaur-gateway' && matrix.artifact_name != 'syntaur-gateway-managed-linux-x86_64'
         shell: pwsh
         run: |
-          # See the non-Windows smoke test: CI intentionally has no production
-          # config/vault files, but it must model the installer's exact private
-          # data-root preparation before exercising startup lease acquisition.
-          $SmokeHome = Join-Path $env:RUNNER_TEMP ("syntaur-smoke-" + [Guid]::NewGuid().ToString("N"))
-          $OriginalHome = $env:HOME
-          $OriginalUserProfile = $env:USERPROFILE
-          $p = $null
-          $Healthy = $false
-          try {
-            New-Item -ItemType Directory -Path (Join-Path $SmokeHome ".syntaur") -Force | Out-Null
-            $env:HOME = $SmokeHome
-            $env:USERPROFILE = $SmokeHome
-            $env:SYNTAUR_MAINTENANCE = "1"
-            $p = Start-Process -FilePath "dist\${{ matrix.artifact_name }}" -PassThru -WindowStyle Hidden
-            for ($i = 0; $i -lt 20; $i++) {
-              try {
-                $r = Invoke-WebRequest -Uri http://127.0.0.1:18789/health -UseBasicParsing -TimeoutSec 2
-                if ($r.StatusCode -eq 200) {
-                  Write-Host "health: $($r.Content)"
-                  $Healthy = $true
-                  break
-                }
-              } catch {}
-              Start-Sleep -Seconds 1
-            }
-          } finally {
-            if ($null -ne $p -and -not $p.HasExited) {
-              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-              Wait-Process -Id $p.Id -ErrorAction SilentlyContinue
-            }
-            $env:HOME = $OriginalHome
-            $env:USERPROFILE = $OriginalUserProfile
-            Remove-Item Env:SYNTAUR_MAINTENANCE -ErrorAction SilentlyContinue
-            if (Test-Path -LiteralPath $SmokeHome -PathType Container) {
-              Remove-Item -LiteralPath $SmokeHome -Recurse -Force
-            }
+          # The hosted parent is intentionally administrative. The source-owned
+          # harness is accepted only at the exact digest reviewed by this public
+          # workflow authority. It first proves that mismatched owner tokens fail
+          # closed, then launches the installed artifact as a standard user.
+          $HarnessPath = ".\scripts\test-windows-installed-startup.ps1"
+          $ExpectedHarnessSha256 = "55a29ebe5bee50b9a192527a56093f01694fd7b8c768caf2389b9836796195d2"
+          $ActualHarnessSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $HarnessPath).Hash.ToLowerInvariant()
+          if ($ActualHarnessSha256 -cne $ExpectedHarnessSha256) {
+            throw "private-source Windows smoke harness differs from the public workflow authority"
           }
-          if (-not $Healthy) {
-            throw "gateway failed to become healthy in 20s"
+          $GatewayPath = "dist\${{ matrix.artifact_name }}"
+          $GatewaySha256Before = (Get-FileHash -Algorithm SHA256 -LiteralPath $GatewayPath).Hash.ToLowerInvariant()
+          $Smoke = @{
+            GatewayPath = $GatewayPath
+            ExpectedVersion = $env:REL_VERSION
+            ExpectedSourceCommit = $env:SRC_COMMIT
+          }
+          & $HarnessPath @Smoke
+          $GatewaySha256After = (Get-FileHash -Algorithm SHA256 -LiteralPath $GatewayPath).Hash.ToLowerInvariant()
+          if ($GatewaySha256After -cne $GatewaySha256Before) {
+            throw "Windows smoke harness changed the public gateway artifact"
           }
 
       - name: Upload built binary

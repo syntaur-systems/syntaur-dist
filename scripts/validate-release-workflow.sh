@@ -10,6 +10,32 @@ workflow_files=(.github/workflows/*.yml .github/workflows/*.yaml)
 (( ${#workflow_files[@]} > 0 ))
 actionlint "${workflow_files[@]}"
 
+source_pretag_workflow=.github/workflows/source-pretag.yml
+[ -f "$source_pretag_workflow" ] || {
+  echo 'source pre-tag workflow is missing' >&2
+  exit 1
+}
+[ "$(yq -r '.permissions.contents' "$source_pretag_workflow")" = read ]
+[ "$(yq -r '.concurrency["cancel-in-progress"]' "$source_pretag_workflow")" = false ]
+[ "$(yq -r '.jobs.gateway.environment' "$source_pretag_workflow")" = product-release-source ]
+[ "$(yq -r '.jobs.gateway.strategy["fail-fast"]' "$source_pretag_workflow")" = false ]
+[ "$(yq -r '[.jobs.gateway.strategy.matrix.include[] | select(.os == "windows-2025")] | length' "$source_pretag_workflow")" = 1 ]
+pretag_key_jobs=$(yq -r '
+  .jobs | to_entries[] |
+  select(.value | tostring |
+    contains("secrets.SYNTAUR_PRODUCT_SOURCE_DEPLOY_KEY")) |
+  .key
+' "$source_pretag_workflow")
+[ "$pretag_key_jobs" = gateway ] || {
+  echo 'source pre-tag deploy key escaped its protected gateway job' >&2
+  exit 1
+}
+grep -Fq '55a29ebe5bee50b9a192527a56093f01694fd7b8c768caf2389b9836796195d2' \
+  "$source_pretag_workflow"
+grep -Fq 'SYNTAUR_SOURCE_COMMIT: ${{ needs.validate.outputs.source_commit }}' \
+  "$source_pretag_workflow"
+grep -Fq '& $HarnessPath @Smoke' "$source_pretag_workflow"
+
 mapfile -t actions < <(
   for workflow_file in "${workflow_files[@]}"; do
     yq -r '.jobs[].steps[]? | select(has("uses")) | .uses' "$workflow_file"

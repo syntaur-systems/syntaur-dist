@@ -1,0 +1,191 @@
+name: Source pre-tag cross-platform gate
+run-name: syntaur-pretag-${{ inputs.source_commit }}-${{ inputs.correlation }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact candidate version
+        required: true
+        type: string
+      source_ref:
+        description: Exact future release tag
+        required: true
+        type: string
+      source_commit:
+        description: Exact private source candidate commit
+        required: true
+        type: string
+      engine_commit:
+        description: Exact Engine release commit
+        required: true
+        type: string
+      dist_commit:
+        description: Exact public workflow commit
+        required: true
+        type: string
+      correlation:
+        description: Exact release operation correlation
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-pretag-${{ inputs.source_commit }}
+  cancel-in-progress: false
+
+env:
+  SYNTAUR_ARTIFACT_KIND: public-release
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    outputs:
+      source_commit: ${{ steps.validate.outputs.source_commit }}
+    steps:
+      - name: Validate exact release tuple
+        id: validate
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          ENGINE_COMMIT: ${{ inputs.engine_commit }}
+          DIST_COMMIT: ${{ inputs.dist_commit }}
+          CORRELATION: ${{ inputs.correlation }}
+          WORKFLOW_COMMIT: ${{ github.sha }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          for value in "$VERSION" "$SOURCE_REF" "$SOURCE_COMMIT" "$ENGINE_COMMIT" "$DIST_COMMIT" "$CORRELATION"; do
+            if [ "$(printf '%s' "$value" | wc -l)" -ne 0 ]; then
+              echo '::error::pre-tag inputs must be single-line'
+              exit 1
+            fi
+          done
+          if ! printf '%s' "$VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo '::error::version is not canonical semver'
+            exit 1
+          fi
+          if [ "$SOURCE_REF" != "v$VERSION" ]; then
+            echo '::error::source_ref differs from the canonical release tag'
+            exit 1
+          fi
+          for commit in "$SOURCE_COMMIT" "$ENGINE_COMMIT" "$DIST_COMMIT"; do
+            if ! printf '%s' "$commit" | grep -Eq '^[0-9a-f]{40}$'; then
+              echo '::error::commit inputs must be lowercase full IDs'
+              exit 1
+            fi
+          done
+          if ! printf '%s' "$CORRELATION" | grep -Eq '^[0-9a-f]{64}$'; then
+            echo '::error::correlation must be a lowercase SHA-256'
+            exit 1
+          fi
+          expected=$(
+            printf 'syntaur-release-operation-v2\0%s\0%s\0%s\0%s\0%s\0' \
+              "$VERSION" "$SOURCE_REF" "$SOURCE_COMMIT" "$ENGINE_COMMIT" "$DIST_COMMIT" \
+              | sha256sum | awk '{print $1}'
+          )
+          if [ "$CORRELATION" != "$expected" ]; then
+            echo '::error::correlation does not bind the exact release tuple'
+            exit 1
+          fi
+          if [ "$DIST_COMMIT" != "$WORKFLOW_COMMIT" ]; then
+            echo '::error::running public workflow commit differs from release authority'
+            exit 1
+          fi
+          if [ "$RUN_ATTEMPT" != 1 ]; then
+            echo '::error::reruns cannot authorize source publication'
+            exit 1
+          fi
+          printf 'source_commit=%s\n' "$SOURCE_COMMIT" >> "$GITHUB_OUTPUT"
+
+  gateway:
+    name: Gateway ${{ matrix.target }}
+    needs: validate
+    environment: product-release-source
+    env:
+      SYNTAUR_SOURCE_COMMIT: ${{ needs.validate.outputs.source_commit }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            timeout_minutes: 90
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            timeout_minutes: 90
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            timeout_minutes: 180
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    steps:
+      - name: Checkout exact private source candidate
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          repository: buddyholly007/syntaur
+          ref: ${{ needs.validate.outputs.source_commit }}
+          ssh-key: ${{ secrets.SYNTAUR_PRODUCT_SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - name: Verify exact private source checkout
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ needs.validate.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: 1.94.1
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cache-on-failure: false
+          key: source-pretag-${{ matrix.target }}-syntaur-gateway
+
+      - name: Compile every gateway target
+        shell: bash
+        run: >-
+          cargo check --locked -p syntaur-gateway --all-targets
+          --target "${{ matrix.target }}"
+
+      - name: Reproduce the public release build
+        shell: bash
+        run: >-
+          cargo build --locked --release -p syntaur-gateway
+          --target "${{ matrix.target }}"
+
+      - name: Smoke installed Windows gateway as a standard user
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          SOURCE_COMMIT: ${{ needs.validate.outputs.source_commit }}
+        run: |
+          $HarnessPath = ".\scripts\test-windows-installed-startup.ps1"
+          $ExpectedHarnessSha256 = "55a29ebe5bee50b9a192527a56093f01694fd7b8c768caf2389b9836796195d2"
+          $ActualHarnessSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $HarnessPath).Hash.ToLowerInvariant()
+          if ($ActualHarnessSha256 -cne $ExpectedHarnessSha256) {
+            throw "private-source Windows smoke harness differs from the public pre-tag authority"
+          }
+          $ExpectedVersion = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          $GatewayPath = "target\${{ matrix.target }}\release\syntaur-gateway.exe"
+          $GatewaySha256Before = (Get-FileHash -Algorithm SHA256 -LiteralPath $GatewayPath).Hash.ToLowerInvariant()
+          $Smoke = @{
+            GatewayPath = $GatewayPath
+            ExpectedVersion = $ExpectedVersion
+            ExpectedSourceCommit = $env:SOURCE_COMMIT
+          }
+          & $HarnessPath @Smoke
+          $GatewaySha256After = (Get-FileHash -Algorithm SHA256 -LiteralPath $GatewayPath).Hash.ToLowerInvariant()
+          if ($GatewaySha256After -cne $GatewaySha256Before) {
+            throw "Windows smoke harness changed the candidate gateway"
+          }
