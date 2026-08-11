@@ -389,11 +389,28 @@ jobs:
           # root, then exercise normal startup lease acquisition + /health.
           SMOKE_HOME=
           PID=
-          cleanup() {
-            if [[ -n ${PID:-} ]]; then
-              kill "$PID" 2>/dev/null || true
-              wait "$PID" 2>/dev/null || true
+          stop_gateway() {
+            if [[ -z ${PID:-} ]]; then
+              return
             fi
+            if kill -0 "$PID" 2>/dev/null; then
+              kill "$PID" 2>/dev/null || true
+              for _ in {1..40}; do
+                if ! kill -0 "$PID" 2>/dev/null; then
+                  break
+                fi
+                sleep 0.25
+              done
+              if kill -0 "$PID" 2>/dev/null; then
+                echo "gateway did not stop within 10s; sending SIGKILL" >&2
+                kill -KILL "$PID" 2>/dev/null || true
+              fi
+            fi
+            wait "$PID" 2>/dev/null || true
+            PID=
+          }
+          cleanup() {
+            stop_gateway
             if [[ -d $SMOKE_HOME && ! -L $SMOKE_HOME && $SMOKE_HOME == "$RUNNER_TEMP"/syntaur-smoke.* ]]; then
               chmod -R u+rwX -- "$SMOKE_HOME" 2>/dev/null || true
               rm -rf -- "$SMOKE_HOME"
