@@ -258,6 +258,8 @@ jobs:
           test "$(git rev-parse HEAD)" = "$SRC_COMMIT"
 
       - name: Install Rust
+        env:
+          RUSTUP_MAX_RETRIES: "10"
         uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
         with:
           toolchain: 1.94.1
@@ -593,6 +595,8 @@ jobs:
           test "$(git -C syntaur-engine rev-parse HEAD)" = "$ENGINE_COMMIT"
 
       - name: Install Rust
+        env:
+          RUSTUP_MAX_RETRIES: "10"
         uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
         with:
           toolchain: 1.94.1
