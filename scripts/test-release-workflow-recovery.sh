@@ -155,7 +155,7 @@ if grep -Fq 'SYNTAUR_MAINTENANCE' "$smoke_gateway_step"; then
   exit 1
 fi
 grep -Fq '$HarnessPath = ".\scripts\test-windows-installed-startup.ps1"' "$smoke_gateway_windows_step"
-grep -Fq '$ExpectedHarnessSha256 = "55a29ebe5bee50b9a192527a56093f01694fd7b8c768caf2389b9836796195d2"' "$smoke_gateway_windows_step"
+grep -Fq '$ExpectedHarnessSha256 = "eb8e8b5588bd74934b5145c4050b108b0605bf07bcb845c3c41c3f37e9e58602"' "$smoke_gateway_windows_step"
 grep -Fq 'Get-FileHash -Algorithm SHA256 -LiteralPath $HarnessPath' "$smoke_gateway_windows_step"
 grep -Fq '$GatewaySha256Before = (Get-FileHash' "$smoke_gateway_windows_step"
 grep -Fq '& $HarnessPath @Smoke' "$smoke_gateway_windows_step"
