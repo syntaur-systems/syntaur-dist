@@ -974,8 +974,8 @@ jobs:
               if (( count < 10 )); then
                 duplicates=$(sort "$ids_path" | uniq -d)
                 if [ -n "$duplicates" ]; then
-                  echo "::error::GitHub release inventory contains duplicate release IDs" >"$error_path"
-                  return 2
+                  echo "::warning::GitHub release pagination returned duplicate release IDs" >"$error_path"
+                  return 4
                 fi
                 if (( selected == 1 )); then
                   return 0
@@ -995,7 +995,7 @@ jobs:
             local first_error=/tmp/syntaur-release-first-inventory.error
             local second_error=/tmp/syntaur-release-second-inventory.error
             local first_status second_status stability_attempt
-            for stability_attempt in 1 2 3 4; do
+            for stability_attempt in $(seq 1 12); do
               if scan_release_inventory "$first_candidate" "$first_fingerprint" "$first_error" \
                 syntaur-release-first; then
                 first_status=0
@@ -1008,13 +1008,26 @@ jobs:
               else
                 second_status=$?
               fi
-              if (( first_status > 1 )); then
+              if (( first_status > 1 && first_status != 4 )); then
                 cp "$first_error" "$release_error"
                 return "$first_status"
               fi
-              if (( second_status > 1 )); then
+              if (( second_status > 1 && second_status != 4 )); then
                 cp "$second_error" "$release_error"
                 return "$second_status"
+              fi
+              if (( first_status == 4 || second_status == 4 )); then
+                if (( stability_attempt < 12 )); then
+                  sleep 5
+                  continue
+                fi
+                if (( second_status == 4 )); then
+                  cp "$second_error" "$release_error"
+                else
+                  cp "$first_error" "$release_error"
+                fi
+                echo "::error::GitHub release pagination remained unstable after bounded retries" >>"$release_error"
+                return 2
               fi
               if (( first_status == second_status )) \
                 && cmp --silent "$first_fingerprint" "$second_fingerprint"; then
@@ -1025,7 +1038,7 @@ jobs:
                 echo "gh: exact owned release is absent (HTTP 404)" >"$release_error"
                 return 1
               fi
-              if (( stability_attempt < 4 )); then
+              if (( stability_attempt < 12 )); then
                 sleep 1
               fi
             done
@@ -1699,8 +1712,8 @@ jobs:
               if (( count < 10 )); then
                 duplicates=$(sort "$ids_path" | uniq -d)
                 if [ -n "$duplicates" ]; then
-                  echo "::error::GitHub release inventory contains duplicate release IDs" >"$error_path"
-                  return 2
+                  echo "::warning::GitHub release pagination returned duplicate release IDs" >"$error_path"
+                  return 4
                 fi
                 if (( selected == 1 )); then
                   return 0
@@ -1720,7 +1733,7 @@ jobs:
             local first_error=/tmp/syntaur-publish-first-inventory.error
             local second_error=/tmp/syntaur-publish-second-inventory.error
             local first_status second_status stability_attempt
-            for stability_attempt in 1 2 3 4; do
+            for stability_attempt in $(seq 1 12); do
               if scan_release_inventory "$first_candidate" "$first_fingerprint" "$first_error" \
                 syntaur-publish-first; then
                 first_status=0
@@ -1733,13 +1746,26 @@ jobs:
               else
                 second_status=$?
               fi
-              if (( first_status > 1 )); then
+              if (( first_status > 1 && first_status != 4 )); then
                 cp "$first_error" "$release_error"
                 return "$first_status"
               fi
-              if (( second_status > 1 )); then
+              if (( second_status > 1 && second_status != 4 )); then
                 cp "$second_error" "$release_error"
                 return "$second_status"
+              fi
+              if (( first_status == 4 || second_status == 4 )); then
+                if (( stability_attempt < 12 )); then
+                  sleep 5
+                  continue
+                fi
+                if (( second_status == 4 )); then
+                  cp "$second_error" "$release_error"
+                else
+                  cp "$first_error" "$release_error"
+                fi
+                echo "::error::GitHub release pagination remained unstable after bounded retries" >>"$release_error"
+                return 2
               fi
               if (( first_status == second_status )) \
                 && cmp --silent "$first_fingerprint" "$second_fingerprint"; then
@@ -1750,7 +1776,7 @@ jobs:
                 echo "gh: exact owned release is absent (HTTP 404)" >"$release_error"
                 return 1
               fi
-              if (( stability_attempt < 4 )); then
+              if (( stability_attempt < 12 )); then
                 sleep 1
               fi
             done
