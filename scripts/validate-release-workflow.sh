@@ -36,6 +36,16 @@ grep -Fq "SYNTAUR_SOURCE_COMMIT: \${{ needs.validate.outputs.source_commit }}" \
   "$source_pretag_workflow"
 grep -Fq "& \$HarnessPath @Smoke" "$source_pretag_workflow"
 
+pretag_rustup_retry_limits=$(yq -r '
+  .jobs[].steps[]? |
+  select(.uses == "dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88") |
+  .env.RUSTUP_MAX_RETRIES
+' "$source_pretag_workflow")
+[ "$pretag_rustup_retry_limits" = 10 ] || {
+  echo 'source pre-tag Rust installer must use ten bounded network retries' >&2
+  exit 1
+}
+
 mapfile -t actions < <(
   for workflow_file in "${workflow_files[@]}"; do
     yq -r '.jobs[].steps[]? | select(has("uses")) | .uses' "$workflow_file"
@@ -157,6 +167,20 @@ mapfile -t toolchains < <(
 for toolchain in "${toolchains[@]}"; do
   [ "$toolchain" = 1.94.1 ] || {
     echo "release Rust toolchain is not pinned to 1.94.1: $toolchain" >&2
+    exit 1
+  }
+done
+
+mapfile -t rustup_retry_limits < <(
+  yq -r '.jobs[].steps[]? | select(.uses == "dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88") | .env.RUSTUP_MAX_RETRIES' "$workflow"
+)
+(( ${#rustup_retry_limits[@]} == 2 )) || {
+  echo "release workflow must contain exactly two bounded Rust retry settings" >&2
+  exit 1
+}
+for retry_limit in "${rustup_retry_limits[@]}"; do
+  [ "$retry_limit" = 10 ] || {
+    echo "release Rust installer retry limit is not pinned to 10: $retry_limit" >&2
     exit 1
   }
 done

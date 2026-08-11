@@ -141,6 +141,8 @@ jobs:
           test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
 
       - name: Install pinned Rust
+        env:
+          RUSTUP_MAX_RETRIES: "10"
         uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
         with:
           toolchain: 1.94.1
