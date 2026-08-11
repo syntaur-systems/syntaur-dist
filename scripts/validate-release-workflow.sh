@@ -30,7 +30,7 @@ pretag_key_jobs=$(yq -r '
   echo 'source pre-tag deploy key escaped its protected gateway job' >&2
   exit 1
 }
-grep -Fq '55a29ebe5bee50b9a192527a56093f01694fd7b8c768caf2389b9836796195d2' \
+grep -Fq 'eb8e8b5588bd74934b5145c4050b108b0605bf07bcb845c3c41c3f37e9e58602' \
   "$source_pretag_workflow"
 grep -Fq "SYNTAUR_SOURCE_COMMIT: \${{ needs.validate.outputs.source_commit }}" \
   "$source_pretag_workflow"

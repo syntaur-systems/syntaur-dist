@@ -171,7 +171,7 @@ jobs:
           SOURCE_COMMIT: ${{ needs.validate.outputs.source_commit }}
         run: |
           $HarnessPath = ".\scripts\test-windows-installed-startup.ps1"
-          $ExpectedHarnessSha256 = "55a29ebe5bee50b9a192527a56093f01694fd7b8c768caf2389b9836796195d2"
+          $ExpectedHarnessSha256 = "eb8e8b5588bd74934b5145c4050b108b0605bf07bcb845c3c41c3f37e9e58602"
           $ActualHarnessSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $HarnessPath).Hash.ToLowerInvariant()
           if ($ActualHarnessSha256 -cne $ExpectedHarnessSha256) {
             throw "private-source Windows smoke harness differs from the public pre-tag authority"
