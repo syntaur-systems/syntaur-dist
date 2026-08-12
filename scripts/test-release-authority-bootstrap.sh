@@ -1058,6 +1058,10 @@ cp "$repo_root/scripts/fixtures/release_authority_g14_g15_driver.sh" \
     "$context/release-authority-g14-g15-driver.sh"
 cp "$repo_root/scripts/recover-release-authority-g14-g15-canary-root-v1.sh" \
     "$context/recover-release-authority-g14-g15-canary-root-v1.sh"
+cp "$repo_root/scripts/fixtures/release_authority_g15_g16_driver.sh" \
+    "$context/release-authority-g15-g16-driver.sh"
+cp "$repo_root/scripts/recover-release-authority-g15-g16-canary-root-v1.sh" \
+    "$context/recover-release-authority-g15-g16-canary-root-v1.sh"
 cp "$repo_root/scripts/fixtures/release_authority_bootstrap.Dockerfile" \
     "$context/Dockerfile"
 chmod 0555 \
@@ -1075,13 +1079,15 @@ chmod 0555 \
     "$context/recover-release-authority-g12-g13-canary-root-v1.sh" \
     "$context/recover-release-authority-g13-g14-canary-root-v1.sh" \
     "$context/recover-release-authority-g14-g15-canary-root-v1.sh" \
+    "$context/recover-release-authority-g15-g16-canary-root-v1.sh" \
     "$context/release-authority-manifest.sh" \
     "$context/release-authority-bootstrap-driver.sh" \
     "$context/release-authority-g10-g11-driver.sh" \
     "$context/release-authority-g11-g12-driver.sh" \
     "$context/release-authority-g12-g13-driver.sh" \
     "$context/release-authority-g13-g14-driver.sh" \
-    "$context/release-authority-g14-g15-driver.sh"
+    "$context/release-authority-g14-g15-driver.sh" \
+    "$context/release-authority-g15-g16-driver.sh"
 chmod 0755 "$context/release-authority-fake-cosign.sh"
 chmod 0500 "$fixture" "$fixture_g2" "$fixture_g3" "$fixture_g4" "$fixture_g5" \
     "$fixture_g6" "$fixture_g7" "$fixture_g8" "$fixture_g9" "$fixture_g10" \
@@ -1268,6 +1274,16 @@ if command -v docker >/dev/null \
             --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
             --entrypoint /bootstrap/g14-g15-driver.sh \
             --env "G14_G15_FIXTURE_SCENARIO=$g14_g15_scenario" \
+            "$image"
+    done
+    g15_g16_scenarios=(
+        "${g14_g15_scenarios[@]}"
+    )
+    for g15_g16_scenario in "${g15_g16_scenarios[@]}"; do
+        docker run --rm --hostname claudevm \
+            --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
+            --entrypoint /bootstrap/g15-g16-driver.sh \
+            --env "G15_G16_FIXTURE_SCENARIO=$g15_g16_scenario" \
             "$image"
     done
     docker run --rm --hostname claudevm \

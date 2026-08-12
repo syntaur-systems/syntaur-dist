@@ -38,6 +38,7 @@ COPY --chown=root:root recover-release-authority-g11-g12-canary-root-v1.sh /boot
 COPY --chown=root:root recover-release-authority-g12-g13-canary-root-v1.sh /bootstrap/recover-release-authority-g12-g13-canary-root-v1.sh.source
 COPY --chown=root:root recover-release-authority-g13-g14-canary-root-v1.sh /bootstrap/recover-release-authority-g13-g14-canary-root-v1.sh.source
 COPY --chown=root:root recover-release-authority-g14-g15-canary-root-v1.sh /bootstrap/recover-release-authority-g14-g15-canary-root-v1.sh.source
+COPY --chown=root:root recover-release-authority-g15-g16-canary-root-v1.sh /bootstrap/recover-release-authority-g15-g16-canary-root-v1.sh.source
 COPY --chown=root:root release-authority-manifest.sh /bootstrap/release-authority-manifest.sh
 COPY --chown=root:root release-authority-fake-cosign.sh /usr/local/bin/cosign
 COPY --chown=root:root release-authority-bootstrap-driver.sh /bootstrap/driver.sh
@@ -46,6 +47,7 @@ COPY --chown=root:root release-authority-g11-g12-driver.sh /bootstrap/g11-g12-dr
 COPY --chown=root:root release-authority-g12-g13-driver.sh /bootstrap/g12-g13-driver.sh
 COPY --chown=root:root release-authority-g13-g14-driver.sh /bootstrap/g13-g14-driver.sh
 COPY --chown=root:root release-authority-g14-g15-driver.sh /bootstrap/g14-g15-driver.sh
+COPY --chown=root:root release-authority-g15-g16-driver.sh /bootstrap/g15-g16-driver.sh
 COPY --chown=1000:1000 fixture/ /fixture/
 COPY --chown=1000:1000 fixture-g2/ /fixture-g2/
 COPY --chown=1000:1000 fixture-g3/ /fixture-g3/
@@ -80,6 +82,7 @@ RUN install -d -o 1000 -g 1000 -m 0755 /home/sean \
       /bootstrap/recover-release-authority-g12-g13-canary-root-v1.sh.source \
       /bootstrap/recover-release-authority-g13-g14-canary-root-v1.sh.source \
       /bootstrap/recover-release-authority-g14-g15-canary-root-v1.sh.source \
+      /bootstrap/recover-release-authority-g15-g16-canary-root-v1.sh.source \
       /bootstrap/release-authority-manifest.sh \
       /bootstrap/driver.sh \
       /bootstrap/g10-g11-driver.sh \
@@ -87,6 +90,7 @@ RUN install -d -o 1000 -g 1000 -m 0755 /home/sean \
       /bootstrap/g12-g13-driver.sh \
       /bootstrap/g13-g14-driver.sh \
       /bootstrap/g14-g15-driver.sh \
+      /bootstrap/g15-g16-driver.sh \
     && chmod 0755 /usr/local/bin/cosign \
     && chmod 0500 /fixture \
     && chmod 0400 \
