@@ -425,6 +425,7 @@ authority_scripts=(
   scripts/recover-release-authority-g12-g13-canary-root-v1.sh
   scripts/recover-release-authority-g13-g14-canary-root-v1.sh
   scripts/recover-release-authority-g14-g15-canary-root-v1.sh
+  scripts/recover-release-authority-g15-g16-canary-root-v1.sh
   scripts/fixtures/release_authority_bootstrap_driver.sh
   scripts/fixtures/release_authority_fake_cosign.sh
   scripts/fixtures/release_authority_g10_g11_driver.sh
@@ -432,6 +433,7 @@ authority_scripts=(
   scripts/fixtures/release_authority_g12_g13_driver.sh
   scripts/fixtures/release_authority_g13_g14_driver.sh
   scripts/fixtures/release_authority_g14_g15_driver.sh
+  scripts/fixtures/release_authority_g15_g16_driver.sh
   scripts/release-authority-manifest.sh
   scripts/test-release-authority-bootstrap.sh
   scripts/test-release-authority-workflow.sh
