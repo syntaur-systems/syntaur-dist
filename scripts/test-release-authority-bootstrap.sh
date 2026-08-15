@@ -1160,6 +1160,48 @@ if command -v docker >/dev/null \
         --build-arg "BASE_IMAGE=$base_image" \
         --tag "$image" \
         "$context"
+    run_recovery_scenarios() {
+        local entrypoint=$1
+        local scenario_env=$2
+        shift 2
+        local scenario log slot idx
+        local failed=0
+        local -a pids=()
+        local -a labels=()
+        local -a logs=()
+
+        # Every scenario runs in its own container and private /run tmpfs, so
+        # bounded parallelism preserves isolation while avoiding hours of
+        # serial container startup. Keep the batch small for GitHub's 2-core
+        # hosted runners and retain each failing container's complete output.
+        while (( $# > 0 )); do
+            pids=()
+            labels=()
+            logs=()
+            for ((slot = 0; slot < 4 && $# > 0; slot++)); do
+                scenario=$1
+                shift
+                log="$tmp_root/$(basename "$entrypoint")-$scenario.log"
+                docker run --rm --hostname claudevm \
+                    --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
+                    --entrypoint "$entrypoint" \
+                    --env "$scenario_env=$scenario" \
+                    "$image" >"$log" 2>&1 &
+                pids+=("$!")
+                labels+=("$scenario")
+                logs+=("$log")
+            done
+            for idx in "${!pids[@]}"; do
+                if ! wait "${pids[$idx]}"; then
+                    printf 'scenario %s (%s) failed\n' \
+                        "${labels[$idx]}" "$entrypoint" >&2
+                    sed -n '1,400p' "${logs[$idx]}" >&2
+                    failed=1
+                fi
+            done
+        done
+        (( failed == 0 ))
+    }
     g10_g11_scenarios=(
         normal
         lock-root
@@ -1194,13 +1236,10 @@ if command -v docker >/dev/null \
         status-lock-replace-final
         stale-temporaries
     )
-    for g10_g11_scenario in "${g10_g11_scenarios[@]}"; do
-        docker run --rm --hostname claudevm \
-            --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
-            --entrypoint /bootstrap/g10-g11-driver.sh \
-            --env "G10_G11_FIXTURE_SCENARIO=$g10_g11_scenario" \
-            "$image"
-    done
+    run_recovery_scenarios \
+        /bootstrap/g10-g11-driver.sh \
+        G10_G11_FIXTURE_SCENARIO \
+        "${g10_g11_scenarios[@]}"
     g11_g12_scenarios=(
         normal
         lock-root
@@ -1238,54 +1277,39 @@ if command -v docker >/dev/null \
         status-lock-replace-final
         stale-temporaries
     )
-    for g11_g12_scenario in "${g11_g12_scenarios[@]}"; do
-        docker run --rm --hostname claudevm \
-            --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
-            --entrypoint /bootstrap/g11-g12-driver.sh \
-            --env "G11_G12_FIXTURE_SCENARIO=$g11_g12_scenario" \
-            "$image"
-    done
+    run_recovery_scenarios \
+        /bootstrap/g11-g12-driver.sh \
+        G11_G12_FIXTURE_SCENARIO \
+        "${g11_g12_scenarios[@]}"
     g12_g13_scenarios=(
         "${g10_g11_scenarios[@]}"
         predecessor-recovery-incomplete
     )
-    for g12_g13_scenario in "${g12_g13_scenarios[@]}"; do
-        docker run --rm --hostname claudevm \
-            --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
-            --entrypoint /bootstrap/g12-g13-driver.sh \
-            --env "G12_G13_FIXTURE_SCENARIO=$g12_g13_scenario" \
-            "$image"
-    done
+    run_recovery_scenarios \
+        /bootstrap/g12-g13-driver.sh \
+        G12_G13_FIXTURE_SCENARIO \
+        "${g12_g13_scenarios[@]}"
     g13_g14_scenarios=(
         "${g12_g13_scenarios[@]}"
     )
-    for g13_g14_scenario in "${g13_g14_scenarios[@]}"; do
-        docker run --rm --hostname claudevm \
-            --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
-            --entrypoint /bootstrap/g13-g14-driver.sh \
-            --env "G13_G14_FIXTURE_SCENARIO=$g13_g14_scenario" \
-            "$image"
-    done
+    run_recovery_scenarios \
+        /bootstrap/g13-g14-driver.sh \
+        G13_G14_FIXTURE_SCENARIO \
+        "${g13_g14_scenarios[@]}"
     g14_g15_scenarios=(
         "${g13_g14_scenarios[@]}"
     )
-    for g14_g15_scenario in "${g14_g15_scenarios[@]}"; do
-        docker run --rm --hostname claudevm \
-            --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
-            --entrypoint /bootstrap/g14-g15-driver.sh \
-            --env "G14_G15_FIXTURE_SCENARIO=$g14_g15_scenario" \
-            "$image"
-    done
+    run_recovery_scenarios \
+        /bootstrap/g14-g15-driver.sh \
+        G14_G15_FIXTURE_SCENARIO \
+        "${g14_g15_scenarios[@]}"
     g15_g16_scenarios=(
         "${g14_g15_scenarios[@]}"
     )
-    for g15_g16_scenario in "${g15_g16_scenarios[@]}"; do
-        docker run --rm --hostname claudevm \
-            --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
-            --entrypoint /bootstrap/g15-g16-driver.sh \
-            --env "G15_G16_FIXTURE_SCENARIO=$g15_g16_scenario" \
-            "$image"
-    done
+    run_recovery_scenarios \
+        /bootstrap/g15-g16-driver.sh \
+        G15_G16_FIXTURE_SCENARIO \
+        "${g15_g16_scenarios[@]}"
     docker run --rm --hostname claudevm \
         --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755 \
         --env BOOTSTRAP_FIXTURE_REQUIRE_RUN_NOEXEC=1 \
