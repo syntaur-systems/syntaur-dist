@@ -16,6 +16,34 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Classify exact change scope
+        id: scope
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          base=
+          case "$EVENT_NAME" in
+            pull_request)
+              base=$PR_BASE_SHA
+              ;;
+            push)
+              if [[ $PUSH_BEFORE_SHA =~ ^[1-9a-f][0-9a-f]{39}$ ]]; then
+                base=$PUSH_BEFORE_SHA
+              elif git show-ref --verify --quiet refs/remotes/origin/main; then
+                base=$(git merge-base "$GITHUB_SHA" refs/remotes/origin/main)
+              fi
+              ;;
+          esac
+          scope=full
+          if [[ $base =~ ^[0-9a-f]{40}$ ]]; then
+            scope=$(bash scripts/classify-workflow-change.sh "$base" "$GITHUB_SHA")
+          fi
+          printf 'scope=%s\n' "$scope" >>"$GITHUB_OUTPUT"
+
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.24.x'
@@ -33,9 +61,11 @@ jobs:
         run: bash scripts/validate-release-workflow.sh
 
       - name: Verify strict release-authority schema transitions
+        if: steps.scope.outputs.scope != 'installer-only'
         run: bash scripts/test-release-authority-workflow.sh
 
       - name: Verify V2 genesis bootstrap behavior
+        if: steps.scope.outputs.scope != 'installer-only'
         run: bash scripts/test-release-authority-bootstrap.sh
 
       - name: Verify POSIX EULA acceptance reuse
