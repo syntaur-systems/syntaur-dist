@@ -216,10 +216,12 @@ g16_bundle_sha=$(sha256_file "$g16/release-authority-v2.json.cosign.bundle")
 g15_workflow=$(printf '%040x' 15)
 g16_workflow=$(printf '%040x' 16)
 cosign_sha=$(sha256_file "$fake_cosign")
+helper_sha=$(sha256_file "$helper")
 
 patched=/run/recover-release-authority-g15-g16-canary-root-v1.sh
 sed \
     -e "s/^readonly COSIGN_SHA256=.*/readonly COSIGN_SHA256=$cosign_sha/" \
+    -e "s/^readonly MANIFEST_HELPER_SHA256=.*/readonly MANIFEST_HELPER_SHA256=$helper_sha/" \
     -e "s/^readonly G15_MANIFEST_SHA256=.*/readonly G15_MANIFEST_SHA256=$g15_manifest_sha/" \
     -e "s/^readonly G15_BUNDLE_SHA256=.*/readonly G15_BUNDLE_SHA256=$g15_bundle_sha/" \
     -e "s/^readonly G15_WORKFLOW_COMMIT=.*/readonly G15_WORKFLOW_COMMIT=$g15_workflow/" \
