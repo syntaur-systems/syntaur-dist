@@ -49,6 +49,7 @@ PRODUCTION_CONTRACT_SHA256=$(digest_text production-contract)
 PROMOTION_RECOVERY_SHA256=$(digest_text promotion-recovery)
 AUTHORITY_VERSION=0.7.116
 AUTHORITY_COMMIT=$(printf 'a%.0s' {1..40})
+VERIFICATION_POLICY_REVISION=$(printf 'c%.0s' {1..40})
 AUTHORITY_TREE_SHA256=$(digest_text authority-tree)
 VERIFIER_TOOLCHAIN_ID=rust-1.94.1-x86_64-unknown-linux-gnu
 VERIFIER_CARGO_SHA256=$(digest_text cargo)
@@ -68,7 +69,8 @@ PROMOTION_RECOVERY_SCHEMA=1
 GITHUB_SHA=$(printf 'b%.0s' {1..40})
 export SHIPPER_SHA256 VERIFIER_SHA256 PROVISIONER_SHA256
 export PRODUCTION_CONTRACT_SHA256 PROMOTION_RECOVERY_SHA256
-export AUTHORITY_VERSION AUTHORITY_COMMIT AUTHORITY_TREE_SHA256
+export AUTHORITY_VERSION AUTHORITY_COMMIT VERIFICATION_POLICY_REVISION
+export AUTHORITY_TREE_SHA256
 export VERIFIER_TOOLCHAIN_ID VERIFIER_CARGO_SHA256 VERIFIER_RUSTC_SHA256
 export VERIFIER_RUSTDOC_SHA256 BASELINE_PROFILE BASELINE_GENERATION
 export BASELINE_TREE_SHA256 BROWSER_BUNDLE_SHA256 BROWSER_VERSION
@@ -108,6 +110,13 @@ export PREVIOUS_AUTHORITY_MANIFEST_SHA256
     "$tmp_root/release-authority-v1.json" "$tmp_root/release-authority-v2.json"
 "$helper" render-approval-record "$tmp_root/approval-record.json"
 "$helper" validate-approval-record "$tmp_root/approval-record.json"
+jq -e --arg revision "$VERIFICATION_POLICY_REVISION" \
+    '.verification_policy_revision == $revision' \
+    "$tmp_root/approval-record.json" >/dev/null
+jq -c 'del(.verification_policy_revision)' "$tmp_root/approval-record.json" \
+    >"$tmp_root/approval-record-policy-missing.json"
+expect_failure "$helper" validate-approval-record \
+    "$tmp_root/approval-record-policy-missing.json"
 jq -c 'del(.promotion_recovery_sha256)' "$tmp_root/approval-record.json" \
     >"$tmp_root/approval-record-missing.json"
 expect_failure "$helper" validate-approval-record "$tmp_root/approval-record-missing.json"
@@ -455,6 +464,7 @@ workflow="$repo_root/.github/workflows/release-authority.yml"
 [[ $(yq -r '.on.workflow_dispatch.inputs | length' "$workflow") == 1 ]]
 grep -Fq 'approval_record:' "$workflow"
 for required in \
+    verification_policy_revision \
     provisioner_sha256 \
     production_contract_sha256 \
     production_member_count \
@@ -464,6 +474,7 @@ for required in \
     promotion_recovery_sha256; do
     grep -Fq "$required" "$workflow"
 done
+grep -Fq 'git -C source rev-parse "${AUTHORITY_COMMIT}^"' "$workflow"
 grep -Fq 'authority-protocol-inputs' "$workflow"
 grep -Fq -- '--authority-protocol-self-test' "$workflow"
 grep -Fq 'shipper-self-test.json' "$workflow"

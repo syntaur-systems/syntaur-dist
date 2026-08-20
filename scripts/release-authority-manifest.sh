@@ -25,6 +25,7 @@ approval_record_from_file() {
         --arg previous_manifest_sha256 "$(manifest_value "$record" previous_manifest_sha256)" \
         --arg authority_version "$(manifest_value "$record" authority_version)" \
         --arg authority_commit "$(manifest_value "$record" authority_commit)" \
+        --arg verification_policy_revision "$(manifest_value "$record" verification_policy_revision)" \
         --arg authority_tree_sha256 "$(manifest_value "$record" authority_tree_sha256)" \
         --arg shipper_sha256 "$(manifest_value "$record" shipper_sha256)" \
         --arg verifier_sha256 "$(manifest_value "$record" verifier_sha256)" \
@@ -48,6 +49,7 @@ approval_record_from_file() {
           previous_manifest_sha256:$previous_manifest_sha256,
           authority_version:$authority_version,
           authority_commit:$authority_commit,
+          verification_policy_revision:$verification_policy_revision,
           authority_tree_sha256:$authority_tree_sha256,
           shipper_sha256:$shipper_sha256,
           verifier_sha256:$verifier_sha256,
@@ -87,6 +89,7 @@ validate_approval_record() {
         (.authority_version | type == "string"
           and test("^(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})$")) and
         (.authority_commit | commit) and
+        (.verification_policy_revision | commit) and
         (.authority_tree_sha256 | digest) and
         (.shipper_sha256 | digest) and
         (.verifier_sha256 | digest) and
@@ -118,6 +121,7 @@ render_approval_record() {
     : "${PREVIOUS_AUTHORITY_MANIFEST_SHA256:?}"
     : "${AUTHORITY_VERSION:?}"
     : "${AUTHORITY_COMMIT:?}"
+    : "${VERIFICATION_POLICY_REVISION:?}"
     : "${AUTHORITY_TREE_SHA256:?}"
     : "${SHIPPER_SHA256:?}"
     : "${VERIFIER_SHA256:?}"
@@ -141,6 +145,7 @@ render_approval_record() {
         --arg previous_manifest_sha256 "$PREVIOUS_AUTHORITY_MANIFEST_SHA256" \
         --arg authority_version "$AUTHORITY_VERSION" \
         --arg authority_commit "$AUTHORITY_COMMIT" \
+        --arg verification_policy_revision "$VERIFICATION_POLICY_REVISION" \
         --arg authority_tree_sha256 "$AUTHORITY_TREE_SHA256" \
         --arg shipper_sha256 "$SHIPPER_SHA256" \
         --arg verifier_sha256 "$VERIFIER_SHA256" \
@@ -164,6 +169,7 @@ render_approval_record() {
           previous_manifest_sha256:$previous_manifest_sha256,
           authority_version:$authority_version,
           authority_commit:$authority_commit,
+          verification_policy_revision:$verification_policy_revision,
           authority_tree_sha256:$authority_tree_sha256,
           shipper_sha256:$shipper_sha256,
           verifier_sha256:$verifier_sha256,
@@ -234,7 +240,7 @@ def uint: type == "number" and . >= 0 and . <= 9007199254740991 and floor == .;
   and test("^(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})$")) and
 (.authority_commit | commit) and
 (.authority_tree_sha256 | digest) and
-(.verification_policy_revision == .authority_commit) and
+(.verification_policy_revision | commit) and
 (.shipper_sha256 | digest) and
 (.verifier_sha256 | digest) and
 (.verifier_toolchain_id | text) and
@@ -527,6 +533,7 @@ render_v2() {
     : "${PREVIOUS_AUTHORITY_MANIFEST_SHA256:?}"
     : "${AUTHORITY_VERSION:?}"
     : "${AUTHORITY_COMMIT:?}"
+    : "${VERIFICATION_POLICY_REVISION:?}"
     : "${AUTHORITY_TREE_SHA256:?}"
     : "${SHIPPER_SHA256:?}"
     : "${VERIFIER_SHA256:?}"
@@ -559,7 +566,7 @@ render_v2() {
         --arg authority_version "$AUTHORITY_VERSION" \
         --arg authority_commit "$AUTHORITY_COMMIT" \
         --arg authority_tree_sha256 "$AUTHORITY_TREE_SHA256" \
-        --arg verification_policy_revision "$AUTHORITY_COMMIT" \
+        --arg verification_policy_revision "$VERIFICATION_POLICY_REVISION" \
         --arg shipper_sha256 "$SHIPPER_SHA256" \
         --arg verifier_sha256 "$VERIFIER_SHA256" \
         --arg provisioner_sha256 "$PROVISIONER_SHA256" \
