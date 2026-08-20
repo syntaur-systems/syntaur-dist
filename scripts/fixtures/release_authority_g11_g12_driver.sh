@@ -159,6 +159,7 @@ PROMOTION_RECOVERY_SHA256=$(printf fixture-recovery | sha256sum | awk '{print $1
 
 previous_generation=0
 previous_manifest=$(printf '0%.0s' {1..64})
+previous_authority_commit=
 for generation in $(seq 1 12); do
     material=$material_root/generation-$generation
     install -d -o "$operator_uid" -g "$operator_gid" -m 0700 "$material"
@@ -181,6 +182,10 @@ for generation in $(seq 1 12); do
         "$provisioner" "$material/syntaur-build-authority-provision"
     workflow=$(printf '%040x' "$generation")
     authority_commit=$(printf '%040x' "$((4096 + generation))")
+    verification_policy_revision=$authority_commit
+    if (( generation > 1 )); then
+        verification_policy_revision=$previous_authority_commit
+    fi
     authority_tree=$(printf 'authority-tree-%s' "$generation" \
         | sha256sum | awk '{print $1}')
     env \
@@ -188,6 +193,7 @@ for generation in $(seq 1 12); do
         VERIFIER_SHA256="$verifier_sha" \
         PROVISIONER_SHA256="$provisioner_sha" \
         AUTHORITY_COMMIT="$authority_commit" \
+        VERIFICATION_POLICY_REVISION="$verification_policy_revision" \
         AUTHORITY_TREE_SHA256="$authority_tree" \
         GITHUB_SHA="$workflow" \
         AUTHORITY_GENERATION="$generation" \
@@ -204,6 +210,7 @@ for generation in $(seq 1 12); do
         "$material/release-authority-v2.json.cosign.bundle"
     chmod 0500 "$material"
     previous_generation=$generation
+    previous_authority_commit=$authority_commit
     previous_manifest=$(sha256_file "$material/release-authority-v2.json")
 done
 
@@ -216,10 +223,12 @@ g12_bundle_sha=$(sha256_file "$g12/release-authority-v2.json.cosign.bundle")
 g11_workflow=$(printf '%040x' 11)
 g12_workflow=$(printf '%040x' 12)
 cosign_sha=$(sha256_file "$fake_cosign")
+helper_sha=$(sha256_file "$helper")
 
 patched=/run/recover-release-authority-g11-g12-canary-root-v1.sh
 sed \
     -e "s/^readonly COSIGN_SHA256=.*/readonly COSIGN_SHA256=$cosign_sha/" \
+    -e "s/^readonly MANIFEST_HELPER_SHA256=.*/readonly MANIFEST_HELPER_SHA256=$helper_sha/" \
     -e "s/^readonly G11_MANIFEST_SHA256=.*/readonly G11_MANIFEST_SHA256=$g11_manifest_sha/" \
     -e "s/^readonly G11_BUNDLE_SHA256=.*/readonly G11_BUNDLE_SHA256=$g11_bundle_sha/" \
     -e "s/^readonly G11_WORKFLOW_COMMIT=.*/readonly G11_WORKFLOW_COMMIT=$g11_workflow/" \

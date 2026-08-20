@@ -55,6 +55,7 @@ jobs:
           PREVIOUS_MANIFEST_SHA256: ${{ fromJSON(inputs.approval_record).previous_manifest_sha256 }}
           AUTHORITY_VERSION: ${{ fromJSON(inputs.approval_record).authority_version }}
           AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).authority_commit }}
+          VERIFICATION_POLICY_REVISION: ${{ fromJSON(inputs.approval_record).verification_policy_revision }}
           AUTHORITY_TREE_SHA256: ${{ fromJSON(inputs.approval_record).authority_tree_sha256 }}
           SHIPPER_SHA256: ${{ fromJSON(inputs.approval_record).shipper_sha256 }}
           VERIFIER_SHA256: ${{ fromJSON(inputs.approval_record).verifier_sha256 }}
@@ -85,6 +86,12 @@ jobs:
           printf '%s' "$AUTHORITY_VERSION" \
             | grep -Eq '^(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})$'
           printf '%s' "$AUTHORITY_COMMIT" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$VERIFICATION_POLICY_REVISION" | grep -Eq '^[0-9a-f]{40}$'
+          if [[ $PREVIOUS_GENERATION == 0 ]]; then
+            test "$VERIFICATION_POLICY_REVISION" = "$AUTHORITY_COMMIT"
+          else
+            test "$VERIFICATION_POLICY_REVISION" != "$AUTHORITY_COMMIT"
+          fi
           for digest in \
             "$PREVIOUS_MANIFEST_SHA256" \
             "$AUTHORITY_TREE_SHA256" \
@@ -338,6 +345,7 @@ jobs:
                 .previous_manifest_sha256 == $approval.previous_manifest_sha256 and
                 .authority_version == $approval.authority_version and
                 .authority_commit == $approval.authority_commit and
+                .verification_policy_revision == $approval.verification_policy_revision and
                 .authority_tree_sha256 == $approval.authority_tree_sha256 and
                 .shipper_sha256 == $approval.shipper_sha256 and
                 .verifier_sha256 == $approval.verifier_sha256 and
@@ -442,6 +450,7 @@ jobs:
         shell: bash
         env:
           AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).authority_commit }}
+          VERIFICATION_POLICY_REVISION: ${{ fromJSON(inputs.approval_record).verification_policy_revision }}
           AUTHORITY_VERSION: ${{ fromJSON(inputs.approval_record).authority_version }}
           EXPECTED_AUTHORITY_TREE_SHA256: ${{ fromJSON(inputs.approval_record).authority_tree_sha256 }}
           EXPECTED_PROVISIONER_SHA256: ${{ fromJSON(inputs.approval_record).provisioner_sha256 }}
@@ -457,6 +466,7 @@ jobs:
           test -z "$leaked_keys"
           test "$(git -C source rev-parse HEAD)" = "$AUTHORITY_COMMIT"
           if [[ $GENESIS == true ]]; then
+            test "$VERIFICATION_POLICY_REVISION" = "$AUTHORITY_COMMIT"
             g1_parser_root="$RUNNER_TEMP/g1-toml-parser"
             mkdir -m 0700 "$g1_parser_root"
             /usr/bin/curl -fsSLo "$g1_parser_root/yq.download" \
@@ -472,6 +482,9 @@ jobs:
               1bf740acd5a7223e98370f668148f01ebfb6eff8 \
               0.7.114 \
               "$g1_parser_root/yq"
+          else
+            test "$(git -C source rev-parse "${AUTHORITY_COMMIT}^")" \
+              = "$VERIFICATION_POLICY_REVISION"
           fi
           cmp -s source/VERSION <(printf '%s' "$AUTHORITY_VERSION") \
             || cmp -s source/VERSION <(printf '%s\n' "$AUTHORITY_VERSION")
@@ -622,6 +635,7 @@ jobs:
         env:
           SOURCE_ARCHIVE_AGE_IDENTITY: ${{ secrets.SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY }}
           AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).authority_commit }}
+          VERIFICATION_POLICY_REVISION: ${{ fromJSON(inputs.approval_record).verification_policy_revision }}
           AUTHORITY_TREE_SHA256: ${{ needs.source_metadata.outputs.authority_tree_sha256 }}
         run: |
           set -euo pipefail
@@ -685,6 +699,7 @@ jobs:
         shell: bash
         env:
           AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).authority_commit }}
+          VERIFICATION_POLICY_REVISION: ${{ fromJSON(inputs.approval_record).verification_policy_revision }}
           AUTHORITY_TREE_SHA256: ${{ needs.source_metadata.outputs.authority_tree_sha256 }}
         run: |
           set -euo pipefail
@@ -958,6 +973,7 @@ jobs:
           PREVIOUS_AUTHORITY_MANIFEST_SHA256: ${{ needs.predecessor.outputs.previous_manifest_sha256 }}
           AUTHORITY_VERSION: ${{ fromJSON(inputs.approval_record).authority_version }}
           AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).authority_commit }}
+          VERIFICATION_POLICY_REVISION: ${{ fromJSON(inputs.approval_record).verification_policy_revision }}
           AUTHORITY_TREE_SHA256: ${{ needs.source_metadata.outputs.authority_tree_sha256 }}
           EXPECTED_SHIPPER_SHA256: ${{ fromJSON(inputs.approval_record).shipper_sha256 }}
           EXPECTED_VERIFIER_SHA256: ${{ fromJSON(inputs.approval_record).verifier_sha256 }}
@@ -1054,6 +1070,8 @@ jobs:
               "$PREVIOUS_AUTHORITY_MANIFEST_SHA256"
             printf -- '- Source: %s / tree %s\n' \
               "$AUTHORITY_COMMIT" "$AUTHORITY_TREE_SHA256"
+            printf -- '- Verification policy revision: %s\n' \
+              "$VERIFICATION_POLICY_REVISION"
             printf -- '- Shipper: %s\n' "$SHIPPER_SHA256"
             printf -- '- Verifier: %s\n' "$VERIFIER_SHA256"
             printf -- '- Provisioner: %s\n' "$PROVISIONER_SHA256"
@@ -1118,6 +1136,7 @@ jobs:
           GENERATION: ${{ needs.predecessor.outputs.generation }}
           PREVIOUS_GENERATION: ${{ needs.predecessor.outputs.previous_generation }}
           AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).authority_commit }}
+          VERIFICATION_POLICY_REVISION: ${{ fromJSON(inputs.approval_record).verification_policy_revision }}
           AUTHORITY_TREE_SHA256: ${{ needs.source_metadata.outputs.authority_tree_sha256 }}
           SHIPPER_SHA256: ${{ fromJSON(inputs.approval_record).shipper_sha256 }}
           VERIFIER_SHA256: ${{ fromJSON(inputs.approval_record).verifier_sha256 }}
@@ -1130,6 +1149,8 @@ jobs:
             printf 'Approved exact V2 generation %s after %s\n' \
               "$GENERATION" "$PREVIOUS_GENERATION"
             printf 'source=%s tree=%s\n' "$AUTHORITY_COMMIT" "$AUTHORITY_TREE_SHA256"
+            printf 'verification_policy_revision=%s\n' \
+              "$VERIFICATION_POLICY_REVISION"
             printf 'shipper=%s verifier=%s provisioner=%s\n' \
               "$SHIPPER_SHA256" "$VERIFIER_SHA256" "$PROVISIONER_SHA256"
             printf 'production_contract=%s promotion_recovery=%s\n' \
@@ -1188,6 +1209,7 @@ jobs:
           PREVIOUS_AUTHORITY_MANIFEST_SHA256: ${{ needs.predecessor.outputs.previous_manifest_sha256 }}
           AUTHORITY_VERSION: ${{ fromJSON(inputs.approval_record).authority_version }}
           AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).authority_commit }}
+          VERIFICATION_POLICY_REVISION: ${{ fromJSON(inputs.approval_record).verification_policy_revision }}
           AUTHORITY_TREE_SHA256: ${{ needs.source_metadata.outputs.authority_tree_sha256 }}
           EXPECTED_SHIPPER_SHA256: ${{ fromJSON(inputs.approval_record).shipper_sha256 }}
           EXPECTED_VERIFIER_SHA256: ${{ fromJSON(inputs.approval_record).verifier_sha256 }}
@@ -1349,6 +1371,7 @@ jobs:
           PREVIOUS_MANIFEST_SHA256: ${{ needs.predecessor.outputs.previous_manifest_sha256 }}
           AUTHORITY_VERSION: ${{ fromJSON(inputs.approval_record).authority_version }}
           AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).authority_commit }}
+          VERIFICATION_POLICY_REVISION: ${{ fromJSON(inputs.approval_record).verification_policy_revision }}
           AUTHORITY_TREE_SHA256: ${{ needs.source_metadata.outputs.authority_tree_sha256 }}
           SHIPPER_SHA256: ${{ fromJSON(inputs.approval_record).shipper_sha256 }}
           VERIFIER_SHA256: ${{ fromJSON(inputs.approval_record).verifier_sha256 }}
@@ -1374,6 +1397,8 @@ jobs:
             = "$PREVIOUS_MANIFEST_SHA256"
           test "$(jq -er '.authority_version' "$manifest")" = "$AUTHORITY_VERSION"
           test "$(jq -er '.authority_commit' "$manifest")" = "$AUTHORITY_COMMIT"
+          test "$(jq -er '.verification_policy_revision' "$manifest")" \
+            = "$VERIFICATION_POLICY_REVISION"
           test "$(jq -er '.authority_tree_sha256' "$manifest")" = "$AUTHORITY_TREE_SHA256"
           test "$(jq -er '.shipper_sha256' "$manifest")" = "$SHIPPER_SHA256"
           test "$(jq -er '.verifier_sha256' "$manifest")" = "$VERIFIER_SHA256"
@@ -1398,6 +1423,7 @@ jobs:
           GENERATION: ${{ needs.predecessor.outputs.generation }}
           PREVIOUS_GENERATION: ${{ needs.predecessor.outputs.previous_generation }}
           AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).authority_commit }}
+          VERIFICATION_POLICY_REVISION: ${{ fromJSON(inputs.approval_record).verification_policy_revision }}
         run: |
           set -euo pipefail
           api_optional() {
