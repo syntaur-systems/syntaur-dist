@@ -735,13 +735,13 @@ validate_phase_state() {
 }
 
 product_state_digest() {
-    local path
+    local path selector selector_target selector_json_sha selector_bundle_sha
+    local generation_dir json_path bundle_path
+    local json_sha bundle_sha alias_target
     {
         for path in \
             "$OPERATOR_STATE/current-release.json" \
             "$OPERATOR_STATE/features.txt" \
-            "$OPERATOR_STATE/deploy-stamp.json" \
-            "$OPERATOR_STATE/deploy-stamp.json.cosign.bundle" \
             "$OPERATOR_STATE/release-intent/v0.7.114.json" \
             "$OPERATOR_STATE/release-dispatch/v0.7.114.json" \
             "$OPERATOR_STATE/release-run/v0.7.114.json" \
@@ -768,6 +768,53 @@ product_state_digest() {
             else
                 die 'product-state sentinel is unsafe'
             fi
+        done
+
+        selector=$OPERATOR_STATE/deploy-stamp.current
+        [[ -L $selector ]] || die 'deploy-stamp selector is unsafe'
+        selector_target=$(/usr/bin/readlink -- "$selector")
+        [[ $selector_target =~ \
+            ^deploy-stamp\.generations/g-b-([0-9a-f]{64})-([0-9a-f]{64})$ ]] \
+            || die 'deploy-stamp selector target is unsafe'
+        selector_json_sha=${BASH_REMATCH[1]}
+        selector_bundle_sha=${BASH_REMATCH[2]}
+        generation_dir=$OPERATOR_STATE/$selector_target
+        [[ -d $OPERATOR_STATE/deploy-stamp.generations \
+            && ! -L $OPERATOR_STATE/deploy-stamp.generations \
+            && -d $generation_dir && ! -L $generation_dir ]] \
+            || die 'deploy-stamp generation directory is unsafe'
+        json_path=$generation_dir/deploy-stamp.json
+        bundle_path=$generation_dir/deploy-stamp.json.cosign.bundle
+        [[ -f $json_path && ! -L $json_path \
+            && -f $bundle_path && ! -L $bundle_path ]] \
+            || die 'deploy-stamp generation is unsafe'
+        json_sha=$(sha256_file "$json_path")
+        bundle_sha=$(sha256_file "$bundle_path")
+        [[ $selector_json_sha == "$json_sha" \
+            && $selector_bundle_sha == "$bundle_sha" ]] \
+            || die 'deploy-stamp selector digest differs'
+        /usr/bin/printf 'symlink\0%s\0%s\0' "$selector" "$selector_target"
+        /usr/bin/printf 'present\0%s\0%s\0' "$json_path" "$json_sha"
+        /usr/bin/printf 'present\0%s\0%s\0' "$bundle_path" "$bundle_sha"
+
+        for path in \
+            "$OPERATOR_STATE/deploy-stamp.json" \
+            "$OPERATOR_STATE/deploy-stamp.json.cosign.bundle"; do
+            [[ -L $path ]] || die 'deploy-stamp compatibility link is unsafe'
+            alias_target=$(/usr/bin/readlink -- "$path")
+            case $path in
+                "$OPERATOR_STATE/deploy-stamp.json")
+                    [[ $alias_target == deploy-stamp.current/deploy-stamp.json ]] \
+                        || die 'deploy-stamp compatibility target differs'
+                    ;;
+                "$OPERATOR_STATE/deploy-stamp.json.cosign.bundle")
+                    [[ $alias_target == \
+                        deploy-stamp.current/deploy-stamp.json.cosign.bundle ]] \
+                        || die 'deploy-stamp bundle compatibility target differs'
+                    ;;
+                *) die 'unreviewed deploy-stamp compatibility link' ;;
+            esac
+            /usr/bin/printf 'symlink\0%s\0%s\0' "$path" "$alias_target"
         done
     } | /usr/bin/sha256sum | /usr/bin/awk '{print $1}'
 }
