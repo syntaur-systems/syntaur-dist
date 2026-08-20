@@ -156,6 +156,7 @@ PROMOTION_RECOVERY_SHA256=$(printf fixture-recovery | sha256sum | awk '{print $1
 
 previous_generation=0
 previous_manifest=$(printf '0%.0s' {1..64})
+previous_authority_commit=
 for generation in $(seq 1 13); do
     material=$material_root/generation-$generation
     install -d -o "$operator_uid" -g "$operator_gid" -m 0700 "$material"
@@ -174,6 +175,10 @@ for generation in $(seq 1 13); do
         "$provisioner" "$material/syntaur-build-authority-provision"
     workflow=$(printf '%040x' "$generation")
     authority_commit=$(printf '%040x' "$((4096 + generation))")
+    verification_policy_revision=$authority_commit
+    if (( generation > 1 )); then
+        verification_policy_revision=$previous_authority_commit
+    fi
     authority_tree=$(printf 'authority-tree-%s' "$generation" \
         | sha256sum | awk '{print $1}')
     env \
@@ -181,6 +186,7 @@ for generation in $(seq 1 13); do
         VERIFIER_SHA256="$verifier_sha" \
         PROVISIONER_SHA256="$provisioner_sha" \
         AUTHORITY_COMMIT="$authority_commit" \
+        VERIFICATION_POLICY_REVISION="$verification_policy_revision" \
         AUTHORITY_TREE_SHA256="$authority_tree" \
         GITHUB_SHA="$workflow" \
         AUTHORITY_GENERATION="$generation" \
@@ -197,6 +203,7 @@ for generation in $(seq 1 13); do
         "$material/release-authority-v2.json.cosign.bundle"
     chmod 0500 "$material"
     previous_generation=$generation
+    previous_authority_commit=$authority_commit
     previous_manifest=$(sha256_file "$material/release-authority-v2.json")
 done
 
