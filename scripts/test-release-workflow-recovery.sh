@@ -631,11 +631,22 @@ if [ "$1" = api ]; then
       ;;
     https://uploads.github.com/*)
       asset=$(argument_after --input "$@")
-      test "$(argument_after -f "$@")" = "name=$(basename "$asset")"
+      asset_name=$(basename "$asset")
+      test "$(argument_after -f "$@")" = "name=$asset_name"
       increment "$MOCK_STATE/upload-count"
-      increment "$MOCK_STATE/upload-$(basename "$asset")-count"
-      ln "$asset" "$MOCK_STATE/assets/$(basename "$asset")"
-      jq -n --arg name "$(basename "$asset")" --argjson size "$(stat -c '%s' "$asset")" \
+      increment "$MOCK_STATE/upload-${asset_name}-count"
+      read -r asset_upload_count <"$MOCK_STATE/upload-${asset_name}-count"
+      if [ -f "$MOCK_STATE/fail-first-upload-${asset_name}" ] \
+          && [ "$asset_upload_count" = 1 ]; then
+        echo 'gh: Gateway Time-out (HTTP 504)' >&2
+        exit 1
+      fi
+      if [ -f "$MOCK_STATE/fail-all-uploads-${asset_name}" ]; then
+        echo 'gh: Gateway Time-out (HTTP 504)' >&2
+        exit 1
+      fi
+      ln "$asset" "$MOCK_STATE/assets/$asset_name"
+      jq -n --arg name "$asset_name" --argjson size "$(stat -c '%s' "$asset")" \
         '{id:999,name:$name,size:$size,state:"uploaded"}'
       exit "${MOCK_UPLOAD_STATUS:-1}"
       ;;
@@ -736,6 +747,36 @@ for asset in "$publish_dist"/*; do
   cmp --silent "$asset" "$existing_draft_state/assets/$(basename "$asset")"
   test "$(cat "$existing_draft_state/upload-$(basename "$asset")-count")" = 1
 done
+
+transient_upload_failure_state="$publish_case/transient-upload-failure-state"
+mkdir -p "$transient_upload_failure_state/assets"
+touch \
+  "$transient_upload_failure_state/created" \
+  "$transient_upload_failure_state/fail-first-upload-syntaur-source-commit.txt"
+run_publish "$transient_upload_failure_state" >/dev/null
+detach_state_assets "$transient_upload_failure_state"
+for asset in "$publish_dist"/*; do
+  asset_name=$(basename "$asset")
+  cmp --silent "$asset" "$transient_upload_failure_state/assets/$asset_name"
+  expected_uploads=1
+  if [ "$asset_name" = syntaur-source-commit.txt ]; then
+    expected_uploads=2
+  fi
+  test "$(cat "$transient_upload_failure_state/upload-${asset_name}-count")" = "$expected_uploads"
+done
+
+bounded_upload_failure_state="$publish_case/bounded-upload-failure-state"
+mkdir -p "$bounded_upload_failure_state/assets"
+touch \
+  "$bounded_upload_failure_state/created" \
+  "$bounded_upload_failure_state/fail-all-uploads-syntaur-release-operation.json"
+if run_publish "$bounded_upload_failure_state" >/dev/null 2>&1; then
+  echo 'release staging retried an absent asset without a bound' >&2
+  exit 1
+fi
+test "$(cat "$bounded_upload_failure_state/upload-count")" = 2
+test "$(cat "$bounded_upload_failure_state/upload-syntaur-release-operation.json-count")" = 2
+test -z "$(find "$bounded_upload_failure_state/assets" -mindepth 1 -maxdepth 1 -print -quit)"
 
 published_during_upload_state="$publish_case/published-during-upload-state"
 mkdir -p "$published_during_upload_state/assets"
