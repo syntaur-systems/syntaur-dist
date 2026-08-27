@@ -1963,34 +1963,57 @@ jobs:
             upload_base=${upload_url%%\{*}
             upload_json="/tmp/syntaur-upload-${release_id}-${asset}.json"
             upload_error="/tmp/syntaur-upload-${release_id}-${asset}.error"
-            set +e
-            gh_api_to_file_bounded 2097152 "$upload_json" "$upload_error" \
-              --method POST \
-              -H 'Content-Type: application/octet-stream' \
-              --input "$asset" \
-              -f "name=${asset}" \
-              "$upload_base"
-            upload_status=$?
-            set -e
             uploaded=0
-            for attempt in $(seq 1 12); do
-              if load_release_by_id "$release_id"; then
+            for upload_request in 1 2; do
+              if (( upload_request > 1 )); then
+                if ! load_release_by_id "$release_id"; then
+                  cat "$release_error" >&2
+                  echo "::error::could not prove $asset absent before the bounded upload retry" >&2
+                  exit 1
+                fi
                 validate_release
                 if verify_remote_asset "$asset"; then
-                  echo "  uploaded/reconciled: $asset (poll=$attempt status=$upload_status)"
+                  echo "  uploaded/reconciled: $asset (before request=$upload_request)"
                   uploaded=1
                   break
                 fi
-              else
-                cat "$release_error" >&2
+                [ "$(jq -r '.draft' "$release_json")" = true ] || {
+                  echo "::error::release became public before retrying $asset" >&2
+                  exit 1
+                }
+                cat "$upload_error" >&2 || true
+                echo "::warning::request $((upload_request - 1)) left no exact $asset after bounded reconciliation; retrying once"
               fi
-              if (( attempt < 12 )); then
-                sleep 5
-              fi
+
+              set +e
+              gh_api_to_file_bounded 2097152 "$upload_json" "$upload_error" \
+                --method POST \
+                -H 'Content-Type: application/octet-stream' \
+                --input "$asset" \
+                -f "name=${asset}" \
+                "$upload_base"
+              upload_status=$?
+              set -e
+              for attempt in $(seq 1 12); do
+                if load_release_by_id "$release_id"; then
+                  validate_release
+                  if verify_remote_asset "$asset"; then
+                    echo "  uploaded/reconciled: $asset (request=$upload_request poll=$attempt status=$upload_status)"
+                    uploaded=1
+                    break
+                  fi
+                else
+                  cat "$release_error" >&2
+                fi
+                if (( attempt < 12 )); then
+                  sleep 5
+                fi
+              done
+              (( uploaded == 1 )) && break
             done
             (( uploaded == 1 )) || {
               cat "$upload_error" >&2 || true
-              echo "::error::could not reconcile $asset after one upload request"
+              echo "::error::could not reconcile $asset after two bounded upload requests"
               exit 1
             }
           done
