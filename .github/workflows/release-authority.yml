@@ -477,10 +477,69 @@ jobs:
             test "$(jq -r '.draft' <<<"$settled_product_release")" = false
             test "$(jq -r '.prerelease' <<<"$settled_product_release")" = false
             test "$(jq -r '.immutable' <<<"$settled_product_release")" = true
-            test "$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/v${settled_version}" \
-              --jq '.object.type')" = commit
-            test "$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/v${settled_version}" \
-              --jq '.object.sha')" = "$settled_gateway_commit"
+            settled_tag_ref=$(gh api \
+              "/repos/${GITHUB_REPOSITORY}/git/ref/tags/v${settled_version}")
+            test "$(jq -r '.object.type' <<<"$settled_tag_ref")" = commit
+            settled_dist_commit=$(jq -er '.object.sha' <<<"$settled_tag_ref")
+            printf '%s' "$settled_dist_commit" | grep -Eq '^[0-9a-f]{40}$'
+            test "$(jq -r '.target_commitish' <<<"$settled_product_release")" \
+              = "$settled_dist_commit"
+
+            settled_proof_dir=$(mktemp -d \
+              "$RUNNER_TEMP/settled-product-provenance.XXXXXX")
+            settled_product_proof_assets=(
+              syntaur-source-commit.txt
+              syntaur-source-commit.txt.cosign.bundle
+              syntaur-engine-source-commit.txt
+              syntaur-engine-source-commit.txt.cosign.bundle
+            )
+            for asset in "${settled_product_proof_assets[@]}"; do
+              asset_count=$(jq --arg asset "$asset" \
+                '[.assets[] | select(.name == $asset)] | length' \
+                <<<"$settled_product_release")
+              test "$asset_count" = 1
+              asset_size=$(jq -er --arg asset "$asset" \
+                '.assets[] | select(.name == $asset) | .size' \
+                <<<"$settled_product_release")
+              case $asset in
+                *.cosign.bundle) asset_maximum=131072 ;;
+                *) asset_maximum=4096 ;;
+              esac
+              (( asset_size > 0 && asset_size <= asset_maximum ))
+              gh release download "v${settled_version}" \
+                --repo "$GITHUB_REPOSITORY" --dir "$settled_proof_dir" \
+                --pattern "$asset"
+              test -f "$settled_proof_dir/$asset"
+              test ! -L "$settled_proof_dir/$asset"
+              test "$(stat -c '%s' "$settled_proof_dir/$asset")" = "$asset_size"
+              gh release verify-asset \
+                "v${settled_version}" "$settled_proof_dir/$asset" \
+                --repo "$GITHUB_REPOSITORY" >/dev/null
+            done
+            settled_proof_actual=$(find "$settled_proof_dir" \
+              -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
+            settled_proof_expected=$(printf '%s\n' \
+              "${settled_product_proof_assets[@]}" | LC_ALL=C sort)
+            test "$settled_proof_actual" = "$settled_proof_expected"
+            gh release verify "v${settled_version}" \
+              --repo "$GITHUB_REPOSITORY" >/dev/null
+            for proof in \
+              syntaur-source-commit.txt \
+              syntaur-engine-source-commit.txt; do
+              cosign verify-blob \
+                --bundle "$settled_proof_dir/${proof}.cosign.bundle" \
+                --certificate-identity \
+                "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-sign.yml@refs/heads/main" \
+                --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+                --certificate-github-workflow-sha "$settled_dist_commit" \
+                "$settled_proof_dir/$proof"
+            done
+            bash public-workflow/scripts/release-authority-manifest.sh \
+              validate-product-source-proofs \
+              "$settled_proof_dir/syntaur-source-commit.txt" \
+              "$settled_proof_dir/syntaur-engine-source-commit.txt" \
+              "$settled_version" "$settled_gateway_commit" \
+              "$settled_engine_commit"
             target_tag="authority-replacement-v1-g${generation}"
           fi
 
