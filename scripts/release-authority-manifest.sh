@@ -581,7 +581,7 @@ validate_special_tag_namespace() {
     local name generation
     mapfile -t names <"$names_file"
     for name in "${names[@]}"; do
-        [[ $name =~ ^${prefix}([1-9][0-9]*)$ ]] \
+        [[ $name =~ ^${prefix}([1-9][0-9]{0,15})$ ]] \
             || die 'special authority tag is malformed'
         generation=${BASH_REMATCH[1]}
         [[ $generation -le $maximum_generation ]] \

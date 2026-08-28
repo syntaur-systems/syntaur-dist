@@ -291,6 +291,10 @@ expect_failure "$helper" validate-special-tag-namespace \
 printf '%s\n' authority-replacement-v1-g060 >"$tmp_root/malformed-special-tags"
 expect_failure "$helper" validate-special-tag-namespace \
     authority-replacement-v1-g 60 "$tmp_root/malformed-special-tags"
+printf '%s\n' authority-resolution-v1-g99999999999999999 \
+    >"$tmp_root/oversized-special-tags"
+expect_failure "$helper" validate-special-tag-namespace \
+    authority-resolution-v1-g 60 "$tmp_root/oversized-special-tags"
 printf '%s\n' authority-resolution-v1-g60 authority-resolution-v1-g60 \
     >"$tmp_root/duplicate-special-tags"
 expect_failure "$helper" validate-special-tag-namespace \
