@@ -161,6 +161,38 @@ jq -e '
     .rejected_generation == 701 and
     .replacement_reason == "authority_target_mismatch"
 ' "$tmp_root/replacement-approval-record.json" >/dev/null
+source_proof=$tmp_root/syntaur-source-commit.txt
+engine_proof=$tmp_root/syntaur-engine-source-commit.txt
+public_dist_commit=$(printf '6%.0s' {1..40})
+printf 'source_ref: v%s\nresolved_commit: %s\n' \
+    "$SETTLED_PRODUCT_VERSION" "$SETTLED_PRODUCT_GATEWAY_COMMIT" >"$source_proof"
+printf 'engine_ref: %s\nresolved_commit: %s\n' \
+    "$SETTLED_PRODUCT_ENGINE_COMMIT" "$SETTLED_PRODUCT_ENGINE_COMMIT" \
+    >"$engine_proof"
+"$helper" validate-product-source-proofs \
+    "$source_proof" "$engine_proof" "$SETTLED_PRODUCT_VERSION" \
+    "$SETTLED_PRODUCT_GATEWAY_COMMIT" "$SETTLED_PRODUCT_ENGINE_COMMIT"
+printf 'source_ref: v%s\nresolved_commit: %s\n' \
+    "$SETTLED_PRODUCT_VERSION" "$public_dist_commit" >"$source_proof"
+expect_failure "$helper" validate-product-source-proofs \
+    "$source_proof" "$engine_proof" "$SETTLED_PRODUCT_VERSION" \
+    "$SETTLED_PRODUCT_GATEWAY_COMMIT" "$SETTLED_PRODUCT_ENGINE_COMMIT"
+printf 'source_ref: v%s\nresolved_commit: %s\n' \
+    "$SETTLED_PRODUCT_VERSION" "$SETTLED_PRODUCT_GATEWAY_COMMIT" >"$source_proof"
+printf 'engine_ref: %s\nresolved_commit: %s\nextra: rejected\n' \
+    "$SETTLED_PRODUCT_ENGINE_COMMIT" "$SETTLED_PRODUCT_ENGINE_COMMIT" \
+    >"$engine_proof"
+expect_failure "$helper" validate-product-source-proofs \
+    "$source_proof" "$engine_proof" "$SETTLED_PRODUCT_VERSION" \
+    "$SETTLED_PRODUCT_GATEWAY_COMMIT" "$SETTLED_PRODUCT_ENGINE_COMMIT"
+printf 'engine_ref: %s\nresolved_commit: %s\n' \
+    "$SETTLED_PRODUCT_ENGINE_COMMIT" "$SETTLED_PRODUCT_ENGINE_COMMIT" \
+    >"$engine_proof"
+ln -s "$source_proof" "$tmp_root/syntaur-source-commit-symlink.txt"
+expect_failure "$helper" validate-product-source-proofs \
+    "$tmp_root/syntaur-source-commit-symlink.txt" "$engine_proof" \
+    "$SETTLED_PRODUCT_VERSION" "$SETTLED_PRODUCT_GATEWAY_COMMIT" \
+    "$SETTLED_PRODUCT_ENGINE_COMMIT"
 jq -c '.settled_product_version = "0.7.117"' \
     "$tmp_root/replacement-approval-record.json" \
     >"$tmp_root/replacement-approval-wrong-settled-version.json"
@@ -760,7 +792,7 @@ grep -Fq 'release-authority-source' "$workflow"
 grep -Fq 'SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY' "$workflow"
 grep -Fq 'sudo chown -R 65534:65534 source' "$workflow"
 grep -Fq 'encrypted-authority-source-run-' "$workflow"
-[[ $(grep -Fc -- '--repo "$GITHUB_REPOSITORY"' "$workflow") -eq 22 ]]
+[[ $(grep -Fc -- '--repo "$GITHUB_REPOSITORY"' "$workflow") -eq 25 ]]
 grep -Fq 'mkdir -m 0700 "$age_root/bin"' "$workflow"
 grep -Fq '"$age_root/bin/"' "$workflow"
 grep -Fq '"$age_root/bin/age-keygen" -y -' "$workflow"
@@ -774,6 +806,13 @@ fi
 grep -Fq 'authority-replacement-v1-g${generation}' "$workflow"
 grep -Fq 'authority-resolution-v1-g${GENERATION}' "$workflow"
 grep -Fq 'validate-replacement-resolution-assets' "$workflow"
+grep -Fq 'validate-product-source-proofs' "$workflow"
+grep -Fq 'settled_dist_commit=$(jq -er' "$workflow"
+grep -Fq 'syntaur-source-commit.txt.cosign.bundle' "$workflow"
+grep -Fq 'syntaur-engine-source-commit.txt.cosign.bundle' "$workflow"
+if grep -Fq '= "$settled_gateway_commit"' "$workflow"; then
+    fail 'public product tag commit is still equated with private Gateway source commit'
+fi
 grep -Fq 'rejected_product_release_commit' "$workflow"
 grep -Fq 'resolution_policy:' "$workflow"
 grep -Fq 'recover_sign_resolution:' "$workflow"

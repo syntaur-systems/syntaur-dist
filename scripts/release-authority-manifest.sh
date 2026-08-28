@@ -945,6 +945,35 @@ validate_special_tag_namespace() {
         || die 'special authority tag inventory contains duplicates'
 }
 
+validate_product_source_proofs() {
+    local source_proof=$1
+    local engine_proof=$2
+    local version=$3
+    local gateway_commit=$4
+    local engine_commit=$5
+    [[ $version =~ ^(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})$ ]] \
+        || die 'product source proof version is invalid'
+    [[ $gateway_commit =~ ^[0-9a-f]{40}$ && $engine_commit =~ ^[0-9a-f]{40}$ ]] \
+        || die 'product source proof commit is invalid'
+
+    local proof
+    for proof in "$source_proof" "$engine_proof"; do
+        [[ -s $proof && -f $proof && ! -L $proof ]] \
+            || die 'product source proof is unsafe'
+        [[ $(stat -c '%s' "$proof") -le 4096 ]] \
+            || die 'product source proof is oversized'
+    done
+
+    cmp -s "$source_proof" \
+        <(printf 'source_ref: v%s\nresolved_commit: %s\n' \
+            "$version" "$gateway_commit") \
+        || die 'application source proof does not match the approved product tuple'
+    cmp -s "$engine_proof" \
+        <(printf 'engine_ref: %s\nresolved_commit: %s\n' \
+            "$engine_commit" "$engine_commit") \
+        || die 'engine source proof does not match the approved product tuple'
+}
+
 asset_schema() {
     local names_file=$1
     [[ -f $names_file && ! -L $names_file ]] || die 'asset-name input is unsafe'
@@ -1532,6 +1561,11 @@ case ${1:-} in
             || die 'usage: validate-special-tag-namespace PREFIX MAXIMUM_GENERATION NAMES_FILE'
         validate_special_tag_namespace "$2" "$3" "$4"
         ;;
+    validate-product-source-proofs)
+        [[ $# -eq 6 ]] \
+            || die 'usage: validate-product-source-proofs SOURCE_PROOF ENGINE_PROOF VERSION GATEWAY_COMMIT ENGINE_COMMIT'
+        validate_product_source_proofs "$2" "$3" "$4" "$5" "$6"
+        ;;
     asset-schema)
         [[ $# -eq 2 ]] || die 'usage: asset-schema NAMES_FILE'
         asset_schema "$2"
@@ -1589,6 +1623,6 @@ case ${1:-} in
         validate_stage_v2 "$2"
         ;;
     *)
-        die 'usage: release-authority-manifest.sh render-approval-record|validate-approval-record|render-selection-review|validate-selection-review|render-replacement-resolution|validate-replacement-resolution|validate-replacement-resolution-assets|assert-replacement|validate-special-tag-namespace|asset-schema|validate|render-v2|assert-genesis|assert-successor|protocol-from-manifest|validate-protocol|shipper-self-test-from-manifest|validate-shipper-self-test|verifier-self-test-from-manifest|validate-verifier-self-test|source-tree-sha256|stage-v2|validate-stage-v2 ...'
+        die 'usage: release-authority-manifest.sh render-approval-record|validate-approval-record|render-selection-review|validate-selection-review|render-replacement-resolution|validate-replacement-resolution|validate-replacement-resolution-assets|assert-replacement|validate-special-tag-namespace|validate-product-source-proofs|asset-schema|validate|render-v2|assert-genesis|assert-successor|protocol-from-manifest|validate-protocol|shipper-self-test-from-manifest|validate-shipper-self-test|verifier-self-test-from-manifest|validate-verifier-self-test|source-tree-sha256|stage-v2|validate-stage-v2 ...'
         ;;
 esac
