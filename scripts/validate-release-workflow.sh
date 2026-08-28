@@ -242,8 +242,8 @@ if [ -f "$authority_workflow" ]; then
     yq -r '.jobs[].steps[]? | select(.uses == "sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac") | .with["cosign-release"]' \
       "$authority_workflow"
   )
-  [ "${#authority_cosign_releases[@]}" -eq 3 ] || {
-    echo "authority workflow must pin Cosign in predecessor, signer, and publisher jobs" >&2
+  [ "${#authority_cosign_releases[@]}" -eq 5 ] || {
+    echo "authority workflow must pin Cosign in predecessor, signer, recovery signer, recovery publisher, and publisher jobs" >&2
     exit 1
   }
   for cosign_release in "${authority_cosign_releases[@]}"; do
@@ -268,8 +268,8 @@ if [ -f "$authority_workflow" ]; then
     select(.value.permissions."id-token" == "write") |
     .key
   ' "$authority_workflow")
-  [ "$oidc_writers" = sign ] || {
-    echo "only sign may hold OIDC write authority: $oidc_writers" >&2
+  [ "$oidc_writers" = $'sign\nrecover_sign_resolution' ] || {
+    echo "only sign and recover_sign_resolution may hold OIDC write authority: $oidc_writers" >&2
     exit 1
   }
   contents_writers=$(yq -r '
@@ -297,7 +297,10 @@ if [ -f "$authority_workflow" ]; then
       $job.value.permissions | to_entries[] |
       select(.value == "write") |
       {job:$job.key, permission:.key}
-    ] == [{job:"sign", permission:"id-token"}])
+    ] == [
+      {job:"sign", permission:"id-token"},
+      {job:"recover_sign_resolution", permission:"id-token"}
+    ])
   ' <<<"$jobs_json" >/dev/null || {
     echo "job permissions contain unrecognized or recombined write authority" >&2
     exit 1
@@ -357,12 +360,12 @@ if [ -f "$authority_workflow" ]; then
     ) |
     .key
   ' <<<"$jobs_json")
-  [ "$publish_token_jobs" = publish ] || {
-    echo "publication token escaped its isolated job: $publish_token_jobs" >&2
+  [ "$publish_token_jobs" = $'recover_publish_resolution\npublish' ] || {
+    echo "publication token escaped its two isolated publisher jobs: $publish_token_jobs" >&2
     exit 1
   }
   [ "$(grep -o 'secrets.SYNTAUR_RELEASE_AUTHORITY_PUBLISH_TOKEN' \
-    "$authority_workflow" | wc -l)" -eq 1 ]
+    "$authority_workflow" | wc -l)" -eq 2 ]
   [ "$(yq -r '.jobs.predecessor.permissions.attestations' \
     "$authority_workflow")" = read ] || {
     echo "predecessor lacks read access to release attestations" >&2
@@ -373,6 +376,11 @@ if [ -f "$authority_workflow" ]; then
     echo "publisher lacks read access to release attestations" >&2
     exit 1
   }
+  [ "$(yq -r '.jobs.recover_publish_resolution.permissions.attestations' \
+    "$authority_workflow")" = read ] || {
+    echo "recovery publisher lacks read access to release attestations" >&2
+    exit 1
+  }
   [ "$(yq -r '.jobs.repository_policy.environment' "$authority_workflow")" \
     = release-authority-source ]
   [ "$(yq -r '.jobs.source_metadata.environment' "$authority_workflow")" \
@@ -381,15 +389,49 @@ if [ -f "$authority_workflow" ]; then
     = release-authority-source ]
   [ "$(yq -r '.jobs.approval_policy.environment' "$authority_workflow")" \
     = release-authority ]
+  [ "$(yq -r '.jobs.resolution_policy.environment' "$authority_workflow")" \
+    = release-authority ]
   [ "$(yq -r '.jobs.publish.environment' "$authority_workflow")" \
     = release-authority ]
+  [ "$(yq -r '.jobs.recover_publish_resolution.environment' \
+    "$authority_workflow")" = release-authority ]
+  jq -e '
+    (.recover_sign_resolution.needs == ["predecessor", "resolution_policy"]) and
+    (.recover_publish_resolution.needs == ["predecessor", "recover_sign_resolution"]) and
+    (.resolution_policy.permissions == {"contents":"read"}) and
+    (.recover_sign_resolution.permissions == {
+      "contents":"read", "attestations":"read", "id-token":"write"
+    })
+  ' <<<"$jobs_json" >/dev/null || {
+    echo "resolution approval, signer, and publisher topology is not exact" >&2
+    exit 1
+  }
 
   signer=$(yq -r '.jobs.sign.steps[]? | select(has("run")) | .run' "$authority_workflow")
+  resolution_policy=$(yq -r \
+    '.jobs.resolution_policy.steps[]? | select(has("run")) | .run' \
+    "$authority_workflow")
+  resolution_signer=$(yq -r \
+    '.jobs.recover_sign_resolution.steps[]? | select(has("run")) | .run' \
+    "$authority_workflow")
   publisher=$(yq -r '.jobs.publish.steps[]? | select(has("run")) | .run' "$authority_workflow")
+  # shellcheck disable=SC2016 # Match the literal GitHub-run shell expression.
+  review_path_literal='authority-replacement-reviews/g${GENERATION}.json'
   [[ "$signer" != *'syntaur-ship authority-protocol-inputs'* ]]
   [[ "$signer" != *'--authority-protocol-self-test'* ]]
   [[ "$publisher" != *'syntaur-ship authority-protocol-inputs'* ]]
   [[ "$publisher" != *'--authority-protocol-self-test'* ]]
+  [[ "$signer" != *'render-replacement-resolution'* ]]
+  [[ "$resolution_policy" == *"$review_path_literal"* ]]
+  [[ "$resolution_policy" == *'validate-selection-review'* ]]
+  [[ "$resolution_policy" == *'SETTLED_PROMOTION_POLICY_SHA256'* ]]
+  [[ "$resolution_policy" == *'PLANNED_PRODUCT_VERSION'* ]]
+  [[ "$resolution_policy" == *'PLANNED_PRODUCT_BASE_COMMIT'* ]]
+  [[ "$resolution_signer" == *"$review_path_literal"* ]]
+  [[ "$resolution_signer" == *'SELECTION_REVIEW_SHA256'* ]]
+  [[ "$resolution_signer" == *'SETTLED_PROMOTION_POLICY_SHA256'* ]]
+  [[ "$resolution_signer" == *'PLANNED_PRODUCT_VERSION'* ]]
+  [[ "$resolution_signer" == *'PLANNED_PRODUCT_BASE_COMMIT'* ]]
 fi
 
 temporary=$(mktemp)

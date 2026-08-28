@@ -6,6 +6,11 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 helper="$repo_root/scripts/release-authority-manifest.sh"
 tmp_root=$(mktemp -d)
 cleanup() {
+    if [[ -n ${root_fixture:-} \
+        && $root_fixture == "$tmp_root/root-fixture" \
+        && ( -e $root_fixture || -L $root_fixture ) ]]; then
+        sudo -n rm -rf -- "$root_fixture" 2>/dev/null || true
+    fi
     chmod -R u+rwX "$tmp_root" 2>/dev/null || true
     rm -rf "$tmp_root"
 }
@@ -124,6 +129,268 @@ printf '%s\n' "$(<"$tmp_root/approval-record.json")" \
     >"$tmp_root/approval-record-newline.json"
 expect_failure "$helper" validate-approval-record "$tmp_root/approval-record-newline.json"
 
+AUTHORITY_APPROVAL_SCHEMA=2
+REJECTED_AUTHORITY_GENERATION=701
+REJECTED_AUTHORITY_MANIFEST_SHA256=$(digest_text rejected-authority-manifest)
+REJECTED_AUTHORITY_WORKFLOW_COMMIT=$(printf 'd%.0s' {1..40})
+REJECTED_AUTHORITY_VERSION=0.7.115
+REJECTED_AUTHORITY_COMMIT=$(printf 'e%.0s' {1..40})
+REJECTED_PRODUCT_RELEASE_COMMIT=$(printf 'f%.0s' {1..40})
+SETTLED_PRODUCT_VERSION=$AUTHORITY_VERSION
+SETTLED_PRODUCT_GATEWAY_COMMIT=$(printf '7%.0s' {1..40})
+SETTLED_PRODUCT_ENGINE_COMMIT=$(printf '8%.0s' {1..40})
+SETTLED_PRODUCT_STATE_SHA256=$(digest_text settled-product-state)
+SETTLED_PROMOTION_POLICY_SHA256=$(digest_text settled-promotion-policy)
+SELECTED_ENGINE_COMMIT=$(printf '9%.0s' {1..40})
+PLANNED_PRODUCT_VERSION=0.7.117
+PLANNED_PRODUCT_BASE_COMMIT=$AUTHORITY_COMMIT
+AUTHORITY_REPLACEMENT_REASON=authority_target_mismatch
+export AUTHORITY_APPROVAL_SCHEMA REJECTED_AUTHORITY_GENERATION
+export REJECTED_AUTHORITY_MANIFEST_SHA256 REJECTED_AUTHORITY_WORKFLOW_COMMIT
+export REJECTED_AUTHORITY_VERSION REJECTED_AUTHORITY_COMMIT
+export REJECTED_PRODUCT_RELEASE_COMMIT AUTHORITY_REPLACEMENT_REASON
+export SETTLED_PRODUCT_VERSION SETTLED_PRODUCT_GATEWAY_COMMIT
+export SETTLED_PRODUCT_ENGINE_COMMIT SELECTED_ENGINE_COMMIT
+export SETTLED_PRODUCT_STATE_SHA256
+export SETTLED_PROMOTION_POLICY_SHA256
+export PLANNED_PRODUCT_VERSION PLANNED_PRODUCT_BASE_COMMIT
+"$helper" render-approval-record "$tmp_root/replacement-approval-record.json"
+"$helper" validate-approval-record "$tmp_root/replacement-approval-record.json"
+jq -e '
+    .schema == 2 and
+    .rejected_generation == 701 and
+    .replacement_reason == "authority_target_mismatch"
+' "$tmp_root/replacement-approval-record.json" >/dev/null
+jq -c '.settled_product_version = "0.7.117"' \
+    "$tmp_root/replacement-approval-record.json" \
+    >"$tmp_root/replacement-approval-wrong-settled-version.json"
+expect_failure "$helper" validate-approval-record \
+    "$tmp_root/replacement-approval-wrong-settled-version.json"
+jq -c '.planned_product_version = .authority_version' \
+    "$tmp_root/replacement-approval-record.json" \
+    >"$tmp_root/replacement-approval-non-successor-version.json"
+expect_failure "$helper" validate-approval-record \
+    "$tmp_root/replacement-approval-non-successor-version.json"
+jq -c '.planned_product_base_commit = .settled_product_gateway_commit' \
+    "$tmp_root/replacement-approval-record.json" \
+    >"$tmp_root/replacement-approval-wrong-planned-base.json"
+expect_failure "$helper" validate-approval-record \
+    "$tmp_root/replacement-approval-wrong-planned-base.json"
+jq -c '.rejected_product_release_commit = .rejected_authority_commit' \
+    "$tmp_root/replacement-approval-record.json" \
+    >"$tmp_root/replacement-approval-same-target.json"
+expect_failure "$helper" validate-approval-record \
+    "$tmp_root/replacement-approval-same-target.json"
+jq -c '.replacement_reason = "operator_override"' \
+    "$tmp_root/replacement-approval-record.json" \
+    >"$tmp_root/replacement-approval-wrong-reason.json"
+expect_failure "$helper" validate-approval-record \
+    "$tmp_root/replacement-approval-wrong-reason.json"
+jq -c '. + {unexpected:true}' "$tmp_root/replacement-approval-record.json" \
+    >"$tmp_root/replacement-approval-extra.json"
+expect_failure "$helper" validate-approval-record \
+    "$tmp_root/replacement-approval-extra.json"
+unset AUTHORITY_APPROVAL_SCHEMA REJECTED_AUTHORITY_GENERATION
+unset REJECTED_AUTHORITY_MANIFEST_SHA256 REJECTED_AUTHORITY_WORKFLOW_COMMIT
+unset REJECTED_AUTHORITY_VERSION REJECTED_AUTHORITY_COMMIT
+unset REJECTED_PRODUCT_RELEASE_COMMIT AUTHORITY_REPLACEMENT_REASON
+unset SETTLED_PRODUCT_VERSION SETTLED_PRODUCT_GATEWAY_COMMIT
+unset SETTLED_PRODUCT_ENGINE_COMMIT SELECTED_ENGINE_COMMIT
+unset SETTLED_PRODUCT_STATE_SHA256
+unset SETTLED_PROMOTION_POLICY_SHA256
+unset PLANNED_PRODUCT_VERSION PLANNED_PRODUCT_BASE_COMMIT
+
+resolution_dir="$tmp_root/replacement-resolution"
+mkdir -m 0700 "$resolution_dir"
+printf '#!/usr/bin/bash\nset -euo pipefail\n' \
+    >"$resolution_dir/recover-release-authority-replacement-v1.sh"
+chmod 0500 "$resolution_dir/recover-release-authority-replacement-v1.sh"
+cp "$helper" "$resolution_dir/release-authority-manifest.sh"
+chmod 0500 "$resolution_dir/release-authority-manifest.sh"
+selected_authority_version=$AUTHORITY_VERSION
+selected_authority_commit=$AUTHORITY_COMMIT
+selected_workflow_commit=$GITHUB_SHA
+AUTHORITY_VERSION=0.7.115
+AUTHORITY_COMMIT=$(printf 'e%.0s' {1..40})
+GITHUB_SHA=$(printf 'd%.0s' {1..40})
+"$helper" render-v2 "$tmp_root/rejected-release-authority-v2.json"
+"$helper" validate \
+    "$tmp_root/rejected-release-authority-v2.json" 2 701 "$GITHUB_SHA" "$payload"
+AUTHORITY_VERSION=$selected_authority_version
+AUTHORITY_COMMIT=$selected_authority_commit
+GITHUB_SHA=$selected_workflow_commit
+REPLACEMENT_PREDECESSOR_GENERATION=700
+REPLACEMENT_PREDECESSOR_MANIFEST_SHA256=$PREVIOUS_AUTHORITY_MANIFEST_SHA256
+REJECTED_AUTHORITY_GENERATION=701
+REJECTED_AUTHORITY_MANIFEST_SHA256=$(sha256sum \
+    "$tmp_root/rejected-release-authority-v2.json" | awk '{print $1}')
+REJECTED_AUTHORITY_WORKFLOW_COMMIT=$(printf 'd%.0s' {1..40})
+REJECTED_AUTHORITY_VERSION=0.7.115
+REJECTED_AUTHORITY_COMMIT=$(printf 'e%.0s' {1..40})
+REJECTED_PRODUCT_RELEASE_COMMIT=$(printf 'f%.0s' {1..40})
+SELECTED_AUTHORITY_GENERATION=701
+SELECTED_AUTHORITY_MANIFEST_SHA256=$(sha256sum \
+    "$tmp_root/release-authority-v2.json" | awk '{print $1}')
+SELECTED_AUTHORITY_WORKFLOW_COMMIT=$GITHUB_SHA
+SELECTED_AUTHORITY_VERSION=$AUTHORITY_VERSION
+SELECTED_AUTHORITY_COMMIT=$AUTHORITY_COMMIT
+SETTLED_PRODUCT_VERSION=$AUTHORITY_VERSION
+SETTLED_PRODUCT_GATEWAY_COMMIT=$(printf '7%.0s' {1..40})
+SETTLED_PRODUCT_ENGINE_COMMIT=$(printf '8%.0s' {1..40})
+SETTLED_PRODUCT_STATE_SHA256=$(digest_text settled-product-state)
+SETTLED_PROMOTION_POLICY_SHA256=$(digest_text settled-promotion-policy)
+SELECTED_ENGINE_COMMIT=$(printf '9%.0s' {1..40})
+PLANNED_PRODUCT_VERSION=0.7.117
+PLANNED_PRODUCT_BASE_COMMIT=$SELECTED_AUTHORITY_COMMIT
+RECOVERY_TOOL_SHA256=$(sha256sum \
+    "$resolution_dir/recover-release-authority-replacement-v1.sh" | awk '{print $1}')
+MANIFEST_HELPER_SHA256=$(sha256sum \
+    "$resolution_dir/release-authority-manifest.sh" | awk '{print $1}')
+RESOLUTION_WORKFLOW_COMMIT=$(printf '1%.0s' {1..40})
+export REPLACEMENT_PREDECESSOR_GENERATION
+export REPLACEMENT_PREDECESSOR_MANIFEST_SHA256
+export REJECTED_AUTHORITY_GENERATION REJECTED_AUTHORITY_MANIFEST_SHA256
+export REJECTED_AUTHORITY_WORKFLOW_COMMIT REJECTED_AUTHORITY_VERSION
+export REJECTED_AUTHORITY_COMMIT REJECTED_PRODUCT_RELEASE_COMMIT
+export SELECTED_AUTHORITY_GENERATION SELECTED_AUTHORITY_MANIFEST_SHA256
+export SELECTED_AUTHORITY_WORKFLOW_COMMIT SELECTED_AUTHORITY_VERSION
+export SELECTED_AUTHORITY_COMMIT RECOVERY_TOOL_SHA256 MANIFEST_HELPER_SHA256
+export SETTLED_PRODUCT_VERSION SETTLED_PRODUCT_GATEWAY_COMMIT
+export SETTLED_PRODUCT_ENGINE_COMMIT SELECTED_ENGINE_COMMIT
+export SETTLED_PRODUCT_STATE_SHA256
+export SETTLED_PROMOTION_POLICY_SHA256
+export PLANNED_PRODUCT_VERSION PLANNED_PRODUCT_BASE_COMMIT
+"$helper" render-selection-review \
+    "$resolution_dir/release-authority-selection-review-v1.json"
+SELECTION_REVIEW_SHA256=$(sha256sum \
+    "$resolution_dir/release-authority-selection-review-v1.json" | awk '{print $1}')
+export SELECTION_REVIEW_SHA256 RESOLUTION_WORKFLOW_COMMIT
+"$helper" render-replacement-resolution \
+    "$resolution_dir/release-authority-replacement-v1.json"
+printf '{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}\n' \
+    >"$resolution_dir/release-authority-replacement-v1.json.cosign.bundle"
+"$helper" validate-replacement-resolution \
+    "$resolution_dir/release-authority-replacement-v1.json"
+"$helper" validate-replacement-resolution-assets "$resolution_dir"
+"$helper" assert-replacement \
+    "$tmp_root/release-authority-v1.json" \
+    "$tmp_root/rejected-release-authority-v2.json" \
+    "$tmp_root/release-authority-v2.json" \
+    "$resolution_dir/release-authority-replacement-v1.json"
+jq -c '.selected_tag = "authority-v1-g701"' \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    >"$tmp_root/replacement-resolution-wrong-tag.json"
+expect_failure "$helper" validate-replacement-resolution \
+    "$tmp_root/replacement-resolution-wrong-tag.json"
+jq -c '.selected_manifest_sha256 = .rejected_manifest_sha256' \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    >"$tmp_root/replacement-resolution-same-manifest.json"
+expect_failure "$helper" validate-replacement-resolution \
+    "$tmp_root/replacement-resolution-same-manifest.json"
+jq -c '.resolution_workflow_commit = .selected_workflow_commit' \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    >"$tmp_root/replacement-resolution-selected-resolution-same-commit.json"
+expect_failure "$helper" validate-replacement-resolution \
+    "$tmp_root/replacement-resolution-selected-resolution-same-commit.json"
+jq -c '.resolution_workflow_commit = .rejected_workflow_commit' \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    >"$tmp_root/replacement-resolution-rejected-resolution-same-commit.json"
+expect_failure "$helper" validate-replacement-resolution \
+    "$tmp_root/replacement-resolution-rejected-resolution-same-commit.json"
+jq -c '.planned_product_base_commit = .settled_product_gateway_commit' \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    >"$tmp_root/replacement-resolution-wrong-planned-base.json"
+expect_failure "$helper" validate-replacement-resolution \
+    "$tmp_root/replacement-resolution-wrong-planned-base.json"
+jq -c '.selected_workflow_commit = .rejected_workflow_commit' \
+    "$resolution_dir/release-authority-selection-review-v1.json" \
+    >"$tmp_root/replacement-selection-review-same-commit.json"
+expect_failure "$helper" validate-selection-review \
+    "$tmp_root/replacement-selection-review-same-commit.json"
+jq -c --arg digest "$(digest_text wrong-predecessor)" \
+    '.predecessor_manifest_sha256 = $digest' \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    >"$tmp_root/replacement-resolution-wrong-predecessor.json"
+expect_failure "$helper" assert-replacement \
+    "$tmp_root/release-authority-v1.json" \
+    "$tmp_root/rejected-release-authority-v2.json" \
+    "$tmp_root/release-authority-v2.json" \
+    "$tmp_root/replacement-resolution-wrong-predecessor.json"
+jq -c --arg commit "$(printf '2%.0s' {1..40})" \
+    '.rejected_workflow_commit = $commit' \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    >"$tmp_root/replacement-resolution-wrong-rejected-workflow.json"
+expect_failure "$helper" assert-replacement \
+    "$tmp_root/release-authority-v1.json" \
+    "$tmp_root/rejected-release-authority-v2.json" \
+    "$tmp_root/release-authority-v2.json" \
+    "$tmp_root/replacement-resolution-wrong-rejected-workflow.json"
+jq -c --arg commit "$(printf '3%.0s' {1..40})" \
+    '.selected_workflow_commit = $commit' \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    >"$tmp_root/replacement-resolution-wrong-selected-workflow.json"
+expect_failure "$helper" assert-replacement \
+    "$tmp_root/release-authority-v1.json" \
+    "$tmp_root/rejected-release-authority-v2.json" \
+    "$tmp_root/release-authority-v2.json" \
+    "$tmp_root/replacement-resolution-wrong-selected-workflow.json"
+jq -c --arg commit "$(printf '4%.0s' {1..40})" \
+    '.authority_commit = $commit' "$tmp_root/release-authority-v2.json" \
+    >"$tmp_root/competing-release-authority-v2.json"
+expect_failure "$helper" assert-replacement \
+    "$tmp_root/release-authority-v1.json" \
+    "$tmp_root/rejected-release-authority-v2.json" \
+    "$tmp_root/competing-release-authority-v2.json" \
+    "$resolution_dir/release-authority-replacement-v1.json"
+printf unexpected >"$resolution_dir/unexpected"
+expect_failure "$helper" validate-replacement-resolution-assets "$resolution_dir"
+rm "$resolution_dir/unexpected"
+mkdir "$resolution_dir/unexpected-directory"
+expect_failure "$helper" validate-replacement-resolution-assets "$resolution_dir"
+rmdir "$resolution_dir/unexpected-directory"
+ln -s release-authority-replacement-v1.json "$resolution_dir/unexpected-link"
+expect_failure "$helper" validate-replacement-resolution-assets "$resolution_dir"
+rm "$resolution_dir/unexpected-link"
+mv "$resolution_dir/release-authority-selection-review-v1.json" \
+    "$resolution_dir/release-authority-selection-review-v1.json.saved"
+ln -s release-authority-selection-review-v1.json.saved \
+    "$resolution_dir/release-authority-selection-review-v1.json"
+expect_failure "$helper" validate-replacement-resolution-assets "$resolution_dir"
+rm "$resolution_dir/release-authority-selection-review-v1.json"
+mv "$resolution_dir/release-authority-selection-review-v1.json.saved" \
+    "$resolution_dir/release-authority-selection-review-v1.json"
+
+: >"$tmp_root/empty-special-tags"
+"$helper" validate-special-tag-namespace \
+    authority-replacement-v1-g 0 "$tmp_root/empty-special-tags"
+printf '%s\n' authority-replacement-v1-g1 authority-replacement-v1-g60 \
+    >"$tmp_root/bounded-replacement-tags"
+"$helper" validate-special-tag-namespace \
+    authority-replacement-v1-g 60 "$tmp_root/bounded-replacement-tags"
+printf '%s\n' authority-resolution-v1-g60 \
+    >"$tmp_root/bounded-resolution-tags"
+"$helper" validate-special-tag-namespace \
+    authority-resolution-v1-g 60 "$tmp_root/bounded-resolution-tags"
+printf '%s\n' authority-replacement-v1-g61 >"$tmp_root/one-ahead-tags"
+expect_failure "$helper" validate-special-tag-namespace \
+    authority-replacement-v1-g 60 "$tmp_root/one-ahead-tags"
+printf '%s\n' authority-resolution-v1-g62 >"$tmp_root/two-ahead-tags"
+expect_failure "$helper" validate-special-tag-namespace \
+    authority-resolution-v1-g 60 "$tmp_root/two-ahead-tags"
+printf '%s\n' authority-replacement-v1-g060 >"$tmp_root/malformed-special-tags"
+expect_failure "$helper" validate-special-tag-namespace \
+    authority-replacement-v1-g 60 "$tmp_root/malformed-special-tags"
+printf '%s\n' authority-resolution-v1-g99999999999999999 \
+    >"$tmp_root/oversized-special-tags"
+expect_failure "$helper" validate-special-tag-namespace \
+    authority-resolution-v1-g 60 "$tmp_root/oversized-special-tags"
+printf '%s\n' authority-resolution-v1-g60 authority-resolution-v1-g60 \
+    >"$tmp_root/duplicate-special-tags"
+expect_failure "$helper" validate-special-tag-namespace \
+    authority-resolution-v1-g 60 "$tmp_root/duplicate-special-tags"
+expect_failure "$helper" validate-special-tag-namespace \
+    authority-v1-g 60 "$tmp_root/empty-special-tags"
+
 AUTHORITY_GENERATION=702
 PREVIOUS_AUTHORITY_GENERATION=701
 PREVIOUS_AUTHORITY_MANIFEST_SHA256=$(sha256sum \
@@ -135,6 +402,11 @@ export PREVIOUS_AUTHORITY_MANIFEST_SHA256
     "$tmp_root/release-authority-v2-next.json" 2 702 "$GITHUB_SHA" "$payload"
 "$helper" assert-successor \
     "$tmp_root/release-authority-v2.json" "$tmp_root/release-authority-v2-next.json"
+expect_failure "$helper" assert-replacement \
+    "$tmp_root/release-authority-v1.json" \
+    "$tmp_root/rejected-release-authority-v2.json" \
+    "$tmp_root/release-authority-v2-next.json" \
+    "$resolution_dir/release-authority-replacement-v1.json"
 
 AUTHORITY_GENERATION=1
 PREVIOUS_AUTHORITY_GENERATION=0
@@ -461,6 +733,7 @@ expect_failure verify_g1 \
     "$g1_parent" "$g1_parent_tree" 0.7.114
 
 workflow="$repo_root/.github/workflows/release-authority.yml"
+recovery_tool="$repo_root/scripts/recover-release-authority-replacement-v1.sh"
 [[ $(yq -r '.on.workflow_dispatch.inputs | length' "$workflow") == 1 ]]
 grep -Fq 'approval_record:' "$workflow"
 for required in \
@@ -487,7 +760,7 @@ grep -Fq 'release-authority-source' "$workflow"
 grep -Fq 'SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY' "$workflow"
 grep -Fq 'sudo chown -R 65534:65534 source' "$workflow"
 grep -Fq 'encrypted-authority-source-run-' "$workflow"
-[[ $(grep -Fc -- '--repo "$GITHUB_REPOSITORY"' "$workflow") -eq 10 ]]
+[[ $(grep -Fc -- '--repo "$GITHUB_REPOSITORY"' "$workflow") -eq 22 ]]
 grep -Fq 'mkdir -m 0700 "$age_root/bin"' "$workflow"
 grep -Fq '"$age_root/bin/"' "$workflow"
 grep -Fq '"$age_root/bin/age-keygen" -y -' "$workflow"
@@ -495,6 +768,36 @@ grep -Fq '"$age_root/bin/age"' "$workflow"
 grep -Fq 'mv encrypted-source-artifacts encrypted-source' "$workflow"
 grep -Fq 'mv reviewed-candidate-artifacts candidate' "$workflow"
 grep -Fq 'mv signed-authority-artifacts signed-authority' "$workflow"
+if grep -Fq 'Sign exact replacement resolution' "$workflow"; then
+    fail 'initial authority signer still signs a replacement resolution'
+fi
+grep -Fq 'authority-replacement-v1-g${generation}' "$workflow"
+grep -Fq 'authority-resolution-v1-g${GENERATION}' "$workflow"
+grep -Fq 'validate-replacement-resolution-assets' "$workflow"
+grep -Fq 'rejected_product_release_commit' "$workflow"
+grep -Fq 'resolution_policy:' "$workflow"
+grep -Fq 'recover_sign_resolution:' "$workflow"
+grep -Fq 'recover_publish_resolution:' "$workflow"
+grep -Fq 'resolution_workflow_commit' "$workflow"
+grep -Fq 'release-authority-selection-review-v1.json' "$workflow"
+grep -Fq 'SELECTION_REVIEW_SHA256' "$workflow"
+grep -Fq 'SETTLED_PROMOTION_POLICY_SHA256' "$workflow"
+grep -Fq 'target_already_published' "$workflow"
+grep -Fq 'special_namespace_max=$previous' "$workflow"
+grep -Fq 'validate-special-tag-namespace' "$workflow"
+grep -Fq 'assert-replacement' "$recovery_tool"
+grep -Fq 'SEALED_RUNTIME_ROOT=/etc/syntaur/release-authority-replacement-v1.runtime' \
+    "$recovery_tool"
+grep -Fq 'seal_install_inputs' "$recovery_tool"
+grep -Fq -- '--expected-recovery-tool-sha256' "$recovery_tool"
+grep -Fq 'discard_incomplete_resolution_stage' "$recovery_tool"
+if grep -Fq 'authority-promote' "$recovery_tool"; then
+    fail 'exceptional recovery still invokes the ordinary promotion gate'
+fi
+grep -Fq 'install_selected_authority_exceptionally' "$recovery_tool"
+grep -Fq 'rollback_selected_authority_exceptionally' "$recovery_tool"
+grep -Fq 'settled_product_state_sha256' "$recovery_tool"
+grep -Fq 'manifest_published' "$recovery_tool"
 grep -Fq 'assert-genesis' "$workflow"
 grep -Fq 'fetch-depth: 2' "$workflow"
 grep -Fq 'verify-g1-authority-source.sh' "$workflow"
@@ -515,6 +818,222 @@ fi
 if grep -Fq 'python' "$workflow"; then
     fail 'authority workflow must not depend on Python'
 fi
+
+sudo -n true || fail 'root recovery fixture requires noninteractive sudo'
+root_fixture=$tmp_root/root-fixture
+root_helpers=$tmp_root/recovery-root-functions.sh
+mkdir -p "$root_fixture/material"
+awk '
+    /^\[\[ \$# -ge 1 \]\] \|\| usage$/ { exit }
+    { print }
+' "$recovery_tool" \
+    | sed \
+        -e "s|^readonly AUTHORITY_ROOT=.*|readonly AUTHORITY_ROOT=$root_fixture/etc/syntaur/release-authority|" \
+        -e "s|^readonly INSTALLED_SHIPPER=.*|readonly INSTALLED_SHIPPER=$root_fixture/usr/local/bin/syntaur-ship|" \
+        -e "s|^readonly INSTALLED_PROVISIONER=.*|readonly INSTALLED_PROVISIONER=$root_fixture/opt/syntaur-build-authority-provision|" \
+    >"$root_helpers"
+chmod 0500 "$root_helpers"
+digest_vector=$(/usr/bin/env RECOVERY_HELPERS="$root_helpers" /usr/bin/bash -c '
+    source "$RECOVERY_HELPERS"
+    product_state_digest_values \
+        0.7.163 \
+        bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+        cccccccccccccccccccccccccccccccccccccccc \
+        g-b-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee \
+        ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff \
+        1111111111111111111111111111111111111111111111111111111111111111 \
+        2222222222222222222222222222222222222222222222222222222222222222
+')
+[[ $digest_vector == \
+    c0787475847440227a948f3bf7d305c830a8fef6471a1cf1d3b354f29fb09997 ]] \
+    || fail 'root recovery product-state digest differs from the Rust vector'
+current_product_digest=$(/usr/bin/env RECOVERY_HELPERS="$root_helpers" /usr/bin/bash -c '
+    source "$RECOVERY_HELPERS"
+    product_state_digest_values \
+        0.7.163 \
+        cd7a62f518eab678e1cf14a454a6ddc20fe2117d \
+        e10a0b11534254e9e38420ae06e368a9a7000f2a \
+        g-b-6d2d55b6abeaa79fd313ce6cc986848b0878e5b96cccce4fa81b4869c3066acf-27a86ccdcc82070b7defc2713bda3c6e17579f6067795c9a9e95548c497b1a10 \
+        57c78a9011fbad1896bcb445f96b27726259e6c505f85da9aff7c171e21503ab \
+        ff9cb7fbaf31fe9dfe91b1eb76803654f2041b01a3a5cbc2b05a0f0631e6cb51 \
+        ba812d6de7e80f875fa7e5ee0032d35e2370ee9a2592d9d34307ef767ad6874a
+')
+[[ $current_product_digest == \
+    83e8b033104254fceb46a9c70c14d7cc258d9e035986eff99215d7259023df17 ]] \
+    || fail 'root recovery current product-state digest differs from the reviewed vector'
+for name in \
+    release-authority-v2.json \
+    release-authority-v2.json.cosign.bundle \
+    syntaur-build-authority-provision \
+    syntaur-ship-linux-x86_64 \
+    syntaur-verify-linux-x86_64; do
+    printf 'selected-%s\n' "$name" >"$root_fixture/material/$name"
+done
+chmod 0444 \
+    "$root_fixture/material/release-authority-v2.json" \
+    "$root_fixture/material/release-authority-v2.json.cosign.bundle"
+chmod 0555 \
+    "$root_fixture/material/syntaur-build-authority-provision" \
+    "$root_fixture/material/syntaur-ship-linux-x86_64" \
+    "$root_fixture/material/syntaur-verify-linux-x86_64"
+sudo -n install -d -o 0 -g 0 -m 0755 \
+    "$root_fixture/etc/syntaur/release-authority/release-authority"
+sudo -n chown -R 0:0 "$root_fixture/material"
+partial_stage=$root_fixture/etc/syntaur/release-authority/release-authority/.generation-60-authority-replacement-v1.staged
+sudo -n install -d -o 0 -g 0 -m 0700 "$partial_stage"
+sudo -n install -o 0 -g 0 -m 0600 \
+    "$root_fixture/material/release-authority-v2.json" \
+    "$partial_stage/release-authority-v2.json"
+sudo -n chmod 0555 "$partial_stage"
+sudo -n env RECOVERY_HELPERS="$root_helpers" ROOT_FIXTURE="$root_fixture" \
+    /usr/bin/bash -c '
+        source "$RECOVERY_HELPERS"
+        stage_generation "$ROOT_FIXTURE/material" \
+            1111111111111111111111111111111111111111 60
+    '
+[[ $(find "$root_fixture/etc/syntaur/release-authority/release-authority/generation-60" \
+    -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort) == \
+    $(printf '%s\n' \
+        release-authority-v2.json \
+        release-authority-v2.json.cosign.bundle \
+        syntaur-build-authority-provision \
+        syntaur-ship-linux-x86_64 \
+        syntaur-verify-linux-x86_64 \
+        trusted-workflow-commit | LC_ALL=C sort) ]] \
+    || fail 'partial generation stage did not recover to the exact inventory'
+
+unsafe_stage=$root_fixture/etc/syntaur/release-authority/release-authority/.generation-61-authority-replacement-v1.staged
+sudo -n install -d -o 0 -g 0 -m 0700 "$unsafe_stage"
+sudo -n ln -s release-authority-v2.json \
+    "$unsafe_stage/release-authority-v2.json"
+expect_failure sudo -n env \
+    RECOVERY_HELPERS="$root_helpers" ROOT_FIXTURE="$root_fixture" \
+    /usr/bin/bash -c '
+        source "$RECOVERY_HELPERS"
+        stage_generation "$ROOT_FIXTURE/material" \
+            2222222222222222222222222222222222222222 61
+    '
+sudo -n rm -f -- "$unsafe_stage/release-authority-v2.json"
+sudo -n rmdir -- "$unsafe_stage"
+
+active_target=$root_fixture/etc/syntaur/release-authority/active-manifest.json
+active_temporary=$active_target.authority-replacement-v1.tmp
+printf 'predecessor\n' >"$tmp_root/predecessor-active"
+sudo -n install -o 0 -g 0 -m 0444 "$tmp_root/predecessor-active" "$active_target"
+sudo -n install -o 0 -g 0 -m 0600 "$tmp_root/predecessor-active" "$active_temporary"
+selected_sha=$(sha256sum "$root_fixture/material/release-authority-v2.json" | awk '{print $1}')
+predecessor_sha=$(sha256sum "$tmp_root/predecessor-active" | awk '{print $1}')
+sudo -n env \
+    RECOVERY_HELPERS="$root_helpers" ROOT_FIXTURE="$root_fixture" \
+    SELECTED_SHA="$selected_sha" PREDECESSOR_SHA="$predecessor_sha" \
+    /usr/bin/bash -c '
+        source "$RECOVERY_HELPERS"
+        publish_active_file \
+            "$ROOT_FIXTURE/material/release-authority-v2.json" \
+            "$ROOT_FIXTURE/etc/syntaur/release-authority/active-manifest.json" \
+            "$SELECTED_SHA" "$PREDECESSOR_SHA" 444 "active manifest fixture"
+    '
+cmp "$root_fixture/material/release-authority-v2.json" "$active_target"
+sudo -n install -o 0 -g 0 -m 0444 "$tmp_root/predecessor-active" "$active_target"
+sudo -n ln -s "$root_fixture/material/release-authority-v2.json" "$active_temporary"
+expect_failure sudo -n env \
+    RECOVERY_HELPERS="$root_helpers" ROOT_FIXTURE="$root_fixture" \
+    SELECTED_SHA="$selected_sha" PREDECESSOR_SHA="$predecessor_sha" \
+    /usr/bin/bash -c '
+        source "$RECOVERY_HELPERS"
+        publish_active_file \
+            "$ROOT_FIXTURE/material/release-authority-v2.json" \
+            "$ROOT_FIXTURE/etc/syntaur/release-authority/active-manifest.json" \
+            "$SELECTED_SHA" "$PREDECESSOR_SHA" 444 "active manifest fixture"
+    '
+sudo -n rm -f -- "$active_temporary"
+
+mock_proof=$tmp_root/mock-product-state-proof.json
+mock_shipper_source=$tmp_root/mock-syntaur-ship
+mock_resolution=$root_fixture/resolution/release-authority-replacement-v1.json
+selected_manifest_fixture=$(printf 'a%.0s' {1..64})
+selected_commit_fixture=$(printf 'b%.0s' {1..40})
+policy_fixture=5ee3b70e5d71abcb5a2fba970b9a9eb46c607eb43ce2f26ff759fa5daaf8522c
+jq -cn \
+    --arg installed_authority_manifest_sha256 "$selected_manifest_fixture" \
+    --arg installed_authority_commit "$selected_commit_fixture" \
+    --arg promotion_policy_sha256 "$policy_fixture" \
+    '{schema:1,state:"exact_terminal_production",
+      installed_authority_generation:60,
+      installed_authority_manifest_sha256:$installed_authority_manifest_sha256,
+      installed_authority_commit:$installed_authority_commit,
+      product_version:"0.7.163",
+      product_source_commit:"cd7a62f518eab678e1cf14a454a6ddc20fe2117d",
+      product_engine_commit:"e10a0b11534254e9e38420ae06e368a9a7000f2a",
+      deploy_stamp_generation:"g-b-6d2d55b6abeaa79fd313ce6cc986848b0878e5b96cccce4fa81b4869c3066acf-27a86ccdcc82070b7defc2713bda3c6e17579f6067795c9a9e95548c497b1a10",
+      gateway_sha256:"57c78a9011fbad1896bcb445f96b27726259e6c505f85da9aff7c171e21503ab",
+      browser_sha256:"ff9cb7fbaf31fe9dfe91b1eb76803654f2041b01a3a5cbc2b05a0f0631e6cb51",
+      production_generation_id:"ba812d6de7e80f875fa7e5ee0032d35e2370ee9a2592d9d34307ef767ad6874a",
+      product_state_sha256:"83e8b033104254fceb46a9c70c14d7cc258d9e035986eff99215d7259023df17",
+      promotion_policy_sha256:$promotion_policy_sha256}' >"$mock_proof"
+{
+    printf '%s\n' '#!/usr/bin/bash' 'set -euo pipefail'
+    printf '%s\n' '[[ $# -eq 11 ]]'
+    printf '%s\n' '[[ $1 == authority-replacement-product-state ]]'
+    printf '%s\n' '[[ $2 == --expected-installed-generation && $3 == 60 ]]'
+    printf '%s\n' \
+        '[[ $4 == --expected-installed-manifest-sha256 && $5 == aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ]]'
+    printf '%s\n' '[[ $6 == --expected-product-version && $7 == 0.7.163 ]]'
+    printf '%s\n' \
+        '[[ $8 == --expected-product-source-commit && $9 == cd7a62f518eab678e1cf14a454a6ddc20fe2117d ]]'
+    printf '%s\n' \
+        '[[ ${10} == --expected-product-engine-commit && ${11} == e10a0b11534254e9e38420ae06e368a9a7000f2a ]]'
+    printf '/usr/bin/cat %q\n' "$mock_proof"
+} >"$mock_shipper_source"
+chmod 0555 "$mock_shipper_source"
+mkdir -p "$root_fixture/resolution"
+jq -cjn \
+    --arg selected_authority_commit "$selected_commit_fixture" \
+    --arg settled_promotion_policy_sha256 "$policy_fixture" \
+    '{selected_generation:60,
+      selected_authority_commit:$selected_authority_commit,
+      settled_product_version:"0.7.163",
+      settled_product_gateway_commit:"cd7a62f518eab678e1cf14a454a6ddc20fe2117d",
+      settled_product_engine_commit:"e10a0b11534254e9e38420ae06e368a9a7000f2a",
+      settled_promotion_policy_sha256:$settled_promotion_policy_sha256}' \
+    >"$mock_resolution"
+sudo -n install -d -o 0 -g 0 -m 0755 "$root_fixture/usr/local/bin"
+sudo -n install -o 0 -g 0 -m 1755 "$mock_shipper_source" \
+    "$root_fixture/usr/local/bin/syntaur-ship"
+fixture_operator_home=$(getent passwd "$(id -u)" | awk -F: '{print $6}')
+sudo -n env \
+    RECOVERY_HELPERS="$root_helpers" ROOT_FIXTURE="$root_fixture" \
+    RESOLUTION_FIXTURE="$root_fixture/resolution" \
+    EXPECTED_SELECTED="$selected_manifest_fixture" \
+    OPERATOR_HOME="$fixture_operator_home" \
+    /usr/bin/bash -c '
+        source "$RECOVERY_HELPERS"
+        resolution_dir=$RESOLUTION_FIXTURE
+        expected_selected_sha256=$EXPECTED_SELECTED
+        operator_home=$OPERATOR_HOME
+        run_operator_product_state_proof \
+            83e8b033104254fceb46a9c70c14d7cc258d9e035986eff99215d7259023df17
+    '
+[[ ! -e $root_fixture/etc/syntaur/release-authority/.authority-replacement-product-state-v1.tmp ]] \
+    || fail 'validated product-state proof temporary was not retired'
+jq -c '.settled_promotion_policy_sha256 = ("0" * 64)' "$mock_resolution" \
+    >"$tmp_root/wrong-policy-resolution.json"
+cp "$tmp_root/wrong-policy-resolution.json" "$mock_resolution"
+expect_failure sudo -n env \
+    RECOVERY_HELPERS="$root_helpers" ROOT_FIXTURE="$root_fixture" \
+    RESOLUTION_FIXTURE="$root_fixture/resolution" \
+    EXPECTED_SELECTED="$selected_manifest_fixture" \
+    OPERATOR_HOME="$fixture_operator_home" \
+    /usr/bin/bash -c '
+        source "$RECOVERY_HELPERS"
+        resolution_dir=$RESOLUTION_FIXTURE
+        expected_selected_sha256=$EXPECTED_SELECTED
+        operator_home=$OPERATOR_HOME
+        run_operator_product_state_proof \
+            83e8b033104254fceb46a9c70c14d7cc258d9e035986eff99215d7259023df17
+    '
+sudo -n rm -rf -- "$root_fixture"
+root_fixture=
 
 export RUNNER_TEMP=$tmp_root
 for step_name in \

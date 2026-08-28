@@ -19,8 +19,92 @@ manifest_value() {
 
 approval_record_from_file() {
     local record=$1
+    local schema
+    schema=$(manifest_value "$record" schema)
+    if [[ $schema == 2 ]]; then
+        jq -cjn \
+            --argjson schema "$schema" \
+            --argjson previous_generation "$(manifest_value "$record" previous_generation)" \
+            --arg previous_manifest_sha256 "$(manifest_value "$record" previous_manifest_sha256)" \
+            --arg authority_version "$(manifest_value "$record" authority_version)" \
+            --arg authority_commit "$(manifest_value "$record" authority_commit)" \
+            --arg verification_policy_revision "$(manifest_value "$record" verification_policy_revision)" \
+            --arg authority_tree_sha256 "$(manifest_value "$record" authority_tree_sha256)" \
+            --arg shipper_sha256 "$(manifest_value "$record" shipper_sha256)" \
+            --arg verifier_sha256 "$(manifest_value "$record" verifier_sha256)" \
+            --arg baseline_profile "$(manifest_value "$record" baseline_profile)" \
+            --arg baseline_generation "$(manifest_value "$record" baseline_generation)" \
+            --arg baseline_tree_sha256 "$(manifest_value "$record" baseline_tree_sha256)" \
+            --arg browser_bundle_sha256 "$(manifest_value "$record" browser_bundle_sha256)" \
+            --arg browser_version "$(manifest_value "$record" browser_version)" \
+            --arg browser_launch_profile_sha256 "$(manifest_value "$record" browser_launch_profile_sha256)" \
+            --argjson verifier_schema "$(manifest_value "$record" verifier_schema)" \
+            --arg provisioner_sha256 "$(manifest_value "$record" provisioner_sha256)" \
+            --arg production_contract_sha256 "$(manifest_value "$record" production_contract_sha256)" \
+            --argjson production_member_count "$(manifest_value "$record" production_member_count)" \
+            --argjson receipt_schema "$(manifest_value "$record" receipt_schema)" \
+            --argjson build_authority_schema "$(manifest_value "$record" build_authority_schema)" \
+            --argjson promotion_recovery_schema "$(manifest_value "$record" promotion_recovery_schema)" \
+            --arg promotion_recovery_sha256 "$(manifest_value "$record" promotion_recovery_sha256)" \
+            --argjson rejected_generation "$(manifest_value "$record" rejected_generation)" \
+            --arg rejected_manifest_sha256 "$(manifest_value "$record" rejected_manifest_sha256)" \
+            --arg rejected_workflow_commit "$(manifest_value "$record" rejected_workflow_commit)" \
+            --arg rejected_authority_version "$(manifest_value "$record" rejected_authority_version)" \
+            --arg rejected_authority_commit "$(manifest_value "$record" rejected_authority_commit)" \
+            --arg rejected_product_release_commit "$(manifest_value "$record" rejected_product_release_commit)" \
+            --arg settled_product_version "$(manifest_value "$record" settled_product_version)" \
+            --arg settled_product_gateway_commit "$(manifest_value "$record" settled_product_gateway_commit)" \
+            --arg settled_product_engine_commit "$(manifest_value "$record" settled_product_engine_commit)" \
+            --arg settled_product_state_sha256 "$(manifest_value "$record" settled_product_state_sha256)" \
+            --arg settled_promotion_policy_sha256 "$(manifest_value "$record" settled_promotion_policy_sha256)" \
+            --arg selected_engine_commit "$(manifest_value "$record" selected_engine_commit)" \
+            --arg planned_product_version "$(manifest_value "$record" planned_product_version)" \
+            --arg planned_product_base_commit "$(manifest_value "$record" planned_product_base_commit)" \
+            --arg replacement_reason "$(manifest_value "$record" replacement_reason)" \
+            '{
+              schema:$schema,
+              previous_generation:$previous_generation,
+              previous_manifest_sha256:$previous_manifest_sha256,
+              authority_version:$authority_version,
+              authority_commit:$authority_commit,
+              verification_policy_revision:$verification_policy_revision,
+              authority_tree_sha256:$authority_tree_sha256,
+              shipper_sha256:$shipper_sha256,
+              verifier_sha256:$verifier_sha256,
+              baseline_profile:$baseline_profile,
+              baseline_generation:$baseline_generation,
+              baseline_tree_sha256:$baseline_tree_sha256,
+              browser_bundle_sha256:$browser_bundle_sha256,
+              browser_version:$browser_version,
+              browser_launch_profile_sha256:$browser_launch_profile_sha256,
+              verifier_schema:$verifier_schema,
+              provisioner_sha256:$provisioner_sha256,
+              production_contract_sha256:$production_contract_sha256,
+              production_member_count:$production_member_count,
+              receipt_schema:$receipt_schema,
+              build_authority_schema:$build_authority_schema,
+              promotion_recovery_schema:$promotion_recovery_schema,
+              promotion_recovery_sha256:$promotion_recovery_sha256,
+              rejected_generation:$rejected_generation,
+              rejected_manifest_sha256:$rejected_manifest_sha256,
+              rejected_workflow_commit:$rejected_workflow_commit,
+              rejected_authority_version:$rejected_authority_version,
+              rejected_authority_commit:$rejected_authority_commit,
+              rejected_product_release_commit:$rejected_product_release_commit,
+              settled_product_version:$settled_product_version,
+              settled_product_gateway_commit:$settled_product_gateway_commit,
+              settled_product_engine_commit:$settled_product_engine_commit,
+              settled_product_state_sha256:$settled_product_state_sha256,
+              settled_promotion_policy_sha256:$settled_promotion_policy_sha256,
+              selected_engine_commit:$selected_engine_commit,
+              planned_product_version:$planned_product_version,
+              planned_product_base_commit:$planned_product_base_commit,
+              replacement_reason:$replacement_reason
+            }'
+        return
+    fi
     jq -cjn \
-        --argjson schema "$(manifest_value "$record" schema)" \
+        --argjson schema "$schema" \
         --argjson previous_generation "$(manifest_value "$record" previous_generation)" \
         --arg previous_manifest_sha256 "$(manifest_value "$record" previous_manifest_sha256)" \
         --arg authority_version "$(manifest_value "$record" authority_version)" \
@@ -79,7 +163,7 @@ validate_approval_record() {
         def text: type == "string" and length > 0 and length <= 256
                   and (test("[\u0000-\u001f\u007f]") | not);
         def uint: type == "number" and . >= 0 and . <= 9007199254740991 and floor == .;
-        (.schema == 1) and
+        ((.schema == 1) or (.schema == 2)) and
         (.previous_generation | uint and . < 9007199254740991) and
         (.previous_manifest_sha256 | digest) and
         (((.previous_generation == 0) and
@@ -107,7 +191,68 @@ validate_approval_record() {
         (.receipt_schema == 6) and
         (.build_authority_schema == 4) and
         (.promotion_recovery_schema == 1) and
-        (.promotion_recovery_sha256 | digest)
+        (.promotion_recovery_sha256 | digest) and
+        (if .schema == 1 then
+           (keys | sort) == ([
+             "authority_commit", "authority_tree_sha256", "authority_version",
+             "baseline_generation", "baseline_profile", "baseline_tree_sha256",
+             "browser_bundle_sha256", "browser_launch_profile_sha256", "browser_version",
+             "build_authority_schema", "previous_generation",
+             "previous_manifest_sha256", "production_contract_sha256",
+             "production_member_count", "promotion_recovery_schema",
+             "promotion_recovery_sha256", "provisioner_sha256", "receipt_schema",
+             "schema", "shipper_sha256", "verification_policy_revision",
+             "verifier_schema", "verifier_sha256"
+           ] | sort)
+         else
+           (.rejected_generation | uint and . > 0) and
+           (.rejected_generation == (.previous_generation + 1)) and
+           (.rejected_manifest_sha256 | digest) and
+           (.rejected_manifest_sha256 != .previous_manifest_sha256) and
+           (.rejected_workflow_commit | commit) and
+           (.rejected_authority_version | type == "string" and
+             test("^(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})$")) and
+           (.rejected_authority_commit | commit) and
+           (.rejected_product_release_commit | commit) and
+           (.rejected_authority_commit != .rejected_product_release_commit) and
+           (.settled_product_version | type == "string" and
+             test("^(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})$")) and
+           (.settled_product_gateway_commit | commit) and
+           (.settled_product_engine_commit | commit) and
+           (.settled_product_state_sha256 | digest) and
+           (.settled_promotion_policy_sha256 | digest) and
+           (.selected_engine_commit | commit) and
+           (.planned_product_version | type == "string" and
+             test("^(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})$")) and
+           (.planned_product_base_commit | commit) and
+           (.settled_product_version == .authority_version) and
+           (.settled_product_gateway_commit != .authority_commit) and
+           (.planned_product_base_commit == .authority_commit) and
+           ((.authority_version | split(".") | map(tonumber)) as $selected |
+            (.planned_product_version | split(".") | map(tonumber)) as $planned |
+            ($planned[0] == $selected[0]) and
+            ($planned[1] == $selected[1]) and
+            ($planned[2] == ($selected[2] + 1))) and
+           (.replacement_reason == "authority_target_mismatch") and
+           (keys | sort) == ([
+             "authority_commit", "authority_tree_sha256", "authority_version",
+             "baseline_generation", "baseline_profile", "baseline_tree_sha256",
+             "browser_bundle_sha256", "browser_launch_profile_sha256", "browser_version",
+             "build_authority_schema", "previous_generation",
+             "previous_manifest_sha256", "production_contract_sha256",
+             "production_member_count", "promotion_recovery_schema",
+             "promotion_recovery_sha256", "provisioner_sha256", "receipt_schema",
+             "rejected_authority_commit", "rejected_authority_version",
+             "rejected_generation", "rejected_manifest_sha256",
+             "rejected_product_release_commit", "rejected_workflow_commit",
+             "planned_product_base_commit", "planned_product_version",
+             "replacement_reason", "schema", "selected_engine_commit",
+             "settled_product_engine_commit", "settled_product_gateway_commit",
+             "settled_product_state_sha256", "settled_product_version",
+             "settled_promotion_policy_sha256", "shipper_sha256",
+             "verification_policy_revision", "verifier_schema", "verifier_sha256"
+           ] | sort)
+         end)
     ' "$record" >/dev/null || die 'approval record shape or values are invalid'
     local canonical
     canonical=$(approval_record_from_file "$record")
@@ -139,8 +284,28 @@ render_approval_record() {
     : "${BUILD_AUTHORITY_SCHEMA:?}"
     : "${PROMOTION_RECOVERY_SCHEMA:?}"
     : "${PROMOTION_RECOVERY_SHA256:?}"
+    local approval_schema=${AUTHORITY_APPROVAL_SCHEMA:-1}
+    [[ $approval_schema == 1 || $approval_schema == 2 ]] \
+        || die 'authority approval schema must be 1 or 2'
+    if [[ $approval_schema == 2 ]]; then
+        : "${REJECTED_AUTHORITY_GENERATION:?}"
+        : "${REJECTED_AUTHORITY_MANIFEST_SHA256:?}"
+        : "${REJECTED_AUTHORITY_WORKFLOW_COMMIT:?}"
+        : "${REJECTED_AUTHORITY_VERSION:?}"
+        : "${REJECTED_AUTHORITY_COMMIT:?}"
+        : "${REJECTED_PRODUCT_RELEASE_COMMIT:?}"
+        : "${SETTLED_PRODUCT_VERSION:?}"
+        : "${SETTLED_PRODUCT_GATEWAY_COMMIT:?}"
+        : "${SETTLED_PRODUCT_ENGINE_COMMIT:?}"
+        : "${SETTLED_PRODUCT_STATE_SHA256:?}"
+        : "${SETTLED_PROMOTION_POLICY_SHA256:?}"
+        : "${SELECTED_ENGINE_COMMIT:?}"
+        : "${PLANNED_PRODUCT_VERSION:?}"
+        : "${PLANNED_PRODUCT_BASE_COMMIT:?}"
+        : "${AUTHORITY_REPLACEMENT_REASON:?}"
+    fi
     jq -cjn \
-        --argjson schema 1 \
+        --argjson schema "$approval_schema" \
         --argjson previous_generation "$PREVIOUS_AUTHORITY_GENERATION" \
         --arg previous_manifest_sha256 "$PREVIOUS_AUTHORITY_MANIFEST_SHA256" \
         --arg authority_version "$AUTHORITY_VERSION" \
@@ -163,6 +328,21 @@ render_approval_record() {
         --argjson build_authority_schema "$BUILD_AUTHORITY_SCHEMA" \
         --argjson promotion_recovery_schema "$PROMOTION_RECOVERY_SCHEMA" \
         --arg promotion_recovery_sha256 "$PROMOTION_RECOVERY_SHA256" \
+        --argjson rejected_generation "${REJECTED_AUTHORITY_GENERATION:-0}" \
+        --arg rejected_manifest_sha256 "${REJECTED_AUTHORITY_MANIFEST_SHA256:-}" \
+        --arg rejected_workflow_commit "${REJECTED_AUTHORITY_WORKFLOW_COMMIT:-}" \
+        --arg rejected_authority_version "${REJECTED_AUTHORITY_VERSION:-}" \
+        --arg rejected_authority_commit "${REJECTED_AUTHORITY_COMMIT:-}" \
+        --arg rejected_product_release_commit "${REJECTED_PRODUCT_RELEASE_COMMIT:-}" \
+        --arg settled_product_version "${SETTLED_PRODUCT_VERSION:-}" \
+        --arg settled_product_gateway_commit "${SETTLED_PRODUCT_GATEWAY_COMMIT:-}" \
+        --arg settled_product_engine_commit "${SETTLED_PRODUCT_ENGINE_COMMIT:-}" \
+        --arg settled_product_state_sha256 "${SETTLED_PRODUCT_STATE_SHA256:-}" \
+        --arg settled_promotion_policy_sha256 "${SETTLED_PROMOTION_POLICY_SHA256:-}" \
+        --arg selected_engine_commit "${SELECTED_ENGINE_COMMIT:-}" \
+        --arg planned_product_version "${PLANNED_PRODUCT_VERSION:-}" \
+        --arg planned_product_base_commit "${PLANNED_PRODUCT_BASE_COMMIT:-}" \
+        --arg replacement_reason "${AUTHORITY_REPLACEMENT_REASON:-}" \
         '{
           schema:$schema,
           previous_generation:$previous_generation,
@@ -187,8 +367,582 @@ render_approval_record() {
           build_authority_schema:$build_authority_schema,
           promotion_recovery_schema:$promotion_recovery_schema,
           promotion_recovery_sha256:$promotion_recovery_sha256
-        }' >"$output"
+        } + (if $schema == 2 then {
+          rejected_generation:$rejected_generation,
+          rejected_manifest_sha256:$rejected_manifest_sha256,
+          rejected_workflow_commit:$rejected_workflow_commit,
+          rejected_authority_version:$rejected_authority_version,
+          rejected_authority_commit:$rejected_authority_commit,
+          rejected_product_release_commit:$rejected_product_release_commit,
+          settled_product_version:$settled_product_version,
+          settled_product_gateway_commit:$settled_product_gateway_commit,
+          settled_product_engine_commit:$settled_product_engine_commit,
+          settled_product_state_sha256:$settled_product_state_sha256,
+          settled_promotion_policy_sha256:$settled_promotion_policy_sha256,
+          selected_engine_commit:$selected_engine_commit,
+          planned_product_version:$planned_product_version,
+          planned_product_base_commit:$planned_product_base_commit,
+          replacement_reason:$replacement_reason
+        } else {} end)' >"$output"
     validate_approval_record "$output"
+}
+
+selection_review_from_file() {
+    local record=$1
+    jq -cjn \
+        --argjson schema "$(manifest_value "$record" schema)" \
+        --arg reason "$(manifest_value "$record" reason)" \
+        --argjson predecessor_generation "$(manifest_value "$record" predecessor_generation)" \
+        --arg predecessor_manifest_sha256 "$(manifest_value "$record" predecessor_manifest_sha256)" \
+        --argjson rejected_generation "$(manifest_value "$record" rejected_generation)" \
+        --arg rejected_tag "$(manifest_value "$record" rejected_tag)" \
+        --arg rejected_manifest_sha256 "$(manifest_value "$record" rejected_manifest_sha256)" \
+        --arg rejected_workflow_commit "$(manifest_value "$record" rejected_workflow_commit)" \
+        --arg rejected_authority_version "$(manifest_value "$record" rejected_authority_version)" \
+        --arg rejected_authority_commit "$(manifest_value "$record" rejected_authority_commit)" \
+        --arg rejected_product_release_commit "$(manifest_value "$record" rejected_product_release_commit)" \
+        --argjson selected_generation "$(manifest_value "$record" selected_generation)" \
+        --arg selected_tag "$(manifest_value "$record" selected_tag)" \
+        --arg selected_manifest_sha256 "$(manifest_value "$record" selected_manifest_sha256)" \
+        --arg selected_workflow_commit "$(manifest_value "$record" selected_workflow_commit)" \
+        --arg selected_authority_version "$(manifest_value "$record" selected_authority_version)" \
+        --arg selected_authority_commit "$(manifest_value "$record" selected_authority_commit)" \
+        --arg settled_product_version "$(manifest_value "$record" settled_product_version)" \
+        --arg settled_product_gateway_commit "$(manifest_value "$record" settled_product_gateway_commit)" \
+        --arg settled_product_engine_commit "$(manifest_value "$record" settled_product_engine_commit)" \
+        --arg settled_product_state_sha256 "$(manifest_value "$record" settled_product_state_sha256)" \
+        --arg settled_promotion_policy_sha256 "$(manifest_value "$record" settled_promotion_policy_sha256)" \
+        --arg selected_engine_commit "$(manifest_value "$record" selected_engine_commit)" \
+        --arg planned_product_version "$(manifest_value "$record" planned_product_version)" \
+        --arg planned_product_base_commit "$(manifest_value "$record" planned_product_base_commit)" \
+        '{
+          schema:$schema,
+          reason:$reason,
+          predecessor_generation:$predecessor_generation,
+          predecessor_manifest_sha256:$predecessor_manifest_sha256,
+          rejected_generation:$rejected_generation,
+          rejected_tag:$rejected_tag,
+          rejected_manifest_sha256:$rejected_manifest_sha256,
+          rejected_workflow_commit:$rejected_workflow_commit,
+          rejected_authority_version:$rejected_authority_version,
+          rejected_authority_commit:$rejected_authority_commit,
+          rejected_product_release_commit:$rejected_product_release_commit,
+          selected_generation:$selected_generation,
+          selected_tag:$selected_tag,
+          selected_manifest_sha256:$selected_manifest_sha256,
+          selected_workflow_commit:$selected_workflow_commit,
+          selected_authority_version:$selected_authority_version,
+          selected_authority_commit:$selected_authority_commit,
+          settled_product_version:$settled_product_version,
+          settled_product_gateway_commit:$settled_product_gateway_commit,
+          settled_product_engine_commit:$settled_product_engine_commit,
+          settled_product_state_sha256:$settled_product_state_sha256,
+          settled_promotion_policy_sha256:$settled_promotion_policy_sha256,
+          selected_engine_commit:$selected_engine_commit,
+          planned_product_version:$planned_product_version,
+          planned_product_base_commit:$planned_product_base_commit
+        }'
+}
+
+validate_selection_review() {
+    local record=$1
+    [[ -s $record && -f $record && ! -L $record ]] \
+        || die 'authority replacement selection review is unsafe'
+    jq -e '
+        def digest: type == "string" and test("^[0-9a-f]{64}$");
+        def commit: type == "string" and test("^[0-9a-f]{40}$");
+        def version: type == "string" and
+          test("^(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})$");
+        def uint: type == "number" and . >= 0 and . <= 9007199254740991 and floor == .;
+        (.schema == 1) and
+        (.reason == "authority_target_mismatch") and
+        (.predecessor_generation | uint and . > 0 and . < 9007199254740991) and
+        (.predecessor_manifest_sha256 | digest) and
+        (.rejected_generation == (.predecessor_generation + 1)) and
+        (.selected_generation == .rejected_generation) and
+        (.rejected_tag == ("authority-v1-g" + (.rejected_generation | tostring))) and
+        (.selected_tag == ("authority-replacement-v1-g" + (.selected_generation | tostring))) and
+        (.rejected_manifest_sha256 | digest) and
+        (.selected_manifest_sha256 | digest) and
+        (.rejected_manifest_sha256 != .selected_manifest_sha256) and
+        (.rejected_workflow_commit | commit) and
+        (.selected_workflow_commit | commit) and
+        (.rejected_workflow_commit != .selected_workflow_commit) and
+        (.rejected_authority_version | version) and
+        (.selected_authority_version | version) and
+        (.rejected_authority_commit | commit) and
+        (.selected_authority_commit | commit) and
+        (.settled_product_version | version) and
+        (.settled_product_gateway_commit | commit) and
+        (.settled_product_engine_commit | commit) and
+        (.settled_product_state_sha256 | digest) and
+        (.settled_promotion_policy_sha256 | digest) and
+        (.selected_engine_commit | commit) and
+        (.planned_product_version | version) and
+        (.planned_product_base_commit | commit) and
+        (.settled_product_version == .selected_authority_version) and
+        (.settled_product_gateway_commit != .selected_authority_commit) and
+        (.planned_product_base_commit == .selected_authority_commit) and
+        ((.selected_authority_version | split(".") | map(tonumber)) as $selected |
+         (.planned_product_version | split(".") | map(tonumber)) as $planned |
+         ($planned[0] == $selected[0]) and
+         ($planned[1] == $selected[1]) and
+         ($planned[2] == ($selected[2] + 1))) and
+        (.rejected_product_release_commit | commit) and
+        (.rejected_authority_commit != .rejected_product_release_commit) and
+        (keys | sort) == ([
+          "planned_product_base_commit", "planned_product_version",
+          "predecessor_generation", "predecessor_manifest_sha256", "reason",
+          "rejected_authority_commit", "rejected_authority_version",
+          "rejected_generation", "rejected_manifest_sha256",
+          "rejected_product_release_commit", "rejected_tag",
+          "rejected_workflow_commit", "schema", "selected_authority_commit",
+          "selected_engine_commit",
+          "selected_authority_version", "selected_generation",
+          "selected_manifest_sha256", "selected_tag", "selected_workflow_commit",
+          "settled_product_engine_commit", "settled_product_gateway_commit",
+          "settled_product_state_sha256", "settled_product_version",
+          "settled_promotion_policy_sha256"
+        ] | sort)
+    ' "$record" >/dev/null \
+        || die 'authority replacement selection review shape or values are invalid'
+    local canonical
+    canonical=$(selection_review_from_file "$record")
+    [[ $(wc -c <"$record") -eq ${#canonical} && $(<"$record") == "$canonical" ]] \
+        || die 'authority replacement selection review is not exact canonical JSON'
+}
+
+render_selection_review() {
+    local output=$1
+    : "${REPLACEMENT_PREDECESSOR_GENERATION:?}"
+    : "${REPLACEMENT_PREDECESSOR_MANIFEST_SHA256:?}"
+    : "${REJECTED_AUTHORITY_GENERATION:?}"
+    : "${REJECTED_AUTHORITY_MANIFEST_SHA256:?}"
+    : "${REJECTED_AUTHORITY_WORKFLOW_COMMIT:?}"
+    : "${REJECTED_AUTHORITY_VERSION:?}"
+    : "${REJECTED_AUTHORITY_COMMIT:?}"
+    : "${REJECTED_PRODUCT_RELEASE_COMMIT:?}"
+    : "${SELECTED_AUTHORITY_GENERATION:?}"
+    : "${SELECTED_AUTHORITY_MANIFEST_SHA256:?}"
+    : "${SELECTED_AUTHORITY_WORKFLOW_COMMIT:?}"
+    : "${SELECTED_AUTHORITY_VERSION:?}"
+    : "${SELECTED_AUTHORITY_COMMIT:?}"
+    : "${SETTLED_PRODUCT_VERSION:?}"
+    : "${SETTLED_PRODUCT_GATEWAY_COMMIT:?}"
+    : "${SETTLED_PRODUCT_ENGINE_COMMIT:?}"
+    : "${SETTLED_PRODUCT_STATE_SHA256:?}"
+    : "${SETTLED_PROMOTION_POLICY_SHA256:?}"
+    : "${SELECTED_ENGINE_COMMIT:?}"
+    : "${PLANNED_PRODUCT_VERSION:?}"
+    : "${PLANNED_PRODUCT_BASE_COMMIT:?}"
+    jq -cjn \
+        --argjson schema 1 \
+        --arg reason authority_target_mismatch \
+        --argjson predecessor_generation "$REPLACEMENT_PREDECESSOR_GENERATION" \
+        --arg predecessor_manifest_sha256 "$REPLACEMENT_PREDECESSOR_MANIFEST_SHA256" \
+        --argjson rejected_generation "$REJECTED_AUTHORITY_GENERATION" \
+        --arg rejected_tag "authority-v1-g${REJECTED_AUTHORITY_GENERATION}" \
+        --arg rejected_manifest_sha256 "$REJECTED_AUTHORITY_MANIFEST_SHA256" \
+        --arg rejected_workflow_commit "$REJECTED_AUTHORITY_WORKFLOW_COMMIT" \
+        --arg rejected_authority_version "$REJECTED_AUTHORITY_VERSION" \
+        --arg rejected_authority_commit "$REJECTED_AUTHORITY_COMMIT" \
+        --arg rejected_product_release_commit "$REJECTED_PRODUCT_RELEASE_COMMIT" \
+        --argjson selected_generation "$SELECTED_AUTHORITY_GENERATION" \
+        --arg selected_tag "authority-replacement-v1-g${SELECTED_AUTHORITY_GENERATION}" \
+        --arg selected_manifest_sha256 "$SELECTED_AUTHORITY_MANIFEST_SHA256" \
+        --arg selected_workflow_commit "$SELECTED_AUTHORITY_WORKFLOW_COMMIT" \
+        --arg selected_authority_version "$SELECTED_AUTHORITY_VERSION" \
+        --arg selected_authority_commit "$SELECTED_AUTHORITY_COMMIT" \
+        --arg settled_product_version "$SETTLED_PRODUCT_VERSION" \
+        --arg settled_product_gateway_commit "$SETTLED_PRODUCT_GATEWAY_COMMIT" \
+        --arg settled_product_engine_commit "$SETTLED_PRODUCT_ENGINE_COMMIT" \
+        --arg settled_product_state_sha256 "$SETTLED_PRODUCT_STATE_SHA256" \
+        --arg settled_promotion_policy_sha256 "$SETTLED_PROMOTION_POLICY_SHA256" \
+        --arg selected_engine_commit "$SELECTED_ENGINE_COMMIT" \
+        --arg planned_product_version "$PLANNED_PRODUCT_VERSION" \
+        --arg planned_product_base_commit "$PLANNED_PRODUCT_BASE_COMMIT" \
+        '{
+          schema:$schema,
+          reason:$reason,
+          predecessor_generation:$predecessor_generation,
+          predecessor_manifest_sha256:$predecessor_manifest_sha256,
+          rejected_generation:$rejected_generation,
+          rejected_tag:$rejected_tag,
+          rejected_manifest_sha256:$rejected_manifest_sha256,
+          rejected_workflow_commit:$rejected_workflow_commit,
+          rejected_authority_version:$rejected_authority_version,
+          rejected_authority_commit:$rejected_authority_commit,
+          rejected_product_release_commit:$rejected_product_release_commit,
+          selected_generation:$selected_generation,
+          selected_tag:$selected_tag,
+          selected_manifest_sha256:$selected_manifest_sha256,
+          selected_workflow_commit:$selected_workflow_commit,
+          selected_authority_version:$selected_authority_version,
+          selected_authority_commit:$selected_authority_commit,
+          settled_product_version:$settled_product_version,
+          settled_product_gateway_commit:$settled_product_gateway_commit,
+          settled_product_engine_commit:$settled_product_engine_commit,
+          settled_product_state_sha256:$settled_product_state_sha256,
+          settled_promotion_policy_sha256:$settled_promotion_policy_sha256,
+          selected_engine_commit:$selected_engine_commit,
+          planned_product_version:$planned_product_version,
+          planned_product_base_commit:$planned_product_base_commit
+        }' >"$output"
+    validate_selection_review "$output"
+}
+
+replacement_resolution_from_file() {
+    local record=$1
+    jq -cjn \
+        --argjson schema "$(manifest_value "$record" schema)" \
+        --arg reason "$(manifest_value "$record" reason)" \
+        --argjson predecessor_generation "$(manifest_value "$record" predecessor_generation)" \
+        --arg predecessor_manifest_sha256 "$(manifest_value "$record" predecessor_manifest_sha256)" \
+        --argjson rejected_generation "$(manifest_value "$record" rejected_generation)" \
+        --arg rejected_tag "$(manifest_value "$record" rejected_tag)" \
+        --arg rejected_manifest_sha256 "$(manifest_value "$record" rejected_manifest_sha256)" \
+        --arg rejected_workflow_commit "$(manifest_value "$record" rejected_workflow_commit)" \
+        --arg rejected_authority_version "$(manifest_value "$record" rejected_authority_version)" \
+        --arg rejected_authority_commit "$(manifest_value "$record" rejected_authority_commit)" \
+        --arg rejected_product_release_commit "$(manifest_value "$record" rejected_product_release_commit)" \
+        --argjson selected_generation "$(manifest_value "$record" selected_generation)" \
+        --arg selected_tag "$(manifest_value "$record" selected_tag)" \
+        --arg selected_manifest_sha256 "$(manifest_value "$record" selected_manifest_sha256)" \
+        --arg selected_workflow_commit "$(manifest_value "$record" selected_workflow_commit)" \
+        --arg selected_authority_version "$(manifest_value "$record" selected_authority_version)" \
+        --arg selected_authority_commit "$(manifest_value "$record" selected_authority_commit)" \
+        --arg settled_product_version "$(manifest_value "$record" settled_product_version)" \
+        --arg settled_product_gateway_commit "$(manifest_value "$record" settled_product_gateway_commit)" \
+        --arg settled_product_engine_commit "$(manifest_value "$record" settled_product_engine_commit)" \
+        --arg settled_product_state_sha256 "$(manifest_value "$record" settled_product_state_sha256)" \
+        --arg settled_promotion_policy_sha256 "$(manifest_value "$record" settled_promotion_policy_sha256)" \
+        --arg selected_engine_commit "$(manifest_value "$record" selected_engine_commit)" \
+        --arg planned_product_version "$(manifest_value "$record" planned_product_version)" \
+        --arg planned_product_base_commit "$(manifest_value "$record" planned_product_base_commit)" \
+        --arg selection_review_sha256 "$(manifest_value "$record" selection_review_sha256)" \
+        --arg recovery_tool_sha256 "$(manifest_value "$record" recovery_tool_sha256)" \
+        --arg manifest_helper_sha256 "$(manifest_value "$record" manifest_helper_sha256)" \
+        --arg resolution_workflow_commit "$(manifest_value "$record" resolution_workflow_commit)" \
+        '{
+          schema:$schema,
+          reason:$reason,
+          predecessor_generation:$predecessor_generation,
+          predecessor_manifest_sha256:$predecessor_manifest_sha256,
+          rejected_generation:$rejected_generation,
+          rejected_tag:$rejected_tag,
+          rejected_manifest_sha256:$rejected_manifest_sha256,
+          rejected_workflow_commit:$rejected_workflow_commit,
+          rejected_authority_version:$rejected_authority_version,
+          rejected_authority_commit:$rejected_authority_commit,
+          rejected_product_release_commit:$rejected_product_release_commit,
+          selected_generation:$selected_generation,
+          selected_tag:$selected_tag,
+          selected_manifest_sha256:$selected_manifest_sha256,
+          selected_workflow_commit:$selected_workflow_commit,
+          selected_authority_version:$selected_authority_version,
+          selected_authority_commit:$selected_authority_commit,
+          settled_product_version:$settled_product_version,
+          settled_product_gateway_commit:$settled_product_gateway_commit,
+          settled_product_engine_commit:$settled_product_engine_commit,
+          settled_product_state_sha256:$settled_product_state_sha256,
+          settled_promotion_policy_sha256:$settled_promotion_policy_sha256,
+          selected_engine_commit:$selected_engine_commit,
+          planned_product_version:$planned_product_version,
+          planned_product_base_commit:$planned_product_base_commit,
+          selection_review_sha256:$selection_review_sha256,
+          recovery_tool_sha256:$recovery_tool_sha256,
+          manifest_helper_sha256:$manifest_helper_sha256,
+          resolution_workflow_commit:$resolution_workflow_commit
+        }'
+}
+
+validate_replacement_resolution() {
+    local record=$1
+    [[ -s $record && -f $record && ! -L $record ]] \
+        || die 'authority replacement resolution is unsafe'
+    jq -e '
+        def digest: type == "string" and test("^[0-9a-f]{64}$");
+        def commit: type == "string" and test("^[0-9a-f]{40}$");
+        def version: type == "string" and
+          test("^(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})$");
+        def uint: type == "number" and . >= 0 and . <= 9007199254740991 and floor == .;
+        (.schema == 1) and
+        (.reason == "authority_target_mismatch") and
+        (.predecessor_generation | uint and . > 0 and . < 9007199254740991) and
+        (.predecessor_manifest_sha256 | digest) and
+        (.rejected_generation == (.predecessor_generation + 1)) and
+        (.selected_generation == .rejected_generation) and
+        (.rejected_tag == ("authority-v1-g" + (.rejected_generation | tostring))) and
+        (.selected_tag == ("authority-replacement-v1-g" + (.selected_generation | tostring))) and
+        (.rejected_manifest_sha256 | digest) and
+        (.selected_manifest_sha256 | digest) and
+        (.rejected_manifest_sha256 != .selected_manifest_sha256) and
+        (.rejected_workflow_commit | commit) and
+        (.selected_workflow_commit | commit) and
+        (.resolution_workflow_commit | commit) and
+        (.rejected_workflow_commit != .selected_workflow_commit) and
+        (.rejected_workflow_commit != .resolution_workflow_commit) and
+        (.selected_workflow_commit != .resolution_workflow_commit) and
+        (.rejected_authority_version | version) and
+        (.selected_authority_version | version) and
+        (.rejected_authority_commit | commit) and
+        (.selected_authority_commit | commit) and
+        (.settled_product_version | version) and
+        (.settled_product_gateway_commit | commit) and
+        (.settled_product_engine_commit | commit) and
+        (.settled_product_state_sha256 | digest) and
+        (.settled_promotion_policy_sha256 | digest) and
+        (.selected_engine_commit | commit) and
+        (.planned_product_version | version) and
+        (.planned_product_base_commit | commit) and
+        (.settled_product_version == .selected_authority_version) and
+        (.settled_product_gateway_commit != .selected_authority_commit) and
+        (.planned_product_base_commit == .selected_authority_commit) and
+        ((.selected_authority_version | split(".") | map(tonumber)) as $selected |
+         (.planned_product_version | split(".") | map(tonumber)) as $planned |
+         ($planned[0] == $selected[0]) and
+         ($planned[1] == $selected[1]) and
+         ($planned[2] == ($selected[2] + 1))) and
+        (.rejected_product_release_commit | commit) and
+        (.rejected_authority_commit != .rejected_product_release_commit) and
+        (.selection_review_sha256 | digest) and
+        (.recovery_tool_sha256 | digest) and
+        (.manifest_helper_sha256 | digest) and
+        (keys | sort) == ([
+          "manifest_helper_sha256", "planned_product_base_commit",
+          "planned_product_version", "predecessor_generation",
+          "predecessor_manifest_sha256", "reason", "recovery_tool_sha256",
+          "resolution_workflow_commit",
+          "rejected_authority_commit", "rejected_authority_version",
+          "rejected_generation", "rejected_manifest_sha256",
+          "rejected_product_release_commit", "rejected_tag",
+          "rejected_workflow_commit", "schema", "selected_authority_commit",
+          "selected_authority_version", "selected_engine_commit", "selected_generation",
+          "selected_manifest_sha256", "selected_tag", "selected_workflow_commit",
+          "selection_review_sha256", "settled_product_engine_commit",
+          "settled_product_gateway_commit", "settled_product_state_sha256",
+          "settled_product_version", "settled_promotion_policy_sha256"
+        ] | sort)
+    ' "$record" >/dev/null || die 'authority replacement resolution shape or values are invalid'
+    local canonical
+    canonical=$(replacement_resolution_from_file "$record")
+    [[ $(wc -c <"$record") -eq ${#canonical} && $(<"$record") == "$canonical" ]] \
+        || die 'authority replacement resolution is not exact canonical JSON'
+}
+
+render_replacement_resolution() {
+    local output=$1
+    : "${REPLACEMENT_PREDECESSOR_GENERATION:?}"
+    : "${REPLACEMENT_PREDECESSOR_MANIFEST_SHA256:?}"
+    : "${REJECTED_AUTHORITY_GENERATION:?}"
+    : "${REJECTED_AUTHORITY_MANIFEST_SHA256:?}"
+    : "${REJECTED_AUTHORITY_WORKFLOW_COMMIT:?}"
+    : "${REJECTED_AUTHORITY_VERSION:?}"
+    : "${REJECTED_AUTHORITY_COMMIT:?}"
+    : "${REJECTED_PRODUCT_RELEASE_COMMIT:?}"
+    : "${SELECTED_AUTHORITY_GENERATION:?}"
+    : "${SELECTED_AUTHORITY_MANIFEST_SHA256:?}"
+    : "${SELECTED_AUTHORITY_WORKFLOW_COMMIT:?}"
+    : "${SELECTED_AUTHORITY_VERSION:?}"
+    : "${SELECTED_AUTHORITY_COMMIT:?}"
+    : "${SETTLED_PRODUCT_VERSION:?}"
+    : "${SETTLED_PRODUCT_GATEWAY_COMMIT:?}"
+    : "${SETTLED_PRODUCT_ENGINE_COMMIT:?}"
+    : "${SETTLED_PRODUCT_STATE_SHA256:?}"
+    : "${SETTLED_PROMOTION_POLICY_SHA256:?}"
+    : "${SELECTED_ENGINE_COMMIT:?}"
+    : "${PLANNED_PRODUCT_VERSION:?}"
+    : "${PLANNED_PRODUCT_BASE_COMMIT:?}"
+    : "${SELECTION_REVIEW_SHA256:?}"
+    : "${RECOVERY_TOOL_SHA256:?}"
+    : "${MANIFEST_HELPER_SHA256:?}"
+    : "${RESOLUTION_WORKFLOW_COMMIT:?}"
+    jq -cjn \
+        --argjson schema 1 \
+        --arg reason authority_target_mismatch \
+        --argjson predecessor_generation "$REPLACEMENT_PREDECESSOR_GENERATION" \
+        --arg predecessor_manifest_sha256 "$REPLACEMENT_PREDECESSOR_MANIFEST_SHA256" \
+        --argjson rejected_generation "$REJECTED_AUTHORITY_GENERATION" \
+        --arg rejected_tag "authority-v1-g${REJECTED_AUTHORITY_GENERATION}" \
+        --arg rejected_manifest_sha256 "$REJECTED_AUTHORITY_MANIFEST_SHA256" \
+        --arg rejected_workflow_commit "$REJECTED_AUTHORITY_WORKFLOW_COMMIT" \
+        --arg rejected_authority_version "$REJECTED_AUTHORITY_VERSION" \
+        --arg rejected_authority_commit "$REJECTED_AUTHORITY_COMMIT" \
+        --arg rejected_product_release_commit "$REJECTED_PRODUCT_RELEASE_COMMIT" \
+        --argjson selected_generation "$SELECTED_AUTHORITY_GENERATION" \
+        --arg selected_tag "authority-replacement-v1-g${SELECTED_AUTHORITY_GENERATION}" \
+        --arg selected_manifest_sha256 "$SELECTED_AUTHORITY_MANIFEST_SHA256" \
+        --arg selected_workflow_commit "$SELECTED_AUTHORITY_WORKFLOW_COMMIT" \
+        --arg selected_authority_version "$SELECTED_AUTHORITY_VERSION" \
+        --arg selected_authority_commit "$SELECTED_AUTHORITY_COMMIT" \
+        --arg settled_product_version "$SETTLED_PRODUCT_VERSION" \
+        --arg settled_product_gateway_commit "$SETTLED_PRODUCT_GATEWAY_COMMIT" \
+        --arg settled_product_engine_commit "$SETTLED_PRODUCT_ENGINE_COMMIT" \
+        --arg settled_product_state_sha256 "$SETTLED_PRODUCT_STATE_SHA256" \
+        --arg settled_promotion_policy_sha256 "$SETTLED_PROMOTION_POLICY_SHA256" \
+        --arg selected_engine_commit "$SELECTED_ENGINE_COMMIT" \
+        --arg planned_product_version "$PLANNED_PRODUCT_VERSION" \
+        --arg planned_product_base_commit "$PLANNED_PRODUCT_BASE_COMMIT" \
+        --arg selection_review_sha256 "$SELECTION_REVIEW_SHA256" \
+        --arg recovery_tool_sha256 "$RECOVERY_TOOL_SHA256" \
+        --arg manifest_helper_sha256 "$MANIFEST_HELPER_SHA256" \
+        --arg resolution_workflow_commit "$RESOLUTION_WORKFLOW_COMMIT" \
+        '{
+          schema:$schema,
+          reason:$reason,
+          predecessor_generation:$predecessor_generation,
+          predecessor_manifest_sha256:$predecessor_manifest_sha256,
+          rejected_generation:$rejected_generation,
+          rejected_tag:$rejected_tag,
+          rejected_manifest_sha256:$rejected_manifest_sha256,
+          rejected_workflow_commit:$rejected_workflow_commit,
+          rejected_authority_version:$rejected_authority_version,
+          rejected_authority_commit:$rejected_authority_commit,
+          rejected_product_release_commit:$rejected_product_release_commit,
+          selected_generation:$selected_generation,
+          selected_tag:$selected_tag,
+          selected_manifest_sha256:$selected_manifest_sha256,
+          selected_workflow_commit:$selected_workflow_commit,
+          selected_authority_version:$selected_authority_version,
+          selected_authority_commit:$selected_authority_commit,
+          settled_product_version:$settled_product_version,
+          settled_product_gateway_commit:$settled_product_gateway_commit,
+          settled_product_engine_commit:$settled_product_engine_commit,
+          settled_product_state_sha256:$settled_product_state_sha256,
+          settled_promotion_policy_sha256:$settled_promotion_policy_sha256,
+          selected_engine_commit:$selected_engine_commit,
+          planned_product_version:$planned_product_version,
+          planned_product_base_commit:$planned_product_base_commit,
+          selection_review_sha256:$selection_review_sha256,
+          recovery_tool_sha256:$recovery_tool_sha256,
+          manifest_helper_sha256:$manifest_helper_sha256,
+          resolution_workflow_commit:$resolution_workflow_commit
+        }' >"$output"
+    validate_replacement_resolution "$output"
+}
+
+validate_replacement_resolution_assets() {
+    local directory=$1
+    [[ -d $directory && ! -L $directory ]] \
+        || die 'authority replacement resolution directory is unsafe'
+    local actual expected
+    actual=$(find "$directory" -mindepth 1 -maxdepth 1 -printf '%f\n' \
+        | LC_ALL=C sort)
+    expected=$(printf '%s\n' \
+        recover-release-authority-replacement-v1.sh \
+        release-authority-manifest.sh \
+        release-authority-selection-review-v1.json \
+        release-authority-replacement-v1.json \
+        release-authority-replacement-v1.json.cosign.bundle \
+        | LC_ALL=C sort)
+    [[ $actual == "$expected" ]] \
+        || die 'authority replacement resolution asset set is inexact'
+    local resolution review
+    resolution=$directory/release-authority-replacement-v1.json
+    review=$directory/release-authority-selection-review-v1.json
+    for name in \
+        recover-release-authority-replacement-v1.sh \
+        release-authority-manifest.sh \
+        release-authority-selection-review-v1.json \
+        release-authority-replacement-v1.json \
+        release-authority-replacement-v1.json.cosign.bundle; do
+        [[ -f $directory/$name && ! -L $directory/$name ]] \
+            || die 'authority replacement resolution contains a non-regular entry'
+    done
+    validate_replacement_resolution "$resolution"
+    validate_selection_review "$review"
+    local tool_sha helper_sha review_sha
+    tool_sha=$(sha256_file "$directory/recover-release-authority-replacement-v1.sh")
+    helper_sha=$(sha256_file "$directory/release-authority-manifest.sh")
+    review_sha=$(sha256_file "$review")
+    [[ $tool_sha == "$(manifest_value \
+        "$resolution" recovery_tool_sha256)" ]] \
+        || die 'authority replacement recovery tool differs from the signed resolution'
+    [[ $helper_sha == "$(manifest_value \
+        "$resolution" manifest_helper_sha256)" ]] \
+        || die 'authority replacement manifest helper differs from the signed resolution'
+    [[ $review_sha == "$(manifest_value "$resolution" selection_review_sha256)" ]] \
+        || die 'authority replacement selection review differs from the signed resolution'
+    [[ $(selection_review_from_file "$resolution") == "$(<"$review")" ]] \
+        || die 'authority replacement resolution does not bind the exact selection review'
+}
+
+assert_replacement() {
+    local predecessor=$1
+    local rejected=$2
+    local selected=$3
+    local resolution=$4
+    [[ -s $predecessor && -f $predecessor && ! -L $predecessor ]] \
+        || die 'replacement predecessor manifest is unsafe'
+    [[ -s $rejected && -f $rejected && ! -L $rejected ]] \
+        || die 'replacement rejected manifest is unsafe'
+    [[ -s $selected && -f $selected && ! -L $selected ]] \
+        || die 'replacement selected manifest is unsafe'
+    validate_replacement_resolution "$resolution"
+    assert_successor "$predecessor" "$rejected"
+    assert_successor "$predecessor" "$selected"
+
+    local predecessor_sha rejected_sha selected_sha
+    predecessor_sha=$(sha256_file "$predecessor")
+    rejected_sha=$(sha256_file "$rejected")
+    selected_sha=$(sha256_file "$selected")
+    jq -e \
+        --arg predecessor_sha "$predecessor_sha" \
+        --arg rejected_sha "$rejected_sha" \
+        --arg selected_sha "$selected_sha" \
+        --argjson predecessor_generation "$(manifest_value "$predecessor" generation)" \
+        --argjson rejected_generation "$(manifest_value "$rejected" generation)" \
+        --arg rejected_workflow_commit "$(manifest_value "$rejected" workflow_commit)" \
+        --arg rejected_authority_version "$(manifest_value "$rejected" authority_version)" \
+        --arg rejected_authority_commit "$(manifest_value "$rejected" authority_commit)" \
+        --argjson selected_generation "$(manifest_value "$selected" generation)" \
+        --arg selected_workflow_commit "$(manifest_value "$selected" workflow_commit)" \
+        --arg selected_authority_version "$(manifest_value "$selected" authority_version)" \
+        --arg selected_authority_commit "$(manifest_value "$selected" authority_commit)" \
+        '
+          .predecessor_generation == $predecessor_generation and
+          .predecessor_manifest_sha256 == $predecessor_sha and
+          .rejected_generation == $rejected_generation and
+          .rejected_manifest_sha256 == $rejected_sha and
+          .rejected_workflow_commit == $rejected_workflow_commit and
+          .rejected_authority_version == $rejected_authority_version and
+          .rejected_authority_commit == $rejected_authority_commit and
+          .selected_generation == $selected_generation and
+          .selected_manifest_sha256 == $selected_sha and
+          .selected_workflow_commit == $selected_workflow_commit and
+          .selected_authority_version == $selected_authority_version and
+          .selected_authority_commit == $selected_authority_commit
+        ' "$resolution" >/dev/null \
+        || die 'replacement resolution does not bind the exact authority manifests'
+}
+
+validate_special_tag_namespace() {
+    local prefix=$1
+    local maximum_generation=$2
+    local names_file=$3
+    case $prefix in
+        authority-replacement-v1-g|authority-resolution-v1-g) ;;
+        *) die 'special authority tag namespace is unsupported' ;;
+    esac
+    [[ $maximum_generation =~ ^(0|[1-9][0-9]{0,15})$ \
+        && $maximum_generation -le 9007199254740991 ]] \
+        || die 'special authority tag generation bound is invalid'
+    [[ -f $names_file && ! -L $names_file ]] \
+        || die 'special authority tag inventory is unsafe'
+
+    local -a names=()
+    local name generation
+    mapfile -t names <"$names_file"
+    for name in "${names[@]}"; do
+        [[ $name =~ ^${prefix}([1-9][0-9]{0,15})$ ]] \
+            || die 'special authority tag is malformed'
+        generation=${BASH_REMATCH[1]}
+        [[ $generation -le $maximum_generation ]] \
+            || die 'special authority tag is ahead of the approved operation'
+    done
+    [[ $(printf '%s\n' "${names[@]}" | sed '/^$/d' | LC_ALL=C sort -u | wc -l) \
+        -eq ${#names[@]} ]] \
+        || die 'special authority tag inventory contains duplicates'
 }
 
 asset_schema() {
@@ -748,6 +1502,36 @@ case ${1:-} in
         [[ $# -eq 2 ]] || die 'usage: validate-approval-record RECORD'
         validate_approval_record "$2"
         ;;
+    render-selection-review)
+        [[ $# -eq 2 ]] || die 'usage: render-selection-review OUTPUT'
+        render_selection_review "$2"
+        ;;
+    validate-selection-review)
+        [[ $# -eq 2 ]] || die 'usage: validate-selection-review RECORD'
+        validate_selection_review "$2"
+        ;;
+    render-replacement-resolution)
+        [[ $# -eq 2 ]] || die 'usage: render-replacement-resolution OUTPUT'
+        render_replacement_resolution "$2"
+        ;;
+    validate-replacement-resolution)
+        [[ $# -eq 2 ]] || die 'usage: validate-replacement-resolution RECORD'
+        validate_replacement_resolution "$2"
+        ;;
+    validate-replacement-resolution-assets)
+        [[ $# -eq 2 ]] || die 'usage: validate-replacement-resolution-assets DIRECTORY'
+        validate_replacement_resolution_assets "$2"
+        ;;
+    assert-replacement)
+        [[ $# -eq 5 ]] \
+            || die 'usage: assert-replacement PREDECESSOR REJECTED SELECTED RESOLUTION'
+        assert_replacement "$2" "$3" "$4" "$5"
+        ;;
+    validate-special-tag-namespace)
+        [[ $# -eq 4 ]] \
+            || die 'usage: validate-special-tag-namespace PREFIX MAXIMUM_GENERATION NAMES_FILE'
+        validate_special_tag_namespace "$2" "$3" "$4"
+        ;;
     asset-schema)
         [[ $# -eq 2 ]] || die 'usage: asset-schema NAMES_FILE'
         asset_schema "$2"
@@ -805,6 +1589,6 @@ case ${1:-} in
         validate_stage_v2 "$2"
         ;;
     *)
-        die 'usage: release-authority-manifest.sh render-approval-record|validate-approval-record|asset-schema|validate|render-v2|assert-genesis|assert-successor|protocol-from-manifest|validate-protocol|shipper-self-test-from-manifest|validate-shipper-self-test|verifier-self-test-from-manifest|validate-verifier-self-test|source-tree-sha256|stage-v2|validate-stage-v2 ...'
+        die 'usage: release-authority-manifest.sh render-approval-record|validate-approval-record|render-selection-review|validate-selection-review|render-replacement-resolution|validate-replacement-resolution|validate-replacement-resolution-assets|assert-replacement|validate-special-tag-namespace|asset-schema|validate|render-v2|assert-genesis|assert-successor|protocol-from-manifest|validate-protocol|shipper-self-test-from-manifest|validate-shipper-self-test|verifier-self-test-from-manifest|validate-verifier-self-test|source-tree-sha256|stage-v2|validate-stage-v2 ...'
         ;;
 esac
