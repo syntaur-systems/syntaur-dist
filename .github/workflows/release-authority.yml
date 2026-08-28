@@ -454,15 +454,27 @@ jobs:
               "$RUNNER_TEMP/approval-record.json")
             selected_commit=$(jq -er '.authority_commit' \
               "$RUNNER_TEMP/approval-record.json")
-            selected_product_release=$(gh api \
-              "/repos/${GITHUB_REPOSITORY}/releases/tags/v${selected_version}")
-            test "$(jq -r '.draft' <<<"$selected_product_release")" = false
-            test "$(jq -r '.prerelease' <<<"$selected_product_release")" = false
-            test "$(jq -r '.immutable' <<<"$selected_product_release")" = true
-            test "$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/v${selected_version}" \
+            settled_version=$(jq -er '.settled_product_version' \
+              "$RUNNER_TEMP/approval-record.json")
+            settled_gateway_commit=$(jq -er '.settled_product_gateway_commit' \
+              "$RUNNER_TEMP/approval-record.json")
+            settled_engine_commit=$(jq -er '.settled_product_engine_commit' \
+              "$RUNNER_TEMP/approval-record.json")
+            selected_engine_commit=$(jq -er '.selected_engine_commit' \
+              "$RUNNER_TEMP/approval-record.json")
+            test "$settled_version" = "$selected_version"
+            test "$settled_gateway_commit" != "$selected_commit"
+            printf '%s\n%s\n' "$settled_engine_commit" "$selected_engine_commit" \
+              | grep -Eq '^[0-9a-f]{40}$'
+            settled_product_release=$(gh api \
+              "/repos/${GITHUB_REPOSITORY}/releases/tags/v${settled_version}")
+            test "$(jq -r '.draft' <<<"$settled_product_release")" = false
+            test "$(jq -r '.prerelease' <<<"$settled_product_release")" = false
+            test "$(jq -r '.immutable' <<<"$settled_product_release")" = true
+            test "$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/v${settled_version}" \
               --jq '.object.type')" = commit
-            test "$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/v${selected_version}" \
-              --jq '.object.sha')" = "$selected_commit"
+            test "$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/v${settled_version}" \
+              --jq '.object.sha')" = "$settled_gateway_commit"
             target_tag="authority-replacement-v1-g${generation}"
           fi
 
@@ -1487,61 +1499,6 @@ jobs:
             "$signed/"
           chmod 0500 "$signed"
 
-      - name: Sign exact replacement resolution
-        if: needs.predecessor.outputs.replacement == 'true'
-        shell: bash
-        env:
-          REPLACEMENT_PREDECESSOR_GENERATION: ${{ needs.predecessor.outputs.previous_generation }}
-          REPLACEMENT_PREDECESSOR_MANIFEST_SHA256: ${{ needs.predecessor.outputs.previous_manifest_sha256 }}
-          REJECTED_AUTHORITY_GENERATION: ${{ fromJSON(inputs.approval_record).rejected_generation }}
-          REJECTED_AUTHORITY_MANIFEST_SHA256: ${{ fromJSON(inputs.approval_record).rejected_manifest_sha256 }}
-          REJECTED_AUTHORITY_WORKFLOW_COMMIT: ${{ fromJSON(inputs.approval_record).rejected_workflow_commit }}
-          REJECTED_AUTHORITY_VERSION: ${{ fromJSON(inputs.approval_record).rejected_authority_version }}
-          REJECTED_AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).rejected_authority_commit }}
-          REJECTED_PRODUCT_RELEASE_COMMIT: ${{ fromJSON(inputs.approval_record).rejected_product_release_commit }}
-          SELECTED_AUTHORITY_GENERATION: ${{ needs.predecessor.outputs.generation }}
-          SELECTED_AUTHORITY_WORKFLOW_COMMIT: ${{ github.sha }}
-          SELECTED_AUTHORITY_VERSION: ${{ fromJSON(inputs.approval_record).authority_version }}
-          SELECTED_AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).authority_commit }}
-          RESOLUTION_WORKFLOW_COMMIT: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          resolution="$RUNNER_TEMP/signed-resolution"
-          mkdir -m 0700 "$resolution"
-          install -m 0500 \
-            public-workflow/scripts/recover-release-authority-replacement-v1.sh \
-            "$resolution/recover-release-authority-replacement-v1.sh"
-          install -m 0500 \
-            public-workflow/scripts/release-authority-manifest.sh \
-            "$resolution/release-authority-manifest.sh"
-          SELECTED_AUTHORITY_MANIFEST_SHA256=$(sha256sum \
-            "$RUNNER_TEMP/release-authority-v2.json" | awk '{print $1}')
-          RECOVERY_TOOL_SHA256=$(sha256sum \
-            "$resolution/recover-release-authority-replacement-v1.sh" | awk '{print $1}')
-          MANIFEST_HELPER_SHA256=$(sha256sum \
-            "$resolution/release-authority-manifest.sh" | awk '{print $1}')
-          export SELECTED_AUTHORITY_MANIFEST_SHA256
-          export RECOVERY_TOOL_SHA256 MANIFEST_HELPER_SHA256
-          bash public-workflow/scripts/release-authority-manifest.sh \
-            render-replacement-resolution \
-            "$resolution/release-authority-replacement-v1.json"
-          cosign sign-blob --yes \
-            --bundle "$resolution/release-authority-replacement-v1.json.cosign.bundle" \
-            "$resolution/release-authority-replacement-v1.json"
-          cosign verify-blob \
-            --bundle "$resolution/release-authority-replacement-v1.json.cosign.bundle" \
-            --certificate-identity \
-            "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-authority.yml@refs/heads/main" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            --certificate-github-workflow-sha "$GITHUB_SHA" \
-            "$resolution/release-authority-replacement-v1.json"
-          chmod 0400 \
-            "$resolution/release-authority-replacement-v1.json" \
-            "$resolution/release-authority-replacement-v1.json.cosign.bundle"
-          bash public-workflow/scripts/release-authority-manifest.sh \
-            validate-replacement-resolution-assets "$resolution"
-          chmod 0500 "$resolution"
-
       - name: Upload signed authority
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -1551,18 +1508,83 @@ jobs:
           retention-days: 3
           compression-level: 0
 
-      - name: Upload signed replacement resolution
-        if: needs.predecessor.outputs.replacement == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+  resolution_policy:
+    needs: predecessor
+    if: needs.predecessor.outputs.target_already_published == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release-authority
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact reviewed resolution policy
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
-          name: signed-release-authority-resolution-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/signed-resolution
-          if-no-files-found: error
-          retention-days: 3
-          compression-level: 0
+          persist-credentials: false
+          path: public-workflow
+
+      - name: Require exact independent environment policy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SYNTAUR_RELEASE_AUTHORITY_ADMIN_READ_TOKEN }}
+        run: bash public-workflow/scripts/verify-release-authority-policy.sh
+
+      - name: Approve exact checked-in replacement selection review
+        shell: bash
+        env:
+          GENERATION: ${{ needs.predecessor.outputs.generation }}
+          PREVIOUS_GENERATION: ${{ needs.predecessor.outputs.previous_generation }}
+          PREVIOUS_MANIFEST_SHA256: ${{ needs.predecessor.outputs.previous_manifest_sha256 }}
+          REJECTED_AUTHORITY_MANIFEST_SHA256: ${{ fromJSON(inputs.approval_record).rejected_manifest_sha256 }}
+          REJECTED_AUTHORITY_WORKFLOW_COMMIT: ${{ fromJSON(inputs.approval_record).rejected_workflow_commit }}
+          SETTLED_PRODUCT_VERSION: ${{ fromJSON(inputs.approval_record).settled_product_version }}
+          SETTLED_PRODUCT_GATEWAY_COMMIT: ${{ fromJSON(inputs.approval_record).settled_product_gateway_commit }}
+          SETTLED_PRODUCT_ENGINE_COMMIT: ${{ fromJSON(inputs.approval_record).settled_product_engine_commit }}
+          SETTLED_PRODUCT_STATE_SHA256: ${{ fromJSON(inputs.approval_record).settled_product_state_sha256 }}
+          SETTLED_PROMOTION_POLICY_SHA256: ${{ fromJSON(inputs.approval_record).settled_promotion_policy_sha256 }}
+          SELECTED_ENGINE_COMMIT: ${{ fromJSON(inputs.approval_record).selected_engine_commit }}
+        run: |
+          set -euo pipefail
+          review="public-workflow/.github/authority-replacement-reviews/g${GENERATION}.json"
+          test -f "$review" && test ! -L "$review"
+          bash public-workflow/scripts/release-authority-manifest.sh \
+            validate-selection-review "$review"
+          test "$(jq -er '.predecessor_generation' "$review")" = "$PREVIOUS_GENERATION"
+          test "$(jq -er '.predecessor_manifest_sha256' "$review")" \
+            = "$PREVIOUS_MANIFEST_SHA256"
+          test "$(jq -er '.rejected_generation' "$review")" = "$GENERATION"
+          test "$(jq -er '.rejected_manifest_sha256' "$review")" \
+            = "$REJECTED_AUTHORITY_MANIFEST_SHA256"
+          test "$(jq -er '.rejected_workflow_commit' "$review")" \
+            = "$REJECTED_AUTHORITY_WORKFLOW_COMMIT"
+          test "$(jq -er '.selected_generation' "$review")" = "$GENERATION"
+          test "$(jq -er '.settled_product_version' "$review")" \
+            = "$SETTLED_PRODUCT_VERSION"
+          test "$(jq -er '.settled_product_gateway_commit' "$review")" \
+            = "$SETTLED_PRODUCT_GATEWAY_COMMIT"
+          test "$(jq -er '.settled_product_engine_commit' "$review")" \
+            = "$SETTLED_PRODUCT_ENGINE_COMMIT"
+          test "$(jq -er '.settled_product_state_sha256' "$review")" \
+            = "$SETTLED_PRODUCT_STATE_SHA256"
+          test "$(jq -er '.settled_promotion_policy_sha256' "$review")" \
+            = "$SETTLED_PROMOTION_POLICY_SHA256"
+          test "$(jq -er '.selected_engine_commit' "$review")" \
+            = "$SELECTED_ENGINE_COMMIT"
+          test "$(jq -er '.resolution_workflow_commit // empty' "$review")" = ''
+          test "$(jq -er '.rejected_workflow_commit' "$review")" != \
+            "$(jq -er '.selected_workflow_commit' "$review")"
+          test "$(jq -er '.rejected_workflow_commit' "$review")" != "$GITHUB_SHA"
+          test "$(jq -er '.selected_workflow_commit' "$review")" != "$GITHUB_SHA"
+          {
+            printf 'Approved checked-in replacement selection review\n'
+            printf 'generation=%s review_sha256=%s resolution_commit=%s\n' \
+              "$GENERATION" "$(sha256sum "$review" | awk '{print $1}')" "$GITHUB_SHA"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
   recover_sign_resolution:
-    needs: predecessor
+    needs:
+      - predecessor
+      - resolution_policy
     if: needs.predecessor.outputs.target_already_published == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -1571,7 +1593,7 @@ jobs:
       attestations: read
       id-token: write
     steps:
-      - name: Checkout exact public recovery helpers
+      - name: Checkout exact approved recovery helpers and review
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
@@ -1590,14 +1612,23 @@ jobs:
           PREVIOUS_GENERATION: ${{ needs.predecessor.outputs.previous_generation }}
           PREVIOUS_MANIFEST_SHA256: ${{ needs.predecessor.outputs.previous_manifest_sha256 }}
           TARGET_TAG: ${{ needs.predecessor.outputs.target_tag }}
-          REJECTED_AUTHORITY_GENERATION: ${{ fromJSON(inputs.approval_record).rejected_generation }}
-          REJECTED_AUTHORITY_MANIFEST_SHA256: ${{ fromJSON(inputs.approval_record).rejected_manifest_sha256 }}
-          REJECTED_AUTHORITY_WORKFLOW_COMMIT: ${{ fromJSON(inputs.approval_record).rejected_workflow_commit }}
-          REJECTED_AUTHORITY_VERSION: ${{ fromJSON(inputs.approval_record).rejected_authority_version }}
-          REJECTED_AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).rejected_authority_commit }}
-          REJECTED_PRODUCT_RELEASE_COMMIT: ${{ fromJSON(inputs.approval_record).rejected_product_release_commit }}
         run: |
           set -euo pipefail
+          review="public-workflow/.github/authority-replacement-reviews/g${GENERATION}.json"
+          bash public-workflow/scripts/release-authority-manifest.sh \
+            validate-selection-review "$review"
+          REJECTED_AUTHORITY_GENERATION=$(jq -er '.rejected_generation' "$review")
+          REJECTED_AUTHORITY_MANIFEST_SHA256=$(jq -er '.rejected_manifest_sha256' "$review")
+          REJECTED_AUTHORITY_WORKFLOW_COMMIT=$(jq -er '.rejected_workflow_commit' "$review")
+          REJECTED_AUTHORITY_VERSION=$(jq -er '.rejected_authority_version' "$review")
+          REJECTED_AUTHORITY_COMMIT=$(jq -er '.rejected_authority_commit' "$review")
+          REJECTED_PRODUCT_RELEASE_COMMIT=$(jq -er '.rejected_product_release_commit' "$review")
+          SETTLED_PRODUCT_VERSION=$(jq -er '.settled_product_version' "$review")
+          SETTLED_PRODUCT_GATEWAY_COMMIT=$(jq -er '.settled_product_gateway_commit' "$review")
+          SETTLED_PRODUCT_ENGINE_COMMIT=$(jq -er '.settled_product_engine_commit' "$review")
+          SETTLED_PRODUCT_STATE_SHA256=$(jq -er '.settled_product_state_sha256' "$review")
+          SETTLED_PROMOTION_POLICY_SHA256=$(jq -er '.settled_promotion_policy_sha256' "$review")
+          SELECTED_ENGINE_COMMIT=$(jq -er '.selected_engine_commit' "$review")
           target="$RUNNER_TEMP/selected-authority"
           mkdir -m 0700 "$target"
           gh release download "$TARGET_TAG" \
@@ -1623,6 +1654,22 @@ jobs:
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             --certificate-github-workflow-sha "$selected_workflow_commit" \
             "$target_manifest"
+          test "$(jq -er '.predecessor_generation' "$review")" = "$PREVIOUS_GENERATION"
+          test "$(jq -er '.predecessor_manifest_sha256' "$review")" \
+            = "$PREVIOUS_MANIFEST_SHA256"
+          test "$(jq -er '.selected_generation' "$review")" = "$GENERATION"
+          test "$(jq -er '.selected_tag' "$review")" = "$TARGET_TAG"
+          test "$(jq -er '.selected_manifest_sha256' "$review")" \
+            = "$(sha256sum "$target_manifest" | awk '{print $1}')"
+          test "$(jq -er '.selected_workflow_commit' "$review")" \
+            = "$selected_workflow_commit"
+          test "$(jq -er '.selected_authority_version' "$review")" \
+            = "$(jq -er '.authority_version' "$target_manifest")"
+          test "$(jq -er '.selected_authority_commit' "$review")" \
+            = "$(jq -er '.authority_commit' "$target_manifest")"
+          test "$REJECTED_AUTHORITY_WORKFLOW_COMMIT" != "$selected_workflow_commit"
+          test "$REJECTED_AUTHORITY_WORKFLOW_COMMIT" != "$GITHUB_SHA"
+          test "$selected_workflow_commit" != "$GITHUB_SHA"
 
           resolution="$RUNNER_TEMP/signed-resolution"
           mkdir -m 0700 "$resolution"
@@ -1679,6 +1726,8 @@ jobs:
             install -m 0500 \
               public-workflow/scripts/release-authority-manifest.sh \
               "$resolution/release-authority-manifest.sh"
+            install -m 0400 "$review" \
+              "$resolution/release-authority-selection-review-v1.json"
             REPLACEMENT_PREDECESSOR_GENERATION=$PREVIOUS_GENERATION
             REPLACEMENT_PREDECESSOR_MANIFEST_SHA256=$PREVIOUS_MANIFEST_SHA256
             SELECTED_AUTHORITY_GENERATION=$GENERATION
@@ -1690,13 +1739,22 @@ jobs:
               "$resolution/recover-release-authority-replacement-v1.sh" | awk '{print $1}')
             MANIFEST_HELPER_SHA256=$(sha256sum \
               "$resolution/release-authority-manifest.sh" | awk '{print $1}')
+            SELECTION_REVIEW_SHA256=$(sha256sum \
+              "$resolution/release-authority-selection-review-v1.json" | awk '{print $1}')
             RESOLUTION_WORKFLOW_COMMIT=$GITHUB_SHA
             export REPLACEMENT_PREDECESSOR_GENERATION
             export REPLACEMENT_PREDECESSOR_MANIFEST_SHA256
+            export REJECTED_AUTHORITY_GENERATION REJECTED_AUTHORITY_MANIFEST_SHA256
+            export REJECTED_AUTHORITY_WORKFLOW_COMMIT REJECTED_AUTHORITY_VERSION
+            export REJECTED_AUTHORITY_COMMIT REJECTED_PRODUCT_RELEASE_COMMIT
             export SELECTED_AUTHORITY_GENERATION SELECTED_AUTHORITY_MANIFEST_SHA256
             export SELECTED_AUTHORITY_WORKFLOW_COMMIT SELECTED_AUTHORITY_VERSION
             export SELECTED_AUTHORITY_COMMIT RECOVERY_TOOL_SHA256
-            export MANIFEST_HELPER_SHA256 RESOLUTION_WORKFLOW_COMMIT
+            export SETTLED_PRODUCT_VERSION SETTLED_PRODUCT_GATEWAY_COMMIT
+            export SETTLED_PRODUCT_ENGINE_COMMIT SELECTED_ENGINE_COMMIT
+            export SETTLED_PRODUCT_STATE_SHA256 SETTLED_PROMOTION_POLICY_SHA256
+            export MANIFEST_HELPER_SHA256 SELECTION_REVIEW_SHA256
+            export RESOLUTION_WORKFLOW_COMMIT
             bash public-workflow/scripts/release-authority-manifest.sh \
               render-replacement-resolution \
               "$resolution/release-authority-replacement-v1.json"
@@ -1720,6 +1778,9 @@ jobs:
             = "$(sha256sum "$target_manifest" | awk '{print $1}')"
           test "$(jq -er '.selected_workflow_commit' "$record")" \
             = "$selected_workflow_commit"
+          test "$(jq -er '.selection_review_sha256' "$record")" \
+            = "$(sha256sum "$review" | awk '{print $1}')"
+          cmp "$review" "$resolution/release-authority-selection-review-v1.json"
           cosign verify-blob \
             --bundle "$resolution/release-authority-replacement-v1.json.cosign.bundle" \
             --certificate-identity \
@@ -1728,7 +1789,8 @@ jobs:
             --certificate-github-workflow-sha "$resolution_workflow_commit" \
             "$record"
           chmod 0400 "$record" \
-            "$resolution/release-authority-replacement-v1.json.cosign.bundle"
+            "$resolution/release-authority-replacement-v1.json.cosign.bundle" \
+            "$resolution/release-authority-selection-review-v1.json"
           chmod 0500 "$resolution/recover-release-authority-replacement-v1.sh" \
             "$resolution/release-authority-manifest.sh" "$resolution"
 
@@ -1861,7 +1923,7 @@ jobs:
               release=$(gh api "/repos/${GITHUB_REPOSITORY}/releases/${release_id}")
             fi
             expected_assets=$(find signed-resolution -mindepth 1 -maxdepth 1 \
-              -type f -printf '%f\n' | LC_ALL=C sort)
+              -printf '%f\n' | LC_ALL=C sort)
             observed_assets=$(jq -r '.assets[].name' <<<"$release" | LC_ALL=C sort)
             draft_matches=false
             if [[ $observed_assets == "$expected_assets" ]]; then
@@ -1886,6 +1948,7 @@ jobs:
               gh release upload "$resolution_tag" \
                 signed-resolution/recover-release-authority-replacement-v1.sh \
                 signed-resolution/release-authority-manifest.sh \
+                signed-resolution/release-authority-selection-review-v1.json \
                 signed-resolution/release-authority-replacement-v1.json \
                 signed-resolution/release-authority-replacement-v1.json.cosign.bundle \
                 --repo "$GITHUB_REPOSITORY"
@@ -1907,7 +1970,7 @@ jobs:
           while IFS= read -r asset; do
             gh release verify-asset "$resolution_tag" "signed-resolution/$asset" \
               --repo "$GITHUB_REPOSITORY" >/dev/null
-          done < <(find signed-resolution -mindepth 1 -maxdepth 1 -type f -printf '%f\n')
+          done < <(find signed-resolution -mindepth 1 -maxdepth 1 -printf '%f\n')
 
   publish:
     needs:
@@ -1942,7 +2005,7 @@ jobs:
           path: signed-authority-artifacts
 
       - name: Download signed replacement resolution
-        if: needs.predecessor.outputs.replacement == 'true'
+        if: false # Run A publishes only the selected immutable authority.
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: signed-release-authority-resolution-run-${{ github.run_id }}-attempt-*
@@ -1967,7 +2030,7 @@ jobs:
           fi
 
       - name: Select newest immutable signed replacement resolution
-        if: needs.predecessor.outputs.replacement == 'true'
+        if: false # Resolution signing is reachable only through resolution_policy.
         shell: bash
         run: |
           set -euo pipefail
@@ -2044,7 +2107,7 @@ jobs:
             "$manifest"
 
       - name: Reverify signed replacement resolution
-        if: needs.predecessor.outputs.replacement == 'true'
+        if: false # Legacy run-A path is intentionally unreachable.
         shell: bash
         env:
           GENERATION: ${{ needs.predecessor.outputs.generation }}
@@ -2057,6 +2120,7 @@ jobs:
           set -euo pipefail
           chmod 0500 signed-resolution
           chmod 0400 \
+            signed-resolution/release-authority-selection-review-v1.json \
             signed-resolution/release-authority-replacement-v1.json \
             signed-resolution/release-authority-replacement-v1.json.cosign.bundle
           chmod 0500 \
@@ -2369,7 +2433,7 @@ jobs:
             != "$tag"
 
       - name: Publish immutable replacement resolution last
-        if: needs.predecessor.outputs.replacement == 'true'
+        if: false # Run B publishes through recover_publish_resolution only.
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.SYNTAUR_RELEASE_AUTHORITY_PUBLISH_TOKEN }}
@@ -2401,11 +2465,12 @@ jobs:
           expected_assets=$(printf '%s\n' \
             recover-release-authority-replacement-v1.sh \
             release-authority-manifest.sh \
+            release-authority-selection-review-v1.json \
             release-authority-replacement-v1.json \
             release-authority-replacement-v1.json.cosign.bundle \
             | LC_ALL=C sort)
           actual_assets=$(find signed-resolution -mindepth 1 -maxdepth 1 \
-            -type f -printf '%f\n' | LC_ALL=C sort)
+            -printf '%f\n' | LC_ALL=C sort)
           test "$actual_assets" = "$expected_assets"
           tag_file="$RUNNER_TEMP/resolution-tag.json"
           tag_error="$RUNNER_TEMP/resolution-tag.error"
@@ -2453,6 +2518,7 @@ jobs:
               gh release upload "$tag" \
                 signed-resolution/recover-release-authority-replacement-v1.sh \
                 signed-resolution/release-authority-manifest.sh \
+                signed-resolution/release-authority-selection-review-v1.json \
                 signed-resolution/release-authority-replacement-v1.json \
                 signed-resolution/release-authority-replacement-v1.json.cosign.bundle \
                 --repo "$GITHUB_REPOSITORY"

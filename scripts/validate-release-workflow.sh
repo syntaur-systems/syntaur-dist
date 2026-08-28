@@ -389,17 +389,54 @@ if [ -f "$authority_workflow" ]; then
     = release-authority-source ]
   [ "$(yq -r '.jobs.approval_policy.environment' "$authority_workflow")" \
     = release-authority ]
+  [ "$(yq -r '.jobs.resolution_policy.environment' "$authority_workflow")" \
+    = release-authority ]
   [ "$(yq -r '.jobs.publish.environment' "$authority_workflow")" \
     = release-authority ]
   [ "$(yq -r '.jobs.recover_publish_resolution.environment' \
     "$authority_workflow")" = release-authority ]
+  jq -e '
+    (.recover_sign_resolution.needs == ["predecessor", "resolution_policy"]) and
+    (.recover_publish_resolution.needs == ["predecessor", "recover_sign_resolution"]) and
+    (.resolution_policy.permissions == {"contents":"read"}) and
+    (.recover_sign_resolution.permissions == {
+      "contents":"read", "attestations":"read", "id-token":"write"
+    })
+  ' <<<"$jobs_json" >/dev/null || {
+    echo "resolution approval, signer, and publisher topology is not exact" >&2
+    exit 1
+  }
 
   signer=$(yq -r '.jobs.sign.steps[]? | select(has("run")) | .run' "$authority_workflow")
+  resolution_policy=$(yq -r \
+    '.jobs.resolution_policy.steps[]? | select(has("run")) | .run' \
+    "$authority_workflow")
+  resolution_signer=$(yq -r \
+    '.jobs.recover_sign_resolution.steps[]? | select(has("run")) | .run' \
+    "$authority_workflow")
   publisher=$(yq -r '.jobs.publish.steps[]? | select(has("run")) | .run' "$authority_workflow")
+  # shellcheck disable=SC2016 # Match the literal GitHub-run shell expression.
+  review_path_literal='authority-replacement-reviews/g${GENERATION}.json'
   [[ "$signer" != *'syntaur-ship authority-protocol-inputs'* ]]
   [[ "$signer" != *'--authority-protocol-self-test'* ]]
   [[ "$publisher" != *'syntaur-ship authority-protocol-inputs'* ]]
   [[ "$publisher" != *'--authority-protocol-self-test'* ]]
+  [[ "$signer" != *'render-replacement-resolution'* ]]
+  [[ "$resolution_policy" == *"$review_path_literal"* ]]
+  [[ "$resolution_policy" == *'validate-selection-review'* ]]
+  [[ "$resolution_policy" == *'SETTLED_PROMOTION_POLICY_SHA256'* ]]
+  [[ "$resolution_signer" == *"$review_path_literal"* ]]
+  [[ "$resolution_signer" == *'SELECTION_REVIEW_SHA256'* ]]
+  [[ "$resolution_signer" == *'SETTLED_PROMOTION_POLICY_SHA256'* ]]
+  [ "$(yq -r '.jobs.publish.steps[]? |
+      select(.name == "Download signed replacement resolution" or
+             .name == "Select newest immutable signed replacement resolution" or
+             .name == "Reverify signed replacement resolution" or
+             .name == "Publish immutable replacement resolution last") |
+      .if' "$authority_workflow" | LC_ALL=C sort -u)" = false ] || {
+    echo "legacy same-run resolution path is reachable" >&2
+    exit 1
+  }
 fi
 
 temporary=$(mktemp)
