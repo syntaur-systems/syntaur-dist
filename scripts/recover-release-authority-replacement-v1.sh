@@ -484,6 +484,15 @@ fi
 
 require_safe_file "$INSTALLED_SHIPPER" 268435456 true 'installed predecessor shipper'
 require_safe_file "$AUTHORITY_ROOT/$MANIFEST" 32768 false 'installed predecessor manifest'
+require_root_directory "$AUTHORITY_ROOT" 'authority root'
+if [[ -e $REPLACEMENT_LOCK || -L $REPLACEMENT_LOCK ]]; then
+    require_root_file "$REPLACEMENT_LOCK" 600 'authority replacement lock'
+fi
+exec 7<>"$REPLACEMENT_LOCK"
+/usr/bin/chown 0:0 "$REPLACEMENT_LOCK"
+/usr/bin/chmod 0600 "$REPLACEMENT_LOCK"
+require_root_file "$REPLACEMENT_LOCK" 600 'authority replacement lock'
+/usr/bin/flock -n 7 || die 'another authority replacement recovery holds the lock'
 active_manifest_sha256=$(sha256_file "$AUTHORITY_ROOT/$MANIFEST")
 if [[ $active_manifest_sha256 == "$expected_selected_sha256" ]]; then
     install_resolution_receipt
@@ -498,11 +507,6 @@ fi
 [[ $(sha256_file "$INSTALLED_SHIPPER") == \
     "$(manifest_value "$predecessor_dir/$MANIFEST" shipper_sha256)" ]] \
     || die 'installed predecessor shipper differs from the signed predecessor manifest'
-/usr/bin/install -d -o 0 -g 0 -m 0755 "$AUTHORITY_ROOT"
-exec 7<>"$REPLACEMENT_LOCK"
-/usr/bin/chown 0:0 "$REPLACEMENT_LOCK"
-/usr/bin/chmod 0600 "$REPLACEMENT_LOCK"
-/usr/bin/flock -n 7 || die 'another authority replacement recovery holds the lock'
 install_resolution_receipt
 promote_selected_authority
 [[ $(sha256_file "$AUTHORITY_ROOT/$MANIFEST") == "$expected_selected_sha256" ]] \
