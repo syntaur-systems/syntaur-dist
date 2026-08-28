@@ -199,8 +199,17 @@ validate_resolution_inline() {
         (.settled_product_state_sha256 | digest) and
         (.settled_promotion_policy_sha256 | digest) and
         (.selected_engine_commit | commit) and
-        (.settled_product_version != .selected_authority_version) and
+        (.planned_product_version | type == "string" and
+          test("^(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})$")) and
+        (.planned_product_base_commit | commit) and
+        (.settled_product_version == .selected_authority_version) and
         (.settled_product_gateway_commit != .selected_authority_commit) and
+        (.planned_product_base_commit == .selected_authority_commit) and
+        ((.selected_authority_version | split(".") | map(tonumber)) as $selected |
+         (.planned_product_version | split(".") | map(tonumber)) as $planned |
+         ($planned[0] == $selected[0]) and
+         ($planned[1] == $selected[1]) and
+         ($planned[2] == ($selected[2] + 1))) and
         (.selection_review_sha256 | digest) and
         (.recovery_tool_sha256 | digest) and
         (.manifest_helper_sha256 | digest)

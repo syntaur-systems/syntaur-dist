@@ -365,7 +365,7 @@ if [ -f "$authority_workflow" ]; then
     exit 1
   }
   [ "$(grep -o 'secrets.SYNTAUR_RELEASE_AUTHORITY_PUBLISH_TOKEN' \
-    "$authority_workflow" | wc -l)" -eq 3 ]
+    "$authority_workflow" | wc -l)" -eq 2 ]
   [ "$(yq -r '.jobs.predecessor.permissions.attestations' \
     "$authority_workflow")" = read ] || {
     echo "predecessor lacks read access to release attestations" >&2
@@ -425,18 +425,13 @@ if [ -f "$authority_workflow" ]; then
   [[ "$resolution_policy" == *"$review_path_literal"* ]]
   [[ "$resolution_policy" == *'validate-selection-review'* ]]
   [[ "$resolution_policy" == *'SETTLED_PROMOTION_POLICY_SHA256'* ]]
+  [[ "$resolution_policy" == *'PLANNED_PRODUCT_VERSION'* ]]
+  [[ "$resolution_policy" == *'PLANNED_PRODUCT_BASE_COMMIT'* ]]
   [[ "$resolution_signer" == *"$review_path_literal"* ]]
   [[ "$resolution_signer" == *'SELECTION_REVIEW_SHA256'* ]]
   [[ "$resolution_signer" == *'SETTLED_PROMOTION_POLICY_SHA256'* ]]
-  [ "$(yq -r '.jobs.publish.steps[]? |
-      select(.name == "Download signed replacement resolution" or
-             .name == "Select newest immutable signed replacement resolution" or
-             .name == "Reverify signed replacement resolution" or
-             .name == "Publish immutable replacement resolution last") |
-      .if' "$authority_workflow" | LC_ALL=C sort -u)" = false ] || {
-    echo "legacy same-run resolution path is reachable" >&2
-    exit 1
-  }
+  [[ "$resolution_signer" == *'PLANNED_PRODUCT_VERSION'* ]]
+  [[ "$resolution_signer" == *'PLANNED_PRODUCT_BASE_COMMIT'* ]]
 fi
 
 temporary=$(mktemp)

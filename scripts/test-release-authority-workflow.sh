@@ -136,12 +136,14 @@ REJECTED_AUTHORITY_WORKFLOW_COMMIT=$(printf 'd%.0s' {1..40})
 REJECTED_AUTHORITY_VERSION=0.7.115
 REJECTED_AUTHORITY_COMMIT=$(printf 'e%.0s' {1..40})
 REJECTED_PRODUCT_RELEASE_COMMIT=$(printf 'f%.0s' {1..40})
-SETTLED_PRODUCT_VERSION=0.7.115
+SETTLED_PRODUCT_VERSION=$AUTHORITY_VERSION
 SETTLED_PRODUCT_GATEWAY_COMMIT=$(printf '7%.0s' {1..40})
 SETTLED_PRODUCT_ENGINE_COMMIT=$(printf '8%.0s' {1..40})
 SETTLED_PRODUCT_STATE_SHA256=$(digest_text settled-product-state)
 SETTLED_PROMOTION_POLICY_SHA256=$(digest_text settled-promotion-policy)
 SELECTED_ENGINE_COMMIT=$(printf '9%.0s' {1..40})
+PLANNED_PRODUCT_VERSION=0.7.117
+PLANNED_PRODUCT_BASE_COMMIT=$AUTHORITY_COMMIT
 AUTHORITY_REPLACEMENT_REASON=authority_target_mismatch
 export AUTHORITY_APPROVAL_SCHEMA REJECTED_AUTHORITY_GENERATION
 export REJECTED_AUTHORITY_MANIFEST_SHA256 REJECTED_AUTHORITY_WORKFLOW_COMMIT
@@ -151,6 +153,7 @@ export SETTLED_PRODUCT_VERSION SETTLED_PRODUCT_GATEWAY_COMMIT
 export SETTLED_PRODUCT_ENGINE_COMMIT SELECTED_ENGINE_COMMIT
 export SETTLED_PRODUCT_STATE_SHA256
 export SETTLED_PROMOTION_POLICY_SHA256
+export PLANNED_PRODUCT_VERSION PLANNED_PRODUCT_BASE_COMMIT
 "$helper" render-approval-record "$tmp_root/replacement-approval-record.json"
 "$helper" validate-approval-record "$tmp_root/replacement-approval-record.json"
 jq -e '
@@ -158,11 +161,21 @@ jq -e '
     .rejected_generation == 701 and
     .replacement_reason == "authority_target_mismatch"
 ' "$tmp_root/replacement-approval-record.json" >/dev/null
-jq -c '.settled_product_version = .authority_version' \
+jq -c '.settled_product_version = "0.7.117"' \
     "$tmp_root/replacement-approval-record.json" \
-    >"$tmp_root/replacement-approval-reuses-settled-version.json"
+    >"$tmp_root/replacement-approval-wrong-settled-version.json"
 expect_failure "$helper" validate-approval-record \
-    "$tmp_root/replacement-approval-reuses-settled-version.json"
+    "$tmp_root/replacement-approval-wrong-settled-version.json"
+jq -c '.planned_product_version = .authority_version' \
+    "$tmp_root/replacement-approval-record.json" \
+    >"$tmp_root/replacement-approval-non-successor-version.json"
+expect_failure "$helper" validate-approval-record \
+    "$tmp_root/replacement-approval-non-successor-version.json"
+jq -c '.planned_product_base_commit = .settled_product_gateway_commit' \
+    "$tmp_root/replacement-approval-record.json" \
+    >"$tmp_root/replacement-approval-wrong-planned-base.json"
+expect_failure "$helper" validate-approval-record \
+    "$tmp_root/replacement-approval-wrong-planned-base.json"
 jq -c '.rejected_product_release_commit = .rejected_authority_commit' \
     "$tmp_root/replacement-approval-record.json" \
     >"$tmp_root/replacement-approval-same-target.json"
@@ -185,6 +198,7 @@ unset SETTLED_PRODUCT_VERSION SETTLED_PRODUCT_GATEWAY_COMMIT
 unset SETTLED_PRODUCT_ENGINE_COMMIT SELECTED_ENGINE_COMMIT
 unset SETTLED_PRODUCT_STATE_SHA256
 unset SETTLED_PROMOTION_POLICY_SHA256
+unset PLANNED_PRODUCT_VERSION PLANNED_PRODUCT_BASE_COMMIT
 
 resolution_dir="$tmp_root/replacement-resolution"
 mkdir -m 0700 "$resolution_dir"
@@ -220,12 +234,14 @@ SELECTED_AUTHORITY_MANIFEST_SHA256=$(sha256sum \
 SELECTED_AUTHORITY_WORKFLOW_COMMIT=$GITHUB_SHA
 SELECTED_AUTHORITY_VERSION=$AUTHORITY_VERSION
 SELECTED_AUTHORITY_COMMIT=$AUTHORITY_COMMIT
-SETTLED_PRODUCT_VERSION=0.7.115
+SETTLED_PRODUCT_VERSION=$AUTHORITY_VERSION
 SETTLED_PRODUCT_GATEWAY_COMMIT=$(printf '7%.0s' {1..40})
 SETTLED_PRODUCT_ENGINE_COMMIT=$(printf '8%.0s' {1..40})
 SETTLED_PRODUCT_STATE_SHA256=$(digest_text settled-product-state)
 SETTLED_PROMOTION_POLICY_SHA256=$(digest_text settled-promotion-policy)
 SELECTED_ENGINE_COMMIT=$(printf '9%.0s' {1..40})
+PLANNED_PRODUCT_VERSION=0.7.117
+PLANNED_PRODUCT_BASE_COMMIT=$SELECTED_AUTHORITY_COMMIT
 RECOVERY_TOOL_SHA256=$(sha256sum \
     "$resolution_dir/recover-release-authority-replacement-v1.sh" | awk '{print $1}')
 MANIFEST_HELPER_SHA256=$(sha256sum \
@@ -243,6 +259,7 @@ export SETTLED_PRODUCT_VERSION SETTLED_PRODUCT_GATEWAY_COMMIT
 export SETTLED_PRODUCT_ENGINE_COMMIT SELECTED_ENGINE_COMMIT
 export SETTLED_PRODUCT_STATE_SHA256
 export SETTLED_PROMOTION_POLICY_SHA256
+export PLANNED_PRODUCT_VERSION PLANNED_PRODUCT_BASE_COMMIT
 "$helper" render-selection-review \
     "$resolution_dir/release-authority-selection-review-v1.json"
 SELECTION_REVIEW_SHA256=$(sha256sum \
@@ -280,6 +297,11 @@ jq -c '.resolution_workflow_commit = .rejected_workflow_commit' \
     >"$tmp_root/replacement-resolution-rejected-resolution-same-commit.json"
 expect_failure "$helper" validate-replacement-resolution \
     "$tmp_root/replacement-resolution-rejected-resolution-same-commit.json"
+jq -c '.planned_product_base_commit = .settled_product_gateway_commit' \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    >"$tmp_root/replacement-resolution-wrong-planned-base.json"
+expect_failure "$helper" validate-replacement-resolution \
+    "$tmp_root/replacement-resolution-wrong-planned-base.json"
 jq -c '.selected_workflow_commit = .rejected_workflow_commit' \
     "$resolution_dir/release-authority-selection-review-v1.json" \
     >"$tmp_root/replacement-selection-review-same-commit.json"
@@ -738,7 +760,7 @@ grep -Fq 'release-authority-source' "$workflow"
 grep -Fq 'SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY' "$workflow"
 grep -Fq 'sudo chown -R 65534:65534 source' "$workflow"
 grep -Fq 'encrypted-authority-source-run-' "$workflow"
-[[ $(grep -Fc -- '--repo "$GITHUB_REPOSITORY"' "$workflow") -eq 26 ]]
+[[ $(grep -Fc -- '--repo "$GITHUB_REPOSITORY"' "$workflow") -eq 22 ]]
 grep -Fq 'mkdir -m 0700 "$age_root/bin"' "$workflow"
 grep -Fq '"$age_root/bin/"' "$workflow"
 grep -Fq '"$age_root/bin/age-keygen" -y -' "$workflow"

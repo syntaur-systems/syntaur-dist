@@ -58,6 +58,8 @@ approval_record_from_file() {
             --arg settled_product_state_sha256 "$(manifest_value "$record" settled_product_state_sha256)" \
             --arg settled_promotion_policy_sha256 "$(manifest_value "$record" settled_promotion_policy_sha256)" \
             --arg selected_engine_commit "$(manifest_value "$record" selected_engine_commit)" \
+            --arg planned_product_version "$(manifest_value "$record" planned_product_version)" \
+            --arg planned_product_base_commit "$(manifest_value "$record" planned_product_base_commit)" \
             --arg replacement_reason "$(manifest_value "$record" replacement_reason)" \
             '{
               schema:$schema,
@@ -95,6 +97,8 @@ approval_record_from_file() {
               settled_product_state_sha256:$settled_product_state_sha256,
               settled_promotion_policy_sha256:$settled_promotion_policy_sha256,
               selected_engine_commit:$selected_engine_commit,
+              planned_product_version:$planned_product_version,
+              planned_product_base_commit:$planned_product_base_commit,
               replacement_reason:$replacement_reason
             }'
         return
@@ -218,8 +222,17 @@ validate_approval_record() {
            (.settled_product_state_sha256 | digest) and
            (.settled_promotion_policy_sha256 | digest) and
            (.selected_engine_commit | commit) and
-           (.settled_product_version != .authority_version) and
+           (.planned_product_version | type == "string" and
+             test("^(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})$")) and
+           (.planned_product_base_commit | commit) and
+           (.settled_product_version == .authority_version) and
            (.settled_product_gateway_commit != .authority_commit) and
+           (.planned_product_base_commit == .authority_commit) and
+           ((.authority_version | split(".") | map(tonumber)) as $selected |
+            (.planned_product_version | split(".") | map(tonumber)) as $planned |
+            ($planned[0] == $selected[0]) and
+            ($planned[1] == $selected[1]) and
+            ($planned[2] == ($selected[2] + 1))) and
            (.replacement_reason == "authority_target_mismatch") and
            (keys | sort) == ([
              "authority_commit", "authority_tree_sha256", "authority_version",
@@ -232,6 +245,7 @@ validate_approval_record() {
              "rejected_authority_commit", "rejected_authority_version",
              "rejected_generation", "rejected_manifest_sha256",
              "rejected_product_release_commit", "rejected_workflow_commit",
+             "planned_product_base_commit", "planned_product_version",
              "replacement_reason", "schema", "selected_engine_commit",
              "settled_product_engine_commit", "settled_product_gateway_commit",
              "settled_product_state_sha256", "settled_product_version",
@@ -286,6 +300,8 @@ render_approval_record() {
         : "${SETTLED_PRODUCT_STATE_SHA256:?}"
         : "${SETTLED_PROMOTION_POLICY_SHA256:?}"
         : "${SELECTED_ENGINE_COMMIT:?}"
+        : "${PLANNED_PRODUCT_VERSION:?}"
+        : "${PLANNED_PRODUCT_BASE_COMMIT:?}"
         : "${AUTHORITY_REPLACEMENT_REASON:?}"
     fi
     jq -cjn \
@@ -324,6 +340,8 @@ render_approval_record() {
         --arg settled_product_state_sha256 "${SETTLED_PRODUCT_STATE_SHA256:-}" \
         --arg settled_promotion_policy_sha256 "${SETTLED_PROMOTION_POLICY_SHA256:-}" \
         --arg selected_engine_commit "${SELECTED_ENGINE_COMMIT:-}" \
+        --arg planned_product_version "${PLANNED_PRODUCT_VERSION:-}" \
+        --arg planned_product_base_commit "${PLANNED_PRODUCT_BASE_COMMIT:-}" \
         --arg replacement_reason "${AUTHORITY_REPLACEMENT_REASON:-}" \
         '{
           schema:$schema,
@@ -362,6 +380,8 @@ render_approval_record() {
           settled_product_state_sha256:$settled_product_state_sha256,
           settled_promotion_policy_sha256:$settled_promotion_policy_sha256,
           selected_engine_commit:$selected_engine_commit,
+          planned_product_version:$planned_product_version,
+          planned_product_base_commit:$planned_product_base_commit,
           replacement_reason:$replacement_reason
         } else {} end)' >"$output"
     validate_approval_record "$output"
@@ -393,6 +413,8 @@ selection_review_from_file() {
         --arg settled_product_state_sha256 "$(manifest_value "$record" settled_product_state_sha256)" \
         --arg settled_promotion_policy_sha256 "$(manifest_value "$record" settled_promotion_policy_sha256)" \
         --arg selected_engine_commit "$(manifest_value "$record" selected_engine_commit)" \
+        --arg planned_product_version "$(manifest_value "$record" planned_product_version)" \
+        --arg planned_product_base_commit "$(manifest_value "$record" planned_product_base_commit)" \
         '{
           schema:$schema,
           reason:$reason,
@@ -416,7 +438,9 @@ selection_review_from_file() {
           settled_product_engine_commit:$settled_product_engine_commit,
           settled_product_state_sha256:$settled_product_state_sha256,
           settled_promotion_policy_sha256:$settled_promotion_policy_sha256,
-          selected_engine_commit:$selected_engine_commit
+          selected_engine_commit:$selected_engine_commit,
+          planned_product_version:$planned_product_version,
+          planned_product_base_commit:$planned_product_base_commit
         }'
 }
 
@@ -454,11 +478,20 @@ validate_selection_review() {
         (.settled_product_state_sha256 | digest) and
         (.settled_promotion_policy_sha256 | digest) and
         (.selected_engine_commit | commit) and
-        (.settled_product_version != .selected_authority_version) and
+        (.planned_product_version | version) and
+        (.planned_product_base_commit | commit) and
+        (.settled_product_version == .selected_authority_version) and
         (.settled_product_gateway_commit != .selected_authority_commit) and
+        (.planned_product_base_commit == .selected_authority_commit) and
+        ((.selected_authority_version | split(".") | map(tonumber)) as $selected |
+         (.planned_product_version | split(".") | map(tonumber)) as $planned |
+         ($planned[0] == $selected[0]) and
+         ($planned[1] == $selected[1]) and
+         ($planned[2] == ($selected[2] + 1))) and
         (.rejected_product_release_commit | commit) and
         (.rejected_authority_commit != .rejected_product_release_commit) and
         (keys | sort) == ([
+          "planned_product_base_commit", "planned_product_version",
           "predecessor_generation", "predecessor_manifest_sha256", "reason",
           "rejected_authority_commit", "rejected_authority_version",
           "rejected_generation", "rejected_manifest_sha256",
@@ -500,6 +533,8 @@ render_selection_review() {
     : "${SETTLED_PRODUCT_STATE_SHA256:?}"
     : "${SETTLED_PROMOTION_POLICY_SHA256:?}"
     : "${SELECTED_ENGINE_COMMIT:?}"
+    : "${PLANNED_PRODUCT_VERSION:?}"
+    : "${PLANNED_PRODUCT_BASE_COMMIT:?}"
     jq -cjn \
         --argjson schema 1 \
         --arg reason authority_target_mismatch \
@@ -524,6 +559,8 @@ render_selection_review() {
         --arg settled_product_state_sha256 "$SETTLED_PRODUCT_STATE_SHA256" \
         --arg settled_promotion_policy_sha256 "$SETTLED_PROMOTION_POLICY_SHA256" \
         --arg selected_engine_commit "$SELECTED_ENGINE_COMMIT" \
+        --arg planned_product_version "$PLANNED_PRODUCT_VERSION" \
+        --arg planned_product_base_commit "$PLANNED_PRODUCT_BASE_COMMIT" \
         '{
           schema:$schema,
           reason:$reason,
@@ -547,7 +584,9 @@ render_selection_review() {
           settled_product_engine_commit:$settled_product_engine_commit,
           settled_product_state_sha256:$settled_product_state_sha256,
           settled_promotion_policy_sha256:$settled_promotion_policy_sha256,
-          selected_engine_commit:$selected_engine_commit
+          selected_engine_commit:$selected_engine_commit,
+          planned_product_version:$planned_product_version,
+          planned_product_base_commit:$planned_product_base_commit
         }' >"$output"
     validate_selection_review "$output"
 }
@@ -578,6 +617,8 @@ replacement_resolution_from_file() {
         --arg settled_product_state_sha256 "$(manifest_value "$record" settled_product_state_sha256)" \
         --arg settled_promotion_policy_sha256 "$(manifest_value "$record" settled_promotion_policy_sha256)" \
         --arg selected_engine_commit "$(manifest_value "$record" selected_engine_commit)" \
+        --arg planned_product_version "$(manifest_value "$record" planned_product_version)" \
+        --arg planned_product_base_commit "$(manifest_value "$record" planned_product_base_commit)" \
         --arg selection_review_sha256 "$(manifest_value "$record" selection_review_sha256)" \
         --arg recovery_tool_sha256 "$(manifest_value "$record" recovery_tool_sha256)" \
         --arg manifest_helper_sha256 "$(manifest_value "$record" manifest_helper_sha256)" \
@@ -606,6 +647,8 @@ replacement_resolution_from_file() {
           settled_product_state_sha256:$settled_product_state_sha256,
           settled_promotion_policy_sha256:$settled_promotion_policy_sha256,
           selected_engine_commit:$selected_engine_commit,
+          planned_product_version:$planned_product_version,
+          planned_product_base_commit:$planned_product_base_commit,
           selection_review_sha256:$selection_review_sha256,
           recovery_tool_sha256:$recovery_tool_sha256,
           manifest_helper_sha256:$manifest_helper_sha256,
@@ -650,15 +693,24 @@ validate_replacement_resolution() {
         (.settled_product_state_sha256 | digest) and
         (.settled_promotion_policy_sha256 | digest) and
         (.selected_engine_commit | commit) and
-        (.settled_product_version != .selected_authority_version) and
+        (.planned_product_version | version) and
+        (.planned_product_base_commit | commit) and
+        (.settled_product_version == .selected_authority_version) and
         (.settled_product_gateway_commit != .selected_authority_commit) and
+        (.planned_product_base_commit == .selected_authority_commit) and
+        ((.selected_authority_version | split(".") | map(tonumber)) as $selected |
+         (.planned_product_version | split(".") | map(tonumber)) as $planned |
+         ($planned[0] == $selected[0]) and
+         ($planned[1] == $selected[1]) and
+         ($planned[2] == ($selected[2] + 1))) and
         (.rejected_product_release_commit | commit) and
         (.rejected_authority_commit != .rejected_product_release_commit) and
         (.selection_review_sha256 | digest) and
         (.recovery_tool_sha256 | digest) and
         (.manifest_helper_sha256 | digest) and
         (keys | sort) == ([
-          "manifest_helper_sha256", "predecessor_generation",
+          "manifest_helper_sha256", "planned_product_base_commit",
+          "planned_product_version", "predecessor_generation",
           "predecessor_manifest_sha256", "reason", "recovery_tool_sha256",
           "resolution_workflow_commit",
           "rejected_authority_commit", "rejected_authority_version",
@@ -699,6 +751,8 @@ render_replacement_resolution() {
     : "${SETTLED_PRODUCT_STATE_SHA256:?}"
     : "${SETTLED_PROMOTION_POLICY_SHA256:?}"
     : "${SELECTED_ENGINE_COMMIT:?}"
+    : "${PLANNED_PRODUCT_VERSION:?}"
+    : "${PLANNED_PRODUCT_BASE_COMMIT:?}"
     : "${SELECTION_REVIEW_SHA256:?}"
     : "${RECOVERY_TOOL_SHA256:?}"
     : "${MANIFEST_HELPER_SHA256:?}"
@@ -727,6 +781,8 @@ render_replacement_resolution() {
         --arg settled_product_state_sha256 "$SETTLED_PRODUCT_STATE_SHA256" \
         --arg settled_promotion_policy_sha256 "$SETTLED_PROMOTION_POLICY_SHA256" \
         --arg selected_engine_commit "$SELECTED_ENGINE_COMMIT" \
+        --arg planned_product_version "$PLANNED_PRODUCT_VERSION" \
+        --arg planned_product_base_commit "$PLANNED_PRODUCT_BASE_COMMIT" \
         --arg selection_review_sha256 "$SELECTION_REVIEW_SHA256" \
         --arg recovery_tool_sha256 "$RECOVERY_TOOL_SHA256" \
         --arg manifest_helper_sha256 "$MANIFEST_HELPER_SHA256" \
@@ -755,6 +811,8 @@ render_replacement_resolution() {
           settled_product_state_sha256:$settled_product_state_sha256,
           settled_promotion_policy_sha256:$settled_promotion_policy_sha256,
           selected_engine_commit:$selected_engine_commit,
+          planned_product_version:$planned_product_version,
+          planned_product_base_commit:$planned_product_base_commit,
           selection_review_sha256:$selection_review_sha256,
           recovery_tool_sha256:$recovery_tool_sha256,
           manifest_helper_sha256:$manifest_helper_sha256,
