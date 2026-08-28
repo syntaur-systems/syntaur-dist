@@ -38,6 +38,9 @@ jobs:
       previous_manifest_sha256: ${{ steps.predecessor.outputs.previous_manifest_sha256 }}
       previous_schema: ${{ steps.predecessor.outputs.previous_schema }}
       previous_workflow_commit: ${{ steps.predecessor.outputs.previous_workflow_commit }}
+      target_tag: ${{ steps.predecessor.outputs.target_tag }}
+      replacement: ${{ steps.predecessor.outputs.replacement }}
+      target_already_published: ${{ steps.predecessor.outputs.target_already_published }}
       already_published: ${{ steps.predecessor.outputs.already_published }}
       genesis: ${{ steps.predecessor.outputs.genesis }}
     steps:
@@ -213,6 +216,33 @@ jobs:
           previous_workflow_commit=
           previous_manifest_sha256=$EXPECTED_PREVIOUS_MANIFEST_SHA256
           genesis=false
+          replacement=$(jq -r '.schema == 2' "$RUNNER_TEMP/approval-record.json")
+          target_tag="authority-v1-g${generation}"
+          target_already_published=false
+
+          special_namespace_max=$previous
+          if [[ $replacement == true ]]; then
+            special_namespace_max=$generation
+          fi
+          for special_prefix in \
+            authority-replacement-v1-g \
+            authority-resolution-v1-g; do
+            release_names="$RUNNER_TEMP/${special_prefix}release-tags"
+            ref_names="$RUNNER_TEMP/${special_prefix}ref-tags"
+            gh api --paginate \
+              "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq ".[] | .tag_name | select(startswith(\"${special_prefix}\"))" \
+              >"$release_names"
+            gh api --paginate \
+              "/repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/${special_prefix}" \
+              --jq '.[].ref | sub("^refs/tags/"; "")' >"$ref_names"
+            bash public-workflow/scripts/release-authority-manifest.sh \
+              validate-special-tag-namespace \
+              "$special_prefix" "$special_namespace_max" "$release_names"
+            bash public-workflow/scripts/release-authority-manifest.sh \
+              validate-special-tag-namespace \
+              "$special_prefix" "$special_namespace_max" "$ref_names"
+          done
 
           if [[ $previous == 0 ]]; then
             test "$generation" = 1
@@ -232,6 +262,60 @@ jobs:
             test "$latest_namespace" = "$previous" \
               || test "$latest_namespace" = "$generation"
             previous_tag="authority-v1-g${previous}"
+            resolved_replacement=false
+            resolution_tag="authority-resolution-v1-g${previous}"
+            resolution_tag_file="$RUNNER_TEMP/previous-resolution-tag.json"
+            resolution_tag_error="$RUNNER_TEMP/previous-resolution-tag.error"
+            resolution_release_file="$RUNNER_TEMP/previous-resolution-release.json"
+            resolution_release_error="$RUNNER_TEMP/previous-resolution-release.error"
+            resolution_tag_status=$(api_optional \
+              "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${resolution_tag}" \
+              "$resolution_tag_file" "$resolution_tag_error")
+            resolution_release_status=$(api_optional \
+              "/repos/${GITHUB_REPOSITORY}/releases/tags/${resolution_tag}" \
+              "$resolution_release_file" "$resolution_release_error")
+            test "$resolution_tag_status" = "$resolution_release_status"
+            if [[ $resolution_release_status == present ]]; then
+              resolution_release=$(<"$resolution_release_file")
+              test "$(jq -r '.draft' <<<"$resolution_release")" = false
+              test "$(jq -r '.prerelease' <<<"$resolution_release")" = false
+              test "$(jq -r '.immutable' <<<"$resolution_release")" = true
+              test "$(jq -r '.object.type' "$resolution_tag_file")" = commit
+              resolution_workflow_commit=$(jq -r '.object.sha' "$resolution_tag_file")
+              printf '%s' "$resolution_workflow_commit" | grep -Eq '^[0-9a-f]{40}$'
+              resolution_dir="$RUNNER_TEMP/previous-resolution"
+              mkdir -m 0700 "$resolution_dir"
+              gh release download "$resolution_tag" \
+                --repo "$GITHUB_REPOSITORY" --dir "$resolution_dir"
+              gh release verify "$resolution_tag" \
+                --repo "$GITHUB_REPOSITORY" >/dev/null
+              while IFS= read -r asset; do
+                gh release verify-asset "$resolution_tag" "$resolution_dir/$asset" \
+                  --repo "$GITHUB_REPOSITORY" >/dev/null
+              done < <(jq -r '.assets[].name' <<<"$resolution_release")
+              bash public-workflow/scripts/release-authority-manifest.sh \
+                validate-replacement-resolution-assets "$resolution_dir"
+              resolution_record="$resolution_dir/release-authority-replacement-v1.json"
+              test "$(jq -er '.selected_generation' "$resolution_record")" = "$previous"
+              test "$(jq -er '.selected_manifest_sha256' "$resolution_record")" \
+                = "$EXPECTED_PREVIOUS_MANIFEST_SHA256"
+              test "$(jq -er '.selected_workflow_commit' "$resolution_record")" \
+                != ""
+              test "$(jq -er '.resolution_workflow_commit' "$resolution_record")" \
+                = "$resolution_workflow_commit"
+              test "$(jq -er '.predecessor_generation' "$resolution_record")" \
+                = "$((previous - 1))"
+              previous_tag=$(jq -er '.selected_tag' "$resolution_record")
+              test "$previous_tag" = "authority-replacement-v1-g${previous}"
+              resolved_replacement=true
+              cosign verify-blob \
+                --bundle "$resolution_dir/release-authority-replacement-v1.json.cosign.bundle" \
+                --certificate-identity \
+                "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-authority.yml@refs/heads/main" \
+                --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+                --certificate-github-workflow-sha "$resolution_workflow_commit" \
+                "$resolution_record"
+            fi
             previous_release=$(gh api \
               "/repos/${GITHUB_REPOSITORY}/releases/tags/${previous_tag}")
             test "$(jq -r '.draft' <<<"$previous_release")" = false
@@ -289,9 +373,100 @@ jobs:
               "$previous_manifest"
             previous_manifest_sha256=$(sha256sum "$previous_manifest" | awk '{print $1}')
             test "$previous_manifest_sha256" = "$EXPECTED_PREVIOUS_MANIFEST_SHA256"
+            if [[ $resolved_replacement == true ]]; then
+              test "$(jq -er '.selected_workflow_commit' "$resolution_record")" \
+                = "$previous_workflow_commit"
+              test "$(jq -er '.predecessor_generation' "$resolution_record")" \
+                = "$(jq -er '.previous_generation' "$previous_manifest")"
+              test "$(jq -er '.predecessor_manifest_sha256' "$resolution_record")" \
+                = "$(jq -er '.previous_manifest_sha256' "$previous_manifest")"
+            fi
           fi
 
-          tag="authority-v1-g${generation}"
+          if [[ $replacement == true ]]; then
+            test "$genesis" = false
+            rejected_generation=$(jq -er '.rejected_generation' \
+              "$RUNNER_TEMP/approval-record.json")
+            test "$rejected_generation" = "$generation"
+            rejected_tag="authority-v1-g${rejected_generation}"
+            rejected_release=$(gh api \
+              "/repos/${GITHUB_REPOSITORY}/releases/tags/${rejected_tag}")
+            test "$(jq -r '.draft' <<<"$rejected_release")" = false
+            test "$(jq -r '.prerelease' <<<"$rejected_release")" = false
+            test "$(jq -r '.immutable' <<<"$rejected_release")" = true
+            rejected_workflow_commit=$(gh api \
+              "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${rejected_tag}" \
+              --jq '.object.sha')
+            test "$rejected_workflow_commit" = \
+              "$(jq -er '.rejected_workflow_commit' "$RUNNER_TEMP/approval-record.json")"
+            rejected_dir="$RUNNER_TEMP/rejected-authority"
+            mkdir -m 0700 "$rejected_dir"
+            gh release download "$rejected_tag" \
+              --repo "$GITHUB_REPOSITORY" --dir "$rejected_dir"
+            gh release verify "$rejected_tag" \
+              --repo "$GITHUB_REPOSITORY" >/dev/null
+            while IFS= read -r asset; do
+              gh release verify-asset "$rejected_tag" "$rejected_dir/$asset" \
+                --repo "$GITHUB_REPOSITORY" >/dev/null
+            done < <(jq -r '.assets[].name' <<<"$rejected_release")
+            jq -r '.assets[].name' <<<"$rejected_release" \
+              >"$RUNNER_TEMP/rejected-authority-assets.txt"
+            test "$(bash public-workflow/scripts/release-authority-manifest.sh \
+              asset-schema "$RUNNER_TEMP/rejected-authority-assets.txt")" = 2
+            rejected_manifest="$rejected_dir/release-authority-v2.json"
+            bash public-workflow/scripts/release-authority-manifest.sh validate \
+              "$rejected_manifest" 2 "$rejected_generation" \
+              "$rejected_workflow_commit" "$rejected_dir"
+            bash public-workflow/scripts/release-authority-manifest.sh \
+              assert-successor "$previous_manifest" "$rejected_manifest"
+            rejected_manifest_sha256=$(sha256sum "$rejected_manifest" | awk '{print $1}')
+            test "$rejected_manifest_sha256" = \
+              "$(jq -er '.rejected_manifest_sha256' "$RUNNER_TEMP/approval-record.json")"
+            test "$(jq -er '.authority_version' "$rejected_manifest")" = \
+              "$(jq -er '.rejected_authority_version' "$RUNNER_TEMP/approval-record.json")"
+            test "$(jq -er '.authority_commit' "$rejected_manifest")" = \
+              "$(jq -er '.rejected_authority_commit' "$RUNNER_TEMP/approval-record.json")"
+            cosign verify-blob \
+              --bundle "$rejected_dir/release-authority-v2.json.cosign.bundle" \
+              --certificate-identity \
+              "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-authority.yml@refs/heads/main" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              --certificate-github-workflow-sha "$rejected_workflow_commit" \
+              "$rejected_manifest"
+
+            rejected_version=$(jq -er '.rejected_authority_version' \
+              "$RUNNER_TEMP/approval-record.json")
+            rejected_product_commit=$(jq -er '.rejected_product_release_commit' \
+              "$RUNNER_TEMP/approval-record.json")
+            rejected_product_release=$(gh api \
+              "/repos/${GITHUB_REPOSITORY}/releases/tags/v${rejected_version}")
+            test "$(jq -r '.draft' <<<"$rejected_product_release")" = false
+            test "$(jq -r '.prerelease' <<<"$rejected_product_release")" = false
+            test "$(jq -r '.immutable' <<<"$rejected_product_release")" = true
+            test "$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/v${rejected_version}" \
+              --jq '.object.type')" = commit
+            test "$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/v${rejected_version}" \
+              --jq '.object.sha')" = "$rejected_product_commit"
+            test "$rejected_product_commit" != \
+              "$(jq -er '.rejected_authority_commit' "$RUNNER_TEMP/approval-record.json")"
+
+            selected_version=$(jq -er '.authority_version' \
+              "$RUNNER_TEMP/approval-record.json")
+            selected_commit=$(jq -er '.authority_commit' \
+              "$RUNNER_TEMP/approval-record.json")
+            selected_product_release=$(gh api \
+              "/repos/${GITHUB_REPOSITORY}/releases/tags/v${selected_version}")
+            test "$(jq -r '.draft' <<<"$selected_product_release")" = false
+            test "$(jq -r '.prerelease' <<<"$selected_product_release")" = false
+            test "$(jq -r '.immutable' <<<"$selected_product_release")" = true
+            test "$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/v${selected_version}" \
+              --jq '.object.type')" = commit
+            test "$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/v${selected_version}" \
+              --jq '.object.sha')" = "$selected_commit"
+            target_tag="authority-replacement-v1-g${generation}"
+          fi
+
+          tag=$target_tag
           tag_file="$RUNNER_TEMP/target-tag.json"
           tag_error="$RUNNER_TEMP/target-tag.error"
           tag_status=$(api_optional \
@@ -304,10 +479,15 @@ jobs:
             --jq '.[]' >"$release_inventory"
           release_status=$(release_by_tag \
             "$release_inventory" "$tag" "$release_file")
+          target_workflow_commit=$GITHUB_SHA
           if [[ $tag_status == present ]]; then
             tag_ref=$(<"$tag_file")
             test "$(jq -r '.object.type' <<<"$tag_ref")" = commit
-            test "$(jq -r '.object.sha' <<<"$tag_ref")" = "$GITHUB_SHA"
+            target_workflow_commit=$(jq -r '.object.sha' <<<"$tag_ref")
+            printf '%s' "$target_workflow_commit" | grep -Eq '^[0-9a-f]{40}$'
+            if [[ $replacement != true ]]; then
+              test "$target_workflow_commit" = "$GITHUB_SHA"
+            fi
           fi
           already_published=false
           if [[ $release_status == present ]]; then
@@ -332,7 +512,8 @@ jobs:
               done <"$RUNNER_TEMP/target-assets.txt"
               target_manifest="$target_dir/release-authority-v2.json"
               bash public-workflow/scripts/release-authority-manifest.sh validate \
-                "$target_manifest" 2 "$generation" "$GITHUB_SHA" "$target_dir"
+                "$target_manifest" 2 "$generation" \
+                "$target_workflow_commit" "$target_dir"
               if [[ $genesis == true ]]; then
                 bash public-workflow/scripts/release-authority-manifest.sh \
                   assert-genesis "$target_manifest"
@@ -369,9 +550,13 @@ jobs:
                 --certificate-identity \
                 "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-authority.yml@refs/heads/main" \
                 --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-                --certificate-github-workflow-sha "$GITHUB_SHA" \
+                --certificate-github-workflow-sha "$target_workflow_commit" \
                 "$target_manifest"
-              already_published=true
+              if [[ $replacement == true ]]; then
+                target_already_published=true
+              else
+                already_published=true
+              fi
             else
               test "$(jq -r '.draft' <<<"$target_release")" = true
               test "$(jq -r '.prerelease' <<<"$target_release")" = false
@@ -390,13 +575,16 @@ jobs:
             printf 'previous_manifest_sha256=%s\n' "$previous_manifest_sha256"
             printf 'previous_schema=%s\n' "$previous_schema"
             printf 'previous_workflow_commit=%s\n' "$previous_workflow_commit"
+            printf 'target_tag=%s\n' "$target_tag"
+            printf 'replacement=%s\n' "$replacement"
+            printf 'target_already_published=%s\n' "$target_already_published"
             printf 'already_published=%s\n' "$already_published"
             printf 'genesis=%s\n' "$genesis"
           } >>"$GITHUB_OUTPUT"
 
   repository_policy:
     needs: predecessor
-    if: needs.predecessor.outputs.already_published != 'true'
+    if: needs.predecessor.outputs.already_published != 'true' && needs.predecessor.outputs.target_already_published != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release-authority-source
@@ -419,7 +607,7 @@ jobs:
     needs:
       - predecessor
       - repository_policy
-    if: needs.predecessor.outputs.already_published != 'true'
+    if: needs.predecessor.outputs.already_published != 'true' && needs.predecessor.outputs.target_already_published != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release-authority-source
@@ -584,7 +772,7 @@ jobs:
     needs:
       - predecessor
       - source_metadata
-    if: needs.predecessor.outputs.already_published != 'true'
+    if: needs.predecessor.outputs.already_published != 'true' && needs.predecessor.outputs.target_already_published != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -945,7 +1133,7 @@ jobs:
       - predecessor
       - source_metadata
       - isolated_build
-    if: needs.predecessor.outputs.already_published != 'true'
+    if: needs.predecessor.outputs.already_published != 'true' && needs.predecessor.outputs.target_already_published != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -1111,7 +1299,7 @@ jobs:
       - source_metadata
       - compare_builds
       - repository_policy
-    if: needs.predecessor.outputs.already_published != 'true'
+    if: needs.predecessor.outputs.already_published != 'true' && needs.predecessor.outputs.target_already_published != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release-authority
@@ -1163,7 +1351,7 @@ jobs:
       - source_metadata
       - compare_builds
       - approval_policy
-    if: needs.predecessor.outputs.already_published != 'true'
+    if: needs.predecessor.outputs.already_published != 'true' && needs.predecessor.outputs.target_already_published != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -1299,6 +1487,61 @@ jobs:
             "$signed/"
           chmod 0500 "$signed"
 
+      - name: Sign exact replacement resolution
+        if: needs.predecessor.outputs.replacement == 'true'
+        shell: bash
+        env:
+          REPLACEMENT_PREDECESSOR_GENERATION: ${{ needs.predecessor.outputs.previous_generation }}
+          REPLACEMENT_PREDECESSOR_MANIFEST_SHA256: ${{ needs.predecessor.outputs.previous_manifest_sha256 }}
+          REJECTED_AUTHORITY_GENERATION: ${{ fromJSON(inputs.approval_record).rejected_generation }}
+          REJECTED_AUTHORITY_MANIFEST_SHA256: ${{ fromJSON(inputs.approval_record).rejected_manifest_sha256 }}
+          REJECTED_AUTHORITY_WORKFLOW_COMMIT: ${{ fromJSON(inputs.approval_record).rejected_workflow_commit }}
+          REJECTED_AUTHORITY_VERSION: ${{ fromJSON(inputs.approval_record).rejected_authority_version }}
+          REJECTED_AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).rejected_authority_commit }}
+          REJECTED_PRODUCT_RELEASE_COMMIT: ${{ fromJSON(inputs.approval_record).rejected_product_release_commit }}
+          SELECTED_AUTHORITY_GENERATION: ${{ needs.predecessor.outputs.generation }}
+          SELECTED_AUTHORITY_WORKFLOW_COMMIT: ${{ github.sha }}
+          SELECTED_AUTHORITY_VERSION: ${{ fromJSON(inputs.approval_record).authority_version }}
+          SELECTED_AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).authority_commit }}
+          RESOLUTION_WORKFLOW_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          resolution="$RUNNER_TEMP/signed-resolution"
+          mkdir -m 0700 "$resolution"
+          install -m 0500 \
+            public-workflow/scripts/recover-release-authority-replacement-v1.sh \
+            "$resolution/recover-release-authority-replacement-v1.sh"
+          install -m 0500 \
+            public-workflow/scripts/release-authority-manifest.sh \
+            "$resolution/release-authority-manifest.sh"
+          SELECTED_AUTHORITY_MANIFEST_SHA256=$(sha256sum \
+            "$RUNNER_TEMP/release-authority-v2.json" | awk '{print $1}')
+          RECOVERY_TOOL_SHA256=$(sha256sum \
+            "$resolution/recover-release-authority-replacement-v1.sh" | awk '{print $1}')
+          MANIFEST_HELPER_SHA256=$(sha256sum \
+            "$resolution/release-authority-manifest.sh" | awk '{print $1}')
+          export SELECTED_AUTHORITY_MANIFEST_SHA256
+          export RECOVERY_TOOL_SHA256 MANIFEST_HELPER_SHA256
+          bash public-workflow/scripts/release-authority-manifest.sh \
+            render-replacement-resolution \
+            "$resolution/release-authority-replacement-v1.json"
+          cosign sign-blob --yes \
+            --bundle "$resolution/release-authority-replacement-v1.json.cosign.bundle" \
+            "$resolution/release-authority-replacement-v1.json"
+          cosign verify-blob \
+            --bundle "$resolution/release-authority-replacement-v1.json.cosign.bundle" \
+            --certificate-identity \
+            "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-authority.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-github-workflow-sha "$GITHUB_SHA" \
+            "$resolution/release-authority-replacement-v1.json"
+          chmod 0400 \
+            "$resolution/release-authority-replacement-v1.json" \
+            "$resolution/release-authority-replacement-v1.json.cosign.bundle"
+          bash public-workflow/scripts/release-authority-manifest.sh \
+            validate-replacement-resolution-assets "$resolution"
+          chmod 0500 "$resolution"
+
       - name: Upload signed authority
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -1308,12 +1551,370 @@ jobs:
           retention-days: 3
           compression-level: 0
 
+      - name: Upload signed replacement resolution
+        if: needs.predecessor.outputs.replacement == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: signed-release-authority-resolution-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/signed-resolution
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+
+  recover_sign_resolution:
+    needs: predecessor
+    if: needs.predecessor.outputs.target_already_published == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      attestations: read
+      id-token: write
+    steps:
+      - name: Checkout exact public recovery helpers
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+          path: public-workflow
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+        with:
+          cosign-release: v2.5.2
+
+      - name: Recover or sign only the missing replacement resolution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GENERATION: ${{ needs.predecessor.outputs.generation }}
+          PREVIOUS_GENERATION: ${{ needs.predecessor.outputs.previous_generation }}
+          PREVIOUS_MANIFEST_SHA256: ${{ needs.predecessor.outputs.previous_manifest_sha256 }}
+          TARGET_TAG: ${{ needs.predecessor.outputs.target_tag }}
+          REJECTED_AUTHORITY_GENERATION: ${{ fromJSON(inputs.approval_record).rejected_generation }}
+          REJECTED_AUTHORITY_MANIFEST_SHA256: ${{ fromJSON(inputs.approval_record).rejected_manifest_sha256 }}
+          REJECTED_AUTHORITY_WORKFLOW_COMMIT: ${{ fromJSON(inputs.approval_record).rejected_workflow_commit }}
+          REJECTED_AUTHORITY_VERSION: ${{ fromJSON(inputs.approval_record).rejected_authority_version }}
+          REJECTED_AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).rejected_authority_commit }}
+          REJECTED_PRODUCT_RELEASE_COMMIT: ${{ fromJSON(inputs.approval_record).rejected_product_release_commit }}
+        run: |
+          set -euo pipefail
+          target="$RUNNER_TEMP/selected-authority"
+          mkdir -m 0700 "$target"
+          gh release download "$TARGET_TAG" \
+            --repo "$GITHUB_REPOSITORY" --dir "$target"
+          target_release=$(gh api \
+            "/repos/${GITHUB_REPOSITORY}/releases/tags/${TARGET_TAG}")
+          test "$(jq -r '.draft' <<<"$target_release")" = false
+          test "$(jq -r '.prerelease' <<<"$target_release")" = false
+          test "$(jq -r '.immutable' <<<"$target_release")" = true
+          gh release verify "$TARGET_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+          while IFS= read -r asset; do
+            gh release verify-asset "$TARGET_TAG" "$target/$asset" \
+              --repo "$GITHUB_REPOSITORY" >/dev/null
+          done < <(jq -r '.assets[].name' <<<"$target_release")
+          target_manifest="$target/release-authority-v2.json"
+          selected_workflow_commit=$(jq -er '.workflow_commit' "$target_manifest")
+          bash public-workflow/scripts/release-authority-manifest.sh validate \
+            "$target_manifest" 2 "$GENERATION" "$selected_workflow_commit" "$target"
+          cosign verify-blob \
+            --bundle "$target/release-authority-v2.json.cosign.bundle" \
+            --certificate-identity \
+            "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-authority.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-github-workflow-sha "$selected_workflow_commit" \
+            "$target_manifest"
+
+          resolution="$RUNNER_TEMP/signed-resolution"
+          mkdir -m 0700 "$resolution"
+          resolution_tag="authority-resolution-v1-g${GENERATION}"
+          inventory="$RUNNER_TEMP/resolution-inventory.jsons"
+          matches="$RUNNER_TEMP/resolution-matches.jsons"
+          gh api --paginate "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[]' >"$inventory"
+          jq -c --arg tag "$resolution_tag" \
+            'select(.tag_name == $tag)' "$inventory" >"$matches"
+          match_count=$(jq -s 'length' "$matches")
+          (( match_count <= 1 )) || { printf 'duplicate resolution releases\n' >&2; exit 1; }
+          reuse_existing=false
+          if (( match_count == 1 )); then
+            existing_release=$(jq -s '.[0]' "$matches")
+            while IFS=$'\t' read -r asset_id asset_name; do
+              printf '%s' "$asset_name" | grep -Eq '^[A-Za-z0-9._-]+$'
+              gh api \
+                -H 'Accept: application/octet-stream' \
+                "/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+                >"$resolution/$asset_name"
+            done < <(jq -r '.assets[] | [.id, .name] | @tsv' <<<"$existing_release")
+            if bash public-workflow/scripts/release-authority-manifest.sh \
+              validate-replacement-resolution-assets "$resolution"; then
+              record="$resolution/release-authority-replacement-v1.json"
+              resolution_workflow_commit=$(jq -er '.resolution_workflow_commit' "$record")
+              if [[ $(jq -r '.draft' <<<"$existing_release") == true ]]; then
+                test "$(jq -r '.target_commitish' <<<"$existing_release")" \
+                  = "$resolution_workflow_commit"
+              else
+                test "$(jq -r '.prerelease' <<<"$existing_release")" = false
+                test "$(jq -r '.immutable' <<<"$existing_release")" = true
+                test "$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${resolution_tag}" \
+                  --jq '.object.sha')" = "$resolution_workflow_commit"
+              fi
+              reuse_existing=true
+            else
+              test "$(jq -r '.draft' <<<"$existing_release")" = true
+              resolution="$RUNNER_TEMP/signed-resolution-rebuilt"
+              mkdir -m 0700 "$resolution"
+            fi
+          fi
+          if [[ $reuse_existing != true ]]; then
+            tag_file="$RUNNER_TEMP/resolution-tag.json"
+            if gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${resolution_tag}" \
+              >"$tag_file" 2>"$RUNNER_TEMP/resolution-tag.error"; then
+              printf 'orphan replacement-resolution tag exists\n' >&2
+              exit 1
+            fi
+            grep -Eq '\(HTTP 404\)$' "$RUNNER_TEMP/resolution-tag.error"
+            install -m 0500 \
+              public-workflow/scripts/recover-release-authority-replacement-v1.sh \
+              "$resolution/recover-release-authority-replacement-v1.sh"
+            install -m 0500 \
+              public-workflow/scripts/release-authority-manifest.sh \
+              "$resolution/release-authority-manifest.sh"
+            REPLACEMENT_PREDECESSOR_GENERATION=$PREVIOUS_GENERATION
+            REPLACEMENT_PREDECESSOR_MANIFEST_SHA256=$PREVIOUS_MANIFEST_SHA256
+            SELECTED_AUTHORITY_GENERATION=$GENERATION
+            SELECTED_AUTHORITY_MANIFEST_SHA256=$(sha256sum "$target_manifest" | awk '{print $1}')
+            SELECTED_AUTHORITY_WORKFLOW_COMMIT=$selected_workflow_commit
+            SELECTED_AUTHORITY_VERSION=$(jq -er '.authority_version' "$target_manifest")
+            SELECTED_AUTHORITY_COMMIT=$(jq -er '.authority_commit' "$target_manifest")
+            RECOVERY_TOOL_SHA256=$(sha256sum \
+              "$resolution/recover-release-authority-replacement-v1.sh" | awk '{print $1}')
+            MANIFEST_HELPER_SHA256=$(sha256sum \
+              "$resolution/release-authority-manifest.sh" | awk '{print $1}')
+            RESOLUTION_WORKFLOW_COMMIT=$GITHUB_SHA
+            export REPLACEMENT_PREDECESSOR_GENERATION
+            export REPLACEMENT_PREDECESSOR_MANIFEST_SHA256
+            export SELECTED_AUTHORITY_GENERATION SELECTED_AUTHORITY_MANIFEST_SHA256
+            export SELECTED_AUTHORITY_WORKFLOW_COMMIT SELECTED_AUTHORITY_VERSION
+            export SELECTED_AUTHORITY_COMMIT RECOVERY_TOOL_SHA256
+            export MANIFEST_HELPER_SHA256 RESOLUTION_WORKFLOW_COMMIT
+            bash public-workflow/scripts/release-authority-manifest.sh \
+              render-replacement-resolution \
+              "$resolution/release-authority-replacement-v1.json"
+            cosign sign-blob --yes \
+              --bundle "$resolution/release-authority-replacement-v1.json.cosign.bundle" \
+              "$resolution/release-authority-replacement-v1.json"
+            record="$resolution/release-authority-replacement-v1.json"
+            resolution_workflow_commit=$GITHUB_SHA
+          fi
+          test "$(jq -er '.predecessor_generation' "$record")" = "$PREVIOUS_GENERATION"
+          test "$(jq -er '.predecessor_manifest_sha256' "$record")" \
+            = "$PREVIOUS_MANIFEST_SHA256"
+          # shellcheck disable=SC2153 # GitHub injects this exact env key.
+          rejected_generation=$REJECTED_AUTHORITY_GENERATION
+          # shellcheck disable=SC2153 # GitHub injects this exact env key.
+          rejected_manifest_sha256=$REJECTED_AUTHORITY_MANIFEST_SHA256
+          test "$(jq -er '.rejected_generation' "$record")" = "$rejected_generation"
+          test "$(jq -er '.rejected_manifest_sha256' "$record")" \
+            = "$rejected_manifest_sha256"
+          test "$(jq -er '.selected_manifest_sha256' "$record")" \
+            = "$(sha256sum "$target_manifest" | awk '{print $1}')"
+          test "$(jq -er '.selected_workflow_commit' "$record")" \
+            = "$selected_workflow_commit"
+          cosign verify-blob \
+            --bundle "$resolution/release-authority-replacement-v1.json.cosign.bundle" \
+            --certificate-identity \
+            "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-authority.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-github-workflow-sha "$resolution_workflow_commit" \
+            "$record"
+          chmod 0400 "$record" \
+            "$resolution/release-authority-replacement-v1.json.cosign.bundle"
+          chmod 0500 "$resolution/recover-release-authority-replacement-v1.sh" \
+            "$resolution/release-authority-manifest.sh" "$resolution"
+
+      - name: Upload recovered replacement resolution
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: recovered-release-authority-resolution-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/signed-resolution
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+
+  recover_publish_resolution:
+    needs:
+      - predecessor
+      - recover_sign_resolution
+    if: needs.predecessor.outputs.target_already_published == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release-authority
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    steps:
+      - name: Checkout exact public recovery helpers
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+          path: public-workflow
+
+      - name: Recheck policy before resolution recovery
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SYNTAUR_RELEASE_AUTHORITY_ADMIN_READ_TOKEN }}
+        run: bash public-workflow/scripts/verify-release-authority-policy.sh
+
+      - name: Download recovered replacement resolution
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: recovered-release-authority-resolution-run-${{ github.run_id }}-attempt-*
+          path: recovered-resolution-artifacts
+
+      - name: Select recovered replacement resolution
+        shell: bash
+        run: |
+          set -euo pipefail
+          selected=$(find recovered-resolution-artifacts \
+            -mindepth 1 -maxdepth 1 -type d \
+            -name "recovered-release-authority-resolution-run-${GITHUB_RUN_ID}-attempt-*" \
+            -printf '%f\n' | sort -V | sed -n '$p')
+          if [[ -n $selected ]]; then
+            mv "recovered-resolution-artifacts/$selected" signed-resolution
+          else
+            mv recovered-resolution-artifacts signed-resolution
+          fi
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+        with:
+          cosign-release: v2.5.2
+
+      - name: Publish or finish exact recovered replacement resolution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SYNTAUR_RELEASE_AUTHORITY_PUBLISH_TOKEN }}
+          GENERATION: ${{ needs.predecessor.outputs.generation }}
+          TARGET_TAG: ${{ needs.predecessor.outputs.target_tag }}
+        run: |
+          set -euo pipefail
+          resolution_tag="authority-resolution-v1-g${GENERATION}"
+          record=signed-resolution/release-authority-replacement-v1.json
+          workflow_commit=$(jq -er '.resolution_workflow_commit' "$record")
+          bash public-workflow/scripts/release-authority-manifest.sh \
+            validate-replacement-resolution-assets signed-resolution
+          cosign verify-blob \
+            --bundle signed-resolution/release-authority-replacement-v1.json.cosign.bundle \
+            --certificate-identity \
+            "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-authority.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-github-workflow-sha "$workflow_commit" \
+            "$record"
+          inventory="$RUNNER_TEMP/resolution-inventory.jsons"
+          matches="$RUNNER_TEMP/resolution-matches.jsons"
+          gh api --paginate "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[]' >"$inventory"
+          jq -c --arg tag "$resolution_tag" \
+            'select(.tag_name == $tag)' "$inventory" >"$matches"
+          count=$(jq -s 'length' "$matches")
+          (( count <= 1 )) || { printf 'duplicate resolution releases\n' >&2; exit 1; }
+          if (( count == 0 )); then
+            if gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${resolution_tag}" \
+              >"$RUNNER_TEMP/orphan-tag.json" 2>"$RUNNER_TEMP/orphan-tag.error"; then
+              printf 'orphan replacement-resolution tag exists\n' >&2
+              exit 1
+            fi
+            grep -Eq '\(HTTP 404\)$' "$RUNNER_TEMP/orphan-tag.error"
+            release=$(gh api --method POST \
+              "/repos/${GITHUB_REPOSITORY}/releases" \
+              -f tag_name="$resolution_tag" \
+              -f target_commitish="$workflow_commit" \
+              -f name="Release authority replacement resolution G${GENERATION}" \
+              -f body="Signed one-shot resolution selecting ${TARGET_TAG}; the rejected authority release remains immutable." \
+              -F draft=true -F prerelease=false -f make_latest=false)
+          else
+            release=$(jq -s '.[0]' "$matches")
+          fi
+          resolution_tag_present=false
+          if gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${resolution_tag}" \
+            >"$RUNNER_TEMP/recovery-resolution-tag.json" \
+            2>"$RUNNER_TEMP/recovery-resolution-tag.error"; then
+            resolution_tag_present=true
+            test "$(jq -r '.object.type' \
+              "$RUNNER_TEMP/recovery-resolution-tag.json")" = commit
+            test "$(jq -r '.object.sha' \
+              "$RUNNER_TEMP/recovery-resolution-tag.json")" = "$workflow_commit"
+          else
+            grep -Eq '\(HTTP 404\)$' \
+              "$RUNNER_TEMP/recovery-resolution-tag.error"
+          fi
+          if [[ $(jq -r '.draft' <<<"$release") == false ]]; then
+            test "$resolution_tag_present" = true
+          fi
+          if [[ $(jq -r '.draft' <<<"$release") == true ]]; then
+            release_id=$(jq -er '.id' <<<"$release")
+            if [[ $(jq -r '.target_commitish' <<<"$release") != "$workflow_commit" ]]; then
+              gh api --method PATCH \
+                "/repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+                -f target_commitish="$workflow_commit" >/dev/null
+              release=$(gh api "/repos/${GITHUB_REPOSITORY}/releases/${release_id}")
+            fi
+            expected_assets=$(find signed-resolution -mindepth 1 -maxdepth 1 \
+              -type f -printf '%f\n' | LC_ALL=C sort)
+            observed_assets=$(jq -r '.assets[].name' <<<"$release" | LC_ALL=C sort)
+            draft_matches=false
+            if [[ $observed_assets == "$expected_assets" ]]; then
+              proof="$RUNNER_TEMP/recovered-resolution-draft"
+              mkdir -m 0700 "$proof"
+              draft_matches=true
+              while IFS=$'\t' read -r asset_id asset_name; do
+                printf '%s' "$asset_name" | grep -Eq '^[A-Za-z0-9._-]+$'
+                gh api -H 'Accept: application/octet-stream' \
+                  "/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+                  >"$proof/$asset_name"
+                if ! cmp -s "signed-resolution/$asset_name" "$proof/$asset_name"; then
+                  draft_matches=false
+                fi
+              done < <(jq -r '.assets[] | [.id, .name] | @tsv' <<<"$release")
+            fi
+            if [[ $draft_matches != true ]]; then
+              while IFS= read -r asset_id; do
+                gh api --method DELETE \
+                  "/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}"
+              done < <(jq -r '.assets[].id' <<<"$release")
+              gh release upload "$resolution_tag" \
+                signed-resolution/recover-release-authority-replacement-v1.sh \
+                signed-resolution/release-authority-manifest.sh \
+                signed-resolution/release-authority-replacement-v1.json \
+                signed-resolution/release-authority-replacement-v1.json.cosign.bundle \
+                --repo "$GITHUB_REPOSITORY"
+            fi
+            release=$(gh api "/repos/${GITHUB_REPOSITORY}/releases/${release_id}")
+            observed_assets=$(jq -r '.assets[].name' <<<"$release" | LC_ALL=C sort)
+            test "$observed_assets" = "$expected_assets"
+            gh api --method PATCH \
+              "/repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              -F draft=false -F prerelease=false -f make_latest=false >/dev/null
+          fi
+          final=$(gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/${resolution_tag}")
+          test "$(jq -r '.draft' <<<"$final")" = false
+          test "$(jq -r '.prerelease' <<<"$final")" = false
+          test "$(jq -r '.immutable' <<<"$final")" = true
+          test "$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${resolution_tag}" \
+            --jq '.object.sha')" = "$workflow_commit"
+          gh release verify "$resolution_tag" --repo "$GITHUB_REPOSITORY" >/dev/null
+          while IFS= read -r asset; do
+            gh release verify-asset "$resolution_tag" "signed-resolution/$asset" \
+              --repo "$GITHUB_REPOSITORY" >/dev/null
+          done < <(find signed-resolution -mindepth 1 -maxdepth 1 -type f -printf '%f\n')
+
   publish:
     needs:
       - predecessor
       - source_metadata
       - sign
-    if: needs.predecessor.outputs.already_published != 'true'
+    if: needs.predecessor.outputs.already_published != 'true' && needs.predecessor.outputs.target_already_published != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: release-authority
@@ -1340,6 +1941,13 @@ jobs:
           pattern: signed-release-authority-run-${{ github.run_id }}-attempt-*
           path: signed-authority-artifacts
 
+      - name: Download signed replacement resolution
+        if: needs.predecessor.outputs.replacement == 'true'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: signed-release-authority-resolution-run-${{ github.run_id }}-attempt-*
+          path: signed-resolution-artifacts
+
       - name: Select newest immutable signed package from this run
         shell: bash
         run: |
@@ -1356,6 +1964,25 @@ jobs:
             test -z "$(find signed-authority-artifacts \
               -mindepth 1 -maxdepth 1 -type d -print -quit)"
             mv signed-authority-artifacts signed-authority
+          fi
+
+      - name: Select newest immutable signed replacement resolution
+        if: needs.predecessor.outputs.replacement == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          selected=$(find signed-resolution-artifacts \
+            -mindepth 1 -maxdepth 1 -type d \
+            -name "signed-release-authority-resolution-run-${GITHUB_RUN_ID}-attempt-*" \
+            -printf '%f\n' | sort -V | sed -n '$p')
+          if [[ -n $selected ]]; then
+            test -z "$(find signed-resolution-artifacts \
+              -mindepth 1 -maxdepth 1 ! -type d -print -quit)"
+            mv "signed-resolution-artifacts/$selected" signed-resolution
+          else
+            test -z "$(find signed-resolution-artifacts \
+              -mindepth 1 -maxdepth 1 -type d -print -quit)"
+            mv signed-resolution-artifacts signed-resolution
           fi
 
       - name: Install Cosign
@@ -1416,6 +2043,53 @@ jobs:
             --certificate-github-workflow-sha "$GITHUB_SHA" \
             "$manifest"
 
+      - name: Reverify signed replacement resolution
+        if: needs.predecessor.outputs.replacement == 'true'
+        shell: bash
+        env:
+          GENERATION: ${{ needs.predecessor.outputs.generation }}
+          PREVIOUS_GENERATION: ${{ needs.predecessor.outputs.previous_generation }}
+          PREVIOUS_MANIFEST_SHA256: ${{ needs.predecessor.outputs.previous_manifest_sha256 }}
+          REJECTED_MANIFEST_SHA256: ${{ fromJSON(inputs.approval_record).rejected_manifest_sha256 }}
+          SELECTED_AUTHORITY_VERSION: ${{ fromJSON(inputs.approval_record).authority_version }}
+          SELECTED_AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).authority_commit }}
+        run: |
+          set -euo pipefail
+          chmod 0500 signed-resolution
+          chmod 0400 \
+            signed-resolution/release-authority-replacement-v1.json \
+            signed-resolution/release-authority-replacement-v1.json.cosign.bundle
+          chmod 0500 \
+            signed-resolution/recover-release-authority-replacement-v1.sh \
+            signed-resolution/release-authority-manifest.sh
+          bash public-workflow/scripts/release-authority-manifest.sh \
+            validate-replacement-resolution-assets signed-resolution
+          resolution=signed-resolution/release-authority-replacement-v1.json
+          selected_manifest=signed-authority/release-authority-v2.json
+          test "$(jq -er '.predecessor_generation' "$resolution")" \
+            = "$PREVIOUS_GENERATION"
+          test "$(jq -er '.predecessor_manifest_sha256' "$resolution")" \
+            = "$PREVIOUS_MANIFEST_SHA256"
+          test "$(jq -er '.rejected_generation' "$resolution")" = "$GENERATION"
+          test "$(jq -er '.rejected_manifest_sha256' "$resolution")" \
+            = "$REJECTED_MANIFEST_SHA256"
+          test "$(jq -er '.selected_generation' "$resolution")" = "$GENERATION"
+          test "$(jq -er '.selected_manifest_sha256' "$resolution")" \
+            = "$(sha256sum "$selected_manifest" | awk '{print $1}')"
+          test "$(jq -er '.selected_workflow_commit' "$resolution")" = "$GITHUB_SHA"
+          test "$(jq -er '.resolution_workflow_commit' "$resolution")" = "$GITHUB_SHA"
+          test "$(jq -er '.selected_authority_version' "$resolution")" \
+            = "$SELECTED_AUTHORITY_VERSION"
+          test "$(jq -er '.selected_authority_commit' "$resolution")" \
+            = "$SELECTED_AUTHORITY_COMMIT"
+          cosign verify-blob \
+            --bundle signed-resolution/release-authority-replacement-v1.json.cosign.bundle \
+            --certificate-identity \
+            "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-authority.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-github-workflow-sha "$GITHUB_SHA" \
+            "$resolution"
+
       - name: Recover draft and publish immutable exact successor
         shell: bash
         env:
@@ -1424,6 +2098,7 @@ jobs:
           PREVIOUS_GENERATION: ${{ needs.predecessor.outputs.previous_generation }}
           AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).authority_commit }}
           VERIFICATION_POLICY_REVISION: ${{ fromJSON(inputs.approval_record).verification_policy_revision }}
+          TARGET_TAG: ${{ needs.predecessor.outputs.target_tag }}
         run: |
           set -euo pipefail
           api_optional() {
@@ -1531,7 +2206,7 @@ jobs:
             return 1
           }
 
-          tag="authority-v1-g${GENERATION}"
+          tag=$TARGET_TAG
           test "$GENERATION" = "$((PREVIOUS_GENERATION + 1))"
           expected_assets=$(printf '%s\n' \
             release-authority-v2.json \
@@ -1692,3 +2367,130 @@ jobs:
           test "$(gh api \
             "/repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')" \
             != "$tag"
+
+      - name: Publish immutable replacement resolution last
+        if: needs.predecessor.outputs.replacement == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SYNTAUR_RELEASE_AUTHORITY_PUBLISH_TOKEN }}
+          GENERATION: ${{ needs.predecessor.outputs.generation }}
+          TARGET_TAG: ${{ needs.predecessor.outputs.target_tag }}
+        run: |
+          set -euo pipefail
+          api_optional() {
+            local endpoint=$1 output=$2 error_file=$3
+            if gh api "$endpoint" >"$output" 2>"$error_file"; then
+              printf 'present\n'
+              return
+            fi
+            if grep -Eq '\(HTTP 404\)$' "$error_file"; then
+              : >"$output"
+              printf 'absent\n'
+              return
+            fi
+            cat "$error_file" >&2
+            return 1
+          }
+          target_release=$(gh api \
+            "/repos/${GITHUB_REPOSITORY}/releases/tags/${TARGET_TAG}")
+          test "$(jq -r '.draft' <<<"$target_release")" = false
+          test "$(jq -r '.prerelease' <<<"$target_release")" = false
+          test "$(jq -r '.immutable' <<<"$target_release")" = true
+
+          tag="authority-resolution-v1-g${GENERATION}"
+          expected_assets=$(printf '%s\n' \
+            recover-release-authority-replacement-v1.sh \
+            release-authority-manifest.sh \
+            release-authority-replacement-v1.json \
+            release-authority-replacement-v1.json.cosign.bundle \
+            | LC_ALL=C sort)
+          actual_assets=$(find signed-resolution -mindepth 1 -maxdepth 1 \
+            -type f -printf '%f\n' | LC_ALL=C sort)
+          test "$actual_assets" = "$expected_assets"
+          tag_file="$RUNNER_TEMP/resolution-tag.json"
+          tag_error="$RUNNER_TEMP/resolution-tag.error"
+          tag_status=$(api_optional \
+            "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" \
+            "$tag_file" "$tag_error")
+          release_file="$RUNNER_TEMP/resolution-release.json"
+          release_error="$RUNNER_TEMP/resolution-release.error"
+          release_status=$(api_optional \
+            "/repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" \
+            "$release_file" "$release_error")
+          if [[ $tag_status == present ]]; then
+            test "$(jq -r '.object.type' "$tag_file")" = commit
+            test "$(jq -r '.object.sha' "$tag_file")" = "$GITHUB_SHA"
+          fi
+          if [[ $release_status == present ]]; then
+            release=$(<"$release_file")
+            test "$(jq -r '.tag_name' <<<"$release")" = "$tag"
+            test "$(jq -r '.prerelease' <<<"$release")" = false
+            if [[ $(jq -r '.draft' <<<"$release") == false ]]; then
+              test "$tag_status" = present
+              test "$(jq -r '.immutable' <<<"$release")" = true
+            else
+              test "$(jq -r '.immutable' <<<"$release")" = false
+              test "$(jq -r '.target_commitish' <<<"$release")" = "$GITHUB_SHA"
+            fi
+          else
+            test "$tag_status" = absent
+          fi
+          if [[ $release_status == absent ]]; then
+            release=$(gh api --method POST \
+              "/repos/${GITHUB_REPOSITORY}/releases" \
+              -f tag_name="$tag" \
+              -f target_commitish="$GITHUB_SHA" \
+              -f name="Release authority replacement resolution G${GENERATION}" \
+              -f body="Signed one-shot resolution selecting ${TARGET_TAG}; the rejected authority release remains immutable." \
+              -F draft=true \
+              -F prerelease=false \
+              -f make_latest=false)
+            release_status=present
+          fi
+          if [[ $(jq -r '.draft' <<<"$release") == true ]]; then
+            draft_assets=$(jq -r '.assets[].name' <<<"$release" | LC_ALL=C sort)
+            if [[ -z $draft_assets ]]; then
+              gh release upload "$tag" \
+                signed-resolution/recover-release-authority-replacement-v1.sh \
+                signed-resolution/release-authority-manifest.sh \
+                signed-resolution/release-authority-replacement-v1.json \
+                signed-resolution/release-authority-replacement-v1.json.cosign.bundle \
+                --repo "$GITHUB_REPOSITORY"
+            else
+              test "$draft_assets" = "$expected_assets"
+              proof="$RUNNER_TEMP/existing-resolution-draft"
+              mkdir -m 0700 "$proof"
+              gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$proof"
+              while IFS= read -r asset; do
+                cmp "signed-resolution/$asset" "$proof/$asset"
+              done <<<"$expected_assets"
+            fi
+            release_id=$(jq -er '.id' <<<"$release")
+            release=$(gh api "/repos/${GITHUB_REPOSITORY}/releases/${release_id}")
+            test "$(jq -r '.draft' <<<"$release")" = true
+            actual_assets=$(jq -r '.assets[].name' <<<"$release" | LC_ALL=C sort)
+            test "$actual_assets" = "$expected_assets"
+            gh api --method PATCH \
+              "/repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              -F draft=false \
+              -F prerelease=false \
+              -f make_latest=false >/dev/null
+          fi
+          release=$(gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/${tag}")
+          test "$(jq -r '.draft' <<<"$release")" = false
+          test "$(jq -r '.prerelease' <<<"$release")" = false
+          test "$(jq -r '.immutable' <<<"$release")" = true
+          actual_assets=$(jq -r '.assets[].name' <<<"$release" | LC_ALL=C sort)
+          test "$actual_assets" = "$expected_assets"
+          gh release verify "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null
+          while IFS= read -r asset; do
+            gh release verify-asset "$tag" "signed-resolution/$asset" \
+              --repo "$GITHUB_REPOSITORY" >/dev/null
+          done <<<"$expected_assets"
+          cosign verify-blob \
+            --bundle signed-resolution/release-authority-replacement-v1.json.cosign.bundle \
+            --certificate-identity \
+            "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-authority.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-github-workflow-sha "$GITHUB_SHA" \
+            signed-resolution/release-authority-replacement-v1.json

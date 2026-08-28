@@ -94,7 +94,11 @@ jq -e '
     .name == "release-authority-tags" and
     .target == "tag" and
     .enforcement == "active" and
-    .conditions.ref_name.include == ["refs/tags/authority-v1-g*"] and
+    (.conditions.ref_name.include | sort) == [
+      "refs/tags/authority-replacement-v1-g*",
+      "refs/tags/authority-resolution-v1-g*",
+      "refs/tags/authority-v1-g*"
+    ] and
     .conditions.ref_name.exclude == [] and
     ([.rules[].type] | sort) == [
       "creation",

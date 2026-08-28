@@ -124,6 +124,180 @@ printf '%s\n' "$(<"$tmp_root/approval-record.json")" \
     >"$tmp_root/approval-record-newline.json"
 expect_failure "$helper" validate-approval-record "$tmp_root/approval-record-newline.json"
 
+AUTHORITY_APPROVAL_SCHEMA=2
+REJECTED_AUTHORITY_GENERATION=701
+REJECTED_AUTHORITY_MANIFEST_SHA256=$(digest_text rejected-authority-manifest)
+REJECTED_AUTHORITY_WORKFLOW_COMMIT=$(printf 'd%.0s' {1..40})
+REJECTED_AUTHORITY_VERSION=0.7.115
+REJECTED_AUTHORITY_COMMIT=$(printf 'e%.0s' {1..40})
+REJECTED_PRODUCT_RELEASE_COMMIT=$(printf 'f%.0s' {1..40})
+AUTHORITY_REPLACEMENT_REASON=authority_target_mismatch
+export AUTHORITY_APPROVAL_SCHEMA REJECTED_AUTHORITY_GENERATION
+export REJECTED_AUTHORITY_MANIFEST_SHA256 REJECTED_AUTHORITY_WORKFLOW_COMMIT
+export REJECTED_AUTHORITY_VERSION REJECTED_AUTHORITY_COMMIT
+export REJECTED_PRODUCT_RELEASE_COMMIT AUTHORITY_REPLACEMENT_REASON
+"$helper" render-approval-record "$tmp_root/replacement-approval-record.json"
+"$helper" validate-approval-record "$tmp_root/replacement-approval-record.json"
+jq -e '
+    .schema == 2 and
+    .rejected_generation == 701 and
+    .replacement_reason == "authority_target_mismatch"
+' "$tmp_root/replacement-approval-record.json" >/dev/null
+jq -c '.rejected_product_release_commit = .rejected_authority_commit' \
+    "$tmp_root/replacement-approval-record.json" \
+    >"$tmp_root/replacement-approval-same-target.json"
+expect_failure "$helper" validate-approval-record \
+    "$tmp_root/replacement-approval-same-target.json"
+jq -c '.replacement_reason = "operator_override"' \
+    "$tmp_root/replacement-approval-record.json" \
+    >"$tmp_root/replacement-approval-wrong-reason.json"
+expect_failure "$helper" validate-approval-record \
+    "$tmp_root/replacement-approval-wrong-reason.json"
+jq -c '. + {unexpected:true}' "$tmp_root/replacement-approval-record.json" \
+    >"$tmp_root/replacement-approval-extra.json"
+expect_failure "$helper" validate-approval-record \
+    "$tmp_root/replacement-approval-extra.json"
+unset AUTHORITY_APPROVAL_SCHEMA REJECTED_AUTHORITY_GENERATION
+unset REJECTED_AUTHORITY_MANIFEST_SHA256 REJECTED_AUTHORITY_WORKFLOW_COMMIT
+unset REJECTED_AUTHORITY_VERSION REJECTED_AUTHORITY_COMMIT
+unset REJECTED_PRODUCT_RELEASE_COMMIT AUTHORITY_REPLACEMENT_REASON
+
+resolution_dir="$tmp_root/replacement-resolution"
+mkdir -m 0700 "$resolution_dir"
+printf '#!/usr/bin/bash\nset -euo pipefail\n' \
+    >"$resolution_dir/recover-release-authority-replacement-v1.sh"
+chmod 0500 "$resolution_dir/recover-release-authority-replacement-v1.sh"
+cp "$helper" "$resolution_dir/release-authority-manifest.sh"
+chmod 0500 "$resolution_dir/release-authority-manifest.sh"
+selected_authority_version=$AUTHORITY_VERSION
+selected_authority_commit=$AUTHORITY_COMMIT
+selected_workflow_commit=$GITHUB_SHA
+AUTHORITY_VERSION=0.7.115
+AUTHORITY_COMMIT=$(printf 'e%.0s' {1..40})
+GITHUB_SHA=$(printf 'd%.0s' {1..40})
+"$helper" render-v2 "$tmp_root/rejected-release-authority-v2.json"
+"$helper" validate \
+    "$tmp_root/rejected-release-authority-v2.json" 2 701 "$GITHUB_SHA" "$payload"
+AUTHORITY_VERSION=$selected_authority_version
+AUTHORITY_COMMIT=$selected_authority_commit
+GITHUB_SHA=$selected_workflow_commit
+REPLACEMENT_PREDECESSOR_GENERATION=700
+REPLACEMENT_PREDECESSOR_MANIFEST_SHA256=$PREVIOUS_AUTHORITY_MANIFEST_SHA256
+REJECTED_AUTHORITY_GENERATION=701
+REJECTED_AUTHORITY_MANIFEST_SHA256=$(sha256sum \
+    "$tmp_root/rejected-release-authority-v2.json" | awk '{print $1}')
+REJECTED_AUTHORITY_WORKFLOW_COMMIT=$(printf 'd%.0s' {1..40})
+REJECTED_AUTHORITY_VERSION=0.7.115
+REJECTED_AUTHORITY_COMMIT=$(printf 'e%.0s' {1..40})
+REJECTED_PRODUCT_RELEASE_COMMIT=$(printf 'f%.0s' {1..40})
+SELECTED_AUTHORITY_GENERATION=701
+SELECTED_AUTHORITY_MANIFEST_SHA256=$(sha256sum \
+    "$tmp_root/release-authority-v2.json" | awk '{print $1}')
+SELECTED_AUTHORITY_WORKFLOW_COMMIT=$GITHUB_SHA
+SELECTED_AUTHORITY_VERSION=$AUTHORITY_VERSION
+SELECTED_AUTHORITY_COMMIT=$AUTHORITY_COMMIT
+RECOVERY_TOOL_SHA256=$(sha256sum \
+    "$resolution_dir/recover-release-authority-replacement-v1.sh" | awk '{print $1}')
+MANIFEST_HELPER_SHA256=$(sha256sum \
+    "$resolution_dir/release-authority-manifest.sh" | awk '{print $1}')
+RESOLUTION_WORKFLOW_COMMIT=$(printf '1%.0s' {1..40})
+export REPLACEMENT_PREDECESSOR_GENERATION
+export REPLACEMENT_PREDECESSOR_MANIFEST_SHA256
+export REJECTED_AUTHORITY_GENERATION REJECTED_AUTHORITY_MANIFEST_SHA256
+export REJECTED_AUTHORITY_WORKFLOW_COMMIT REJECTED_AUTHORITY_VERSION
+export REJECTED_AUTHORITY_COMMIT REJECTED_PRODUCT_RELEASE_COMMIT
+export SELECTED_AUTHORITY_GENERATION SELECTED_AUTHORITY_MANIFEST_SHA256
+export SELECTED_AUTHORITY_WORKFLOW_COMMIT SELECTED_AUTHORITY_VERSION
+export SELECTED_AUTHORITY_COMMIT RECOVERY_TOOL_SHA256 MANIFEST_HELPER_SHA256
+export RESOLUTION_WORKFLOW_COMMIT
+"$helper" render-replacement-resolution \
+    "$resolution_dir/release-authority-replacement-v1.json"
+printf '{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}\n' \
+    >"$resolution_dir/release-authority-replacement-v1.json.cosign.bundle"
+"$helper" validate-replacement-resolution \
+    "$resolution_dir/release-authority-replacement-v1.json"
+"$helper" validate-replacement-resolution-assets "$resolution_dir"
+"$helper" assert-replacement \
+    "$tmp_root/release-authority-v1.json" \
+    "$tmp_root/rejected-release-authority-v2.json" \
+    "$tmp_root/release-authority-v2.json" \
+    "$resolution_dir/release-authority-replacement-v1.json"
+jq -c '.selected_tag = "authority-v1-g701"' \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    >"$tmp_root/replacement-resolution-wrong-tag.json"
+expect_failure "$helper" validate-replacement-resolution \
+    "$tmp_root/replacement-resolution-wrong-tag.json"
+jq -c '.selected_manifest_sha256 = .rejected_manifest_sha256' \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    >"$tmp_root/replacement-resolution-same-manifest.json"
+expect_failure "$helper" validate-replacement-resolution \
+    "$tmp_root/replacement-resolution-same-manifest.json"
+jq -c --arg digest "$(digest_text wrong-predecessor)" \
+    '.predecessor_manifest_sha256 = $digest' \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    >"$tmp_root/replacement-resolution-wrong-predecessor.json"
+expect_failure "$helper" assert-replacement \
+    "$tmp_root/release-authority-v1.json" \
+    "$tmp_root/rejected-release-authority-v2.json" \
+    "$tmp_root/release-authority-v2.json" \
+    "$tmp_root/replacement-resolution-wrong-predecessor.json"
+jq -c --arg commit "$(printf '2%.0s' {1..40})" \
+    '.rejected_workflow_commit = $commit' \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    >"$tmp_root/replacement-resolution-wrong-rejected-workflow.json"
+expect_failure "$helper" assert-replacement \
+    "$tmp_root/release-authority-v1.json" \
+    "$tmp_root/rejected-release-authority-v2.json" \
+    "$tmp_root/release-authority-v2.json" \
+    "$tmp_root/replacement-resolution-wrong-rejected-workflow.json"
+jq -c --arg commit "$(printf '3%.0s' {1..40})" \
+    '.selected_workflow_commit = $commit' \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    >"$tmp_root/replacement-resolution-wrong-selected-workflow.json"
+expect_failure "$helper" assert-replacement \
+    "$tmp_root/release-authority-v1.json" \
+    "$tmp_root/rejected-release-authority-v2.json" \
+    "$tmp_root/release-authority-v2.json" \
+    "$tmp_root/replacement-resolution-wrong-selected-workflow.json"
+jq -c --arg commit "$(printf '4%.0s' {1..40})" \
+    '.authority_commit = $commit' "$tmp_root/release-authority-v2.json" \
+    >"$tmp_root/competing-release-authority-v2.json"
+expect_failure "$helper" assert-replacement \
+    "$tmp_root/release-authority-v1.json" \
+    "$tmp_root/rejected-release-authority-v2.json" \
+    "$tmp_root/competing-release-authority-v2.json" \
+    "$resolution_dir/release-authority-replacement-v1.json"
+printf unexpected >"$resolution_dir/unexpected"
+expect_failure "$helper" validate-replacement-resolution-assets "$resolution_dir"
+rm "$resolution_dir/unexpected"
+
+: >"$tmp_root/empty-special-tags"
+"$helper" validate-special-tag-namespace \
+    authority-replacement-v1-g 0 "$tmp_root/empty-special-tags"
+printf '%s\n' authority-replacement-v1-g1 authority-replacement-v1-g60 \
+    >"$tmp_root/bounded-replacement-tags"
+"$helper" validate-special-tag-namespace \
+    authority-replacement-v1-g 60 "$tmp_root/bounded-replacement-tags"
+printf '%s\n' authority-resolution-v1-g60 \
+    >"$tmp_root/bounded-resolution-tags"
+"$helper" validate-special-tag-namespace \
+    authority-resolution-v1-g 60 "$tmp_root/bounded-resolution-tags"
+printf '%s\n' authority-replacement-v1-g61 >"$tmp_root/one-ahead-tags"
+expect_failure "$helper" validate-special-tag-namespace \
+    authority-replacement-v1-g 60 "$tmp_root/one-ahead-tags"
+printf '%s\n' authority-resolution-v1-g62 >"$tmp_root/two-ahead-tags"
+expect_failure "$helper" validate-special-tag-namespace \
+    authority-resolution-v1-g 60 "$tmp_root/two-ahead-tags"
+printf '%s\n' authority-replacement-v1-g060 >"$tmp_root/malformed-special-tags"
+expect_failure "$helper" validate-special-tag-namespace \
+    authority-replacement-v1-g 60 "$tmp_root/malformed-special-tags"
+printf '%s\n' authority-resolution-v1-g60 authority-resolution-v1-g60 \
+    >"$tmp_root/duplicate-special-tags"
+expect_failure "$helper" validate-special-tag-namespace \
+    authority-resolution-v1-g 60 "$tmp_root/duplicate-special-tags"
+expect_failure "$helper" validate-special-tag-namespace \
+    authority-v1-g 60 "$tmp_root/empty-special-tags"
+
 AUTHORITY_GENERATION=702
 PREVIOUS_AUTHORITY_GENERATION=701
 PREVIOUS_AUTHORITY_MANIFEST_SHA256=$(sha256sum \
@@ -135,6 +309,11 @@ export PREVIOUS_AUTHORITY_MANIFEST_SHA256
     "$tmp_root/release-authority-v2-next.json" 2 702 "$GITHUB_SHA" "$payload"
 "$helper" assert-successor \
     "$tmp_root/release-authority-v2.json" "$tmp_root/release-authority-v2-next.json"
+expect_failure "$helper" assert-replacement \
+    "$tmp_root/release-authority-v1.json" \
+    "$tmp_root/rejected-release-authority-v2.json" \
+    "$tmp_root/release-authority-v2-next.json" \
+    "$resolution_dir/release-authority-replacement-v1.json"
 
 AUTHORITY_GENERATION=1
 PREVIOUS_AUTHORITY_GENERATION=0
@@ -461,6 +640,7 @@ expect_failure verify_g1 \
     "$g1_parent" "$g1_parent_tree" 0.7.114
 
 workflow="$repo_root/.github/workflows/release-authority.yml"
+recovery_tool="$repo_root/scripts/recover-release-authority-replacement-v1.sh"
 [[ $(yq -r '.on.workflow_dispatch.inputs | length' "$workflow") == 1 ]]
 grep -Fq 'approval_record:' "$workflow"
 for required in \
@@ -487,7 +667,7 @@ grep -Fq 'release-authority-source' "$workflow"
 grep -Fq 'SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY' "$workflow"
 grep -Fq 'sudo chown -R 65534:65534 source' "$workflow"
 grep -Fq 'encrypted-authority-source-run-' "$workflow"
-[[ $(grep -Fc -- '--repo "$GITHUB_REPOSITORY"' "$workflow") -eq 10 ]]
+[[ $(grep -Fc -- '--repo "$GITHUB_REPOSITORY"' "$workflow") -eq 26 ]]
 grep -Fq 'mkdir -m 0700 "$age_root/bin"' "$workflow"
 grep -Fq '"$age_root/bin/"' "$workflow"
 grep -Fq '"$age_root/bin/age-keygen" -y -' "$workflow"
@@ -495,6 +675,21 @@ grep -Fq '"$age_root/bin/age"' "$workflow"
 grep -Fq 'mv encrypted-source-artifacts encrypted-source' "$workflow"
 grep -Fq 'mv reviewed-candidate-artifacts candidate' "$workflow"
 grep -Fq 'mv signed-authority-artifacts signed-authority' "$workflow"
+grep -Fq 'mv signed-resolution-artifacts signed-resolution' "$workflow"
+grep -Fq 'authority-replacement-v1-g${generation}' "$workflow"
+grep -Fq 'authority-resolution-v1-g${GENERATION}' "$workflow"
+grep -Fq 'validate-replacement-resolution-assets' "$workflow"
+grep -Fq 'rejected_product_release_commit' "$workflow"
+grep -Fq 'Publish immutable replacement resolution last' "$workflow"
+grep -Fq 'recover_sign_resolution:' "$workflow"
+grep -Fq 'recover_publish_resolution:' "$workflow"
+grep -Fq 'resolution_workflow_commit' "$workflow"
+grep -Fq 'target_already_published' "$workflow"
+grep -Fq 'special_namespace_max=$previous' "$workflow"
+grep -Fq 'validate-special-tag-namespace' "$workflow"
+grep -Fq 'assert-replacement' "$recovery_tool"
+grep -Fq 'discard_incomplete_resolution_stage' "$recovery_tool"
+grep -Fq '"$INSTALLED_SHIPPER" --dry-run' "$recovery_tool"
 grep -Fq 'assert-genesis' "$workflow"
 grep -Fq 'fetch-depth: 2' "$workflow"
 grep -Fq 'verify-g1-authority-source.sh' "$workflow"
