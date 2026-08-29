@@ -1074,7 +1074,8 @@ entry_authority_root=$entry_fixture/etc/syntaur/release-authority
 entry_artifact_root=$entry_authority_root/release-authority
 entry_runtime=$entry_fixture/etc/syntaur/release-authority-replacement-v1.runtime
 entry_stage=$entry_runtime/inputs.staged
-entry_operator_state=$entry_fixture/operator-state
+entry_operator_home=$entry_fixture/home/operator
+entry_operator_state=$entry_operator_home/.syntaur/ship
 entry_global_lock=$entry_fixture/etc/syntaur/syntaur-ship-mutation.lock
 entry_shipper=$entry_fixture/usr/local/bin/syntaur-ship
 entry_provisioner=$entry_fixture/opt/syntaur-build-authority-provision
@@ -1082,7 +1083,9 @@ entry_sources=$entry_fixture/sources
 install -d -m 0700 \
     "$entry_runtime" "$entry_stage" \
     "$entry_stage/predecessor" "$entry_stage/rejected" \
-    "$entry_stage/selected" "$entry_stage/resolution" "$entry_operator_state" \
+    "$entry_stage/selected" "$entry_stage/resolution" \
+    "$entry_operator_home" "$entry_operator_home/.syntaur" \
+    "$entry_operator_state" \
     "$entry_sources/predecessor" "$entry_sources/rejected" \
     "$entry_sources/selected" "$entry_sources/resolution"
 install -d -m 0755 "$entry_artifact_root" \
@@ -1114,7 +1117,21 @@ sed \
     -e "s|^readonly GLOBAL_MUTATION_LOCK=.*|readonly GLOBAL_MUTATION_LOCK=$entry_global_lock|" \
     -e "s|^readonly SEALED_RUNTIME_ROOT=.*|readonly SEALED_RUNTIME_ROOT=$entry_runtime|" \
     -e "s|^    operator_state=.*|    operator_state=$entry_operator_state|" \
-    "$recovery_tool" >"$entry_tool"
+    "$recovery_tool" \
+    | awk -v operator_home="$entry_operator_home" '
+        /^    operator_home=\$\(\/usr\/bin\/getent passwd/ {
+            print "    operator_home=" operator_home
+            replacing_lookup=1
+            next
+        }
+        replacing_lookup {
+            if (/sudo operator account lookup failed/) {
+                replacing_lookup=0
+            }
+            next
+        }
+        { print }
+    ' >"$entry_tool"
 chmod 0500 "$entry_tool"
 install -m 0500 "$entry_tool" \
     "$entry_sources/resolution/recover-release-authority-replacement-v1.sh"
@@ -1184,11 +1201,12 @@ entry_error=$tmp_root/replacement-entry-error
 if sudo -n env \
     ENTRY_TOOL="$entry_tool" ENTRY_SOURCES="$entry_sources" \
     ENTRY_TOOL_SHA256="$entry_tool_sha256" \
+    ENTRY_UID="$(id -u)" ENTRY_GID="$(id -g)" ENTRY_USER="$(id -un)" \
     ENTRY_ERROR="$entry_error" \
     /usr/bin/unshare --uts --fork /usr/bin/bash -c '
         /usr/bin/hostname claudevm
         /usr/bin/env -i \
-          SUDO_UID=1000 SUDO_GID=1000 SUDO_USER=sean \
+          SUDO_UID="$ENTRY_UID" SUDO_GID="$ENTRY_GID" SUDO_USER="$ENTRY_USER" \
           PATH=/usr/sbin:/usr/bin:/sbin:/bin \
           "$ENTRY_TOOL" install \
             --predecessor-dir "$ENTRY_SOURCES/predecessor" \
