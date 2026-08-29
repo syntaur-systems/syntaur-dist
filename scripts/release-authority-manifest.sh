@@ -628,6 +628,52 @@ resolution_correction_review_from_file() {
         --argjson rollback_receipt_present "$(jq -r '.rollback_receipt_present' "$record")" \
         --argjson resolution_receipt_present \
             "$(jq -r '.resolution_receipt_present' "$record")" \
+        --arg active_install_journal_phase \
+            "$(jq -er '.active_install_journal_phase // ""' "$record")" \
+        --arg active_install_journal_sha256 \
+            "$(jq -er '.active_install_journal_sha256 // ""' "$record")" \
+        --arg active_product_proof_temp_sha256 \
+            "$(jq -er '.active_product_proof_temp_sha256 // ""' "$record")" \
+        --argjson active_product_proof_temp_size \
+            "$(jq -er '.active_product_proof_temp_size // 0' "$record")" \
+        --arg sealed_inputs_resolution_sha256 \
+            "$(jq -er '.sealed_inputs_resolution_sha256 // ""' "$record")" \
+        --arg superseded_planned_product_base_commit \
+            "$(jq -er '.superseded_planned_product_base_commit // ""' "$record")" \
+        --arg corrected_planned_product_base_commit \
+            "$(jq -er '.corrected_planned_product_base_commit // ""' "$record")" \
+        --arg proof_helper_asset_name \
+            "$(jq -er '.proof_helper_asset_name // ""' "$record")" \
+        --argjson proof_helper_reproducible_build_count \
+            "$(jq -er '.proof_helper_reproducible_build_count // 0' "$record")" \
+        --arg proof_helper_subprocess_protocol_sha256 \
+            "$(jq -er '.proof_helper_subprocess_protocol_sha256 // ""' "$record")" \
+        --arg proof_helper_source_commit \
+            "$(jq -er '.proof_helper_source_commit // ""' "$record")" \
+        --arg proof_helper_source_tree_sha256 \
+            "$(jq -er '.proof_helper_source_tree_sha256 // ""' "$record")" \
+        --arg proof_helper_sha256 \
+            "$(jq -er '.proof_helper_sha256 // ""' "$record")" \
+        --arg proof_helper_control_plane_sha256 \
+            "$(jq -er '.proof_helper_control_plane_sha256 // ""' "$record")" \
+        --arg proof_helper_toolchain_sha256 \
+            "$(jq -er '.proof_helper_toolchain_sha256 // ""' "$record")" \
+        --arg proof_helper_rustflags_sha256 \
+            "$(jq -er '.proof_helper_rustflags_sha256 // ""' "$record")" \
+        --arg proof_helper_build_target \
+            "$(jq -er '.proof_helper_build_target // ""' "$record")" \
+        --arg proof_helper_build_profile \
+            "$(jq -er '.proof_helper_build_profile // ""' "$record")" \
+        --arg proof_helper_build_clean \
+            "$(jq -er '.proof_helper_build_clean // ""' "$record")" \
+        --arg proof_helper_execution_path \
+            "$(jq -er '.proof_helper_execution_path // ""' "$record")" \
+        --arg proof_helper_protocol_sha256 \
+            "$(jq -er '.proof_helper_protocol_sha256 // ""' "$record")" \
+        --argjson r2_resolution_receipt_present \
+            "$(jq -er '.r2_resolution_receipt_present // false' "$record")" \
+        --argjson r3_resolution_receipt_present \
+            "$(jq -er '.r3_resolution_receipt_present // false' "$record")" \
         '{
           schema:$schema,
           generation:$generation,
@@ -658,7 +704,32 @@ resolution_correction_review_from_file() {
           install_receipt_present:$install_receipt_present,
           rollback_receipt_present:$rollback_receipt_present,
           resolution_receipt_present:$resolution_receipt_present
-        }'
+        } +
+        (if $schema == 2 then {
+          active_install_journal_phase:$active_install_journal_phase,
+          active_install_journal_sha256:$active_install_journal_sha256,
+          active_product_proof_temp_sha256:$active_product_proof_temp_sha256,
+          active_product_proof_temp_size:$active_product_proof_temp_size,
+          sealed_inputs_resolution_sha256:$sealed_inputs_resolution_sha256,
+          superseded_planned_product_base_commit:$superseded_planned_product_base_commit,
+          corrected_planned_product_base_commit:$corrected_planned_product_base_commit,
+          proof_helper_asset_name:$proof_helper_asset_name,
+          proof_helper_reproducible_build_count:$proof_helper_reproducible_build_count,
+          proof_helper_subprocess_protocol_sha256:$proof_helper_subprocess_protocol_sha256,
+          proof_helper_source_commit:$proof_helper_source_commit,
+          proof_helper_source_tree_sha256:$proof_helper_source_tree_sha256,
+          proof_helper_sha256:$proof_helper_sha256,
+          proof_helper_control_plane_sha256:$proof_helper_control_plane_sha256,
+          proof_helper_toolchain_sha256:$proof_helper_toolchain_sha256,
+          proof_helper_rustflags_sha256:$proof_helper_rustflags_sha256,
+          proof_helper_build_target:$proof_helper_build_target,
+          proof_helper_build_profile:$proof_helper_build_profile,
+          proof_helper_build_clean:$proof_helper_build_clean,
+          proof_helper_execution_path:$proof_helper_execution_path,
+          proof_helper_protocol_sha256:$proof_helper_protocol_sha256,
+          r2_resolution_receipt_present:$r2_resolution_receipt_present,
+          r3_resolution_receipt_present:$r3_resolution_receipt_present
+        } else {} end)'
 }
 
 validate_resolution_correction_review() {
@@ -669,9 +740,11 @@ validate_resolution_correction_review() {
         def digest: type == "string" and test("^[0-9a-f]{64}$");
         def commit: type == "string" and test("^[0-9a-f]{40}$");
         def uint: type == "number" and . >= 0 and . <= 9007199254740991 and floor == .;
-        (.schema == 1) and
+        (.schema == 1 or .schema == 2) and
         (.generation | uint and . > 0) and
-        (.resolution_revision | uint and . >= 2) and
+        (.resolution_revision | uint and . >= 2 and . <= 3) and
+        ((.schema == 1 and .resolution_revision == 2) or
+         (.schema == 2 and .resolution_revision == 3)) and
         (.resolution_tag ==
           ("authority-resolution-v1-g" + (.generation | tostring) +
            "-r" + (.resolution_revision | tostring))) and
@@ -687,24 +760,75 @@ validate_resolution_correction_review() {
         (.corrected_manifest_helper_sha256 | digest) and
         (.corrected_recovery_tool_sha256 != .superseded_recovery_tool_sha256) and
         (.corrected_manifest_helper_sha256 != .superseded_manifest_helper_sha256) and
-        (.active_generation == (.generation - 1)) and
         (.active_manifest_sha256 | digest) and
         (.active_product_state_sha256 | digest) and
         (.selected_manifest_sha256 | digest) and
-        (.correction_reason == "recovery_tool_execution_failure") and
-        (.failure_class == "bash_dynamic_scope_unbound_operation") and
-        (.failure_stage == "sealed_input_revalidation") and
-        (.authority_mutated == false) and
-        (.product_state_mutated == false) and
-        (.normal_promotion_journal_present == false) and
-        (.normal_promotion_journal_temp_present == false) and
-        (.install_journal_present == false) and
-        (.install_journal_temp_present == false) and
-        (.rollback_journal_present == false) and
-        (.rollback_journal_temp_present == false) and
-        (.install_receipt_present == false) and
-        (.rollback_receipt_present == false) and
-        (.resolution_receipt_present == false) and
+        (if .schema == 1 then
+           (.active_generation == (.generation - 1)) and
+           (.correction_reason == "recovery_tool_execution_failure") and
+           (.failure_class == "bash_dynamic_scope_unbound_operation") and
+           (.failure_stage == "sealed_input_revalidation") and
+           (.authority_mutated == false) and
+           (.product_state_mutated == false) and
+           (.normal_promotion_journal_present == false) and
+           (.normal_promotion_journal_temp_present == false) and
+           (.install_journal_present == false) and
+           (.install_journal_temp_present == false) and
+           (.rollback_journal_present == false) and
+           (.rollback_journal_temp_present == false) and
+           (.install_receipt_present == false) and
+           (.rollback_receipt_present == false) and
+           (.resolution_receipt_present == false)
+         else
+           (.active_generation == .generation) and
+           (.active_manifest_sha256 == .selected_manifest_sha256) and
+           (.correction_reason == "product_state_proof_execution_failure") and
+           (.failure_class == "nonroot_signature_path_requires_root_controller") and
+           (.failure_stage == "post_manifest_product_state_proof") and
+           (.authority_mutated == true) and
+           (.product_state_mutated == false) and
+           (.normal_promotion_journal_present == true) and
+           (.normal_promotion_journal_temp_present == false) and
+           (.install_journal_present == true) and
+           (.install_journal_temp_present == false) and
+           (.rollback_journal_present == false) and
+           (.rollback_journal_temp_present == false) and
+           (.install_receipt_present == false) and
+           (.rollback_receipt_present == false) and
+           (.resolution_receipt_present == true) and
+           (.active_install_journal_phase == "manifest_published") and
+           (.active_install_journal_sha256 | digest) and
+           (.active_product_proof_temp_sha256 | digest) and
+           (.active_product_proof_temp_sha256 ==
+             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") and
+           (.active_product_proof_temp_size == 0) and
+           (.sealed_inputs_resolution_sha256 == .supersedes_resolution_sha256) and
+           (.superseded_planned_product_base_commit | commit) and
+           (.corrected_planned_product_base_commit | commit) and
+           (.corrected_planned_product_base_commit == .proof_helper_source_commit) and
+           (.corrected_planned_product_base_commit !=
+             .superseded_planned_product_base_commit) and
+           (.proof_helper_asset_name ==
+             "syntaur-authority-replacement-proof-linux-x86_64") and
+           (.proof_helper_reproducible_build_count == 2) and
+           (.proof_helper_subprocess_protocol_sha256 | digest) and
+           (.proof_helper_subprocess_protocol_sha256 ==
+             .proof_helper_protocol_sha256) and
+           (.proof_helper_source_commit | commit) and
+           (.proof_helper_source_tree_sha256 | digest) and
+           (.proof_helper_sha256 | digest) and
+           (.proof_helper_control_plane_sha256 | digest) and
+           (.proof_helper_toolchain_sha256 | digest) and
+           (.proof_helper_rustflags_sha256 | digest) and
+           (.proof_helper_build_target == "x86_64-unknown-linux-gnu") and
+           (.proof_helper_build_profile == "release") and
+           (.proof_helper_build_clean == "clean") and
+           (.proof_helper_execution_path ==
+             "/usr/local/libexec/syntaur-authority-replacement-proof-v1/syntaur-ship") and
+           (.proof_helper_protocol_sha256 | digest) and
+           (.r2_resolution_receipt_present == true) and
+           (.r3_resolution_receipt_present == false)
+         end) and
         (keys | sort) == ([
           "active_generation", "active_manifest_sha256", "active_product_state_sha256",
           "authority_mutated", "corrected_manifest_helper_sha256",
@@ -719,7 +843,22 @@ validate_resolution_correction_review() {
           "selected_manifest_sha256", "superseded_manifest_helper_sha256",
           "superseded_recovery_tool_sha256", "superseded_resolution_workflow_commit",
           "supersedes_resolution_sha256", "supersedes_resolution_tag"
-        ] | sort)
+        ] + (if .schema == 2 then [
+          "active_install_journal_phase", "active_install_journal_sha256",
+          "active_product_proof_temp_sha256", "active_product_proof_temp_size",
+          "sealed_inputs_resolution_sha256",
+          "superseded_planned_product_base_commit",
+          "corrected_planned_product_base_commit", "proof_helper_asset_name",
+          "proof_helper_reproducible_build_count",
+          "proof_helper_subprocess_protocol_sha256",
+          "proof_helper_source_commit", "proof_helper_source_tree_sha256",
+          "proof_helper_sha256", "proof_helper_control_plane_sha256",
+          "proof_helper_toolchain_sha256", "proof_helper_rustflags_sha256",
+          "proof_helper_build_target", "proof_helper_build_profile",
+          "proof_helper_build_clean", "proof_helper_execution_path",
+          "proof_helper_protocol_sha256", "r2_resolution_receipt_present",
+          "r3_resolution_receipt_present"
+        ] else [] end) | sort)
     ' "$record" >/dev/null || die 'authority resolution correction review shape or values are invalid'
     local canonical
     canonical=$(resolution_correction_review_from_file "$record")
@@ -742,6 +881,36 @@ resolution_correction_authorization_from_file() {
         --arg supersedes_resolution_sha256 "$(manifest_value "$record" supersedes_resolution_sha256)" \
         --arg selected_manifest_sha256 "$(manifest_value "$record" selected_manifest_sha256)" \
         --arg authorize_reason "$(manifest_value "$record" authorize_reason)" \
+        --arg active_install_journal_sha256 \
+            "$(jq -er '.active_install_journal_sha256 // ""' "$record")" \
+        --arg active_product_proof_temp_sha256 \
+            "$(jq -er '.active_product_proof_temp_sha256 // ""' "$record")" \
+        --arg sealed_inputs_resolution_sha256 \
+            "$(jq -er '.sealed_inputs_resolution_sha256 // ""' "$record")" \
+        --arg planned_product_base_commit \
+            "$(jq -er '.planned_product_base_commit // ""' "$record")" \
+        --arg proof_helper_source_commit \
+            "$(jq -er '.proof_helper_source_commit // ""' "$record")" \
+        --arg proof_helper_source_tree_sha256 \
+            "$(jq -er '.proof_helper_source_tree_sha256 // ""' "$record")" \
+        --arg proof_helper_sha256 \
+            "$(jq -er '.proof_helper_sha256 // ""' "$record")" \
+        --arg proof_helper_control_plane_sha256 \
+            "$(jq -er '.proof_helper_control_plane_sha256 // ""' "$record")" \
+        --arg proof_helper_toolchain_sha256 \
+            "$(jq -er '.proof_helper_toolchain_sha256 // ""' "$record")" \
+        --arg proof_helper_rustflags_sha256 \
+            "$(jq -er '.proof_helper_rustflags_sha256 // ""' "$record")" \
+        --arg proof_helper_build_target \
+            "$(jq -er '.proof_helper_build_target // ""' "$record")" \
+        --arg proof_helper_build_profile \
+            "$(jq -er '.proof_helper_build_profile // ""' "$record")" \
+        --arg proof_helper_build_clean \
+            "$(jq -er '.proof_helper_build_clean // ""' "$record")" \
+        --arg proof_helper_execution_path \
+            "$(jq -er '.proof_helper_execution_path // ""' "$record")" \
+        --arg proof_helper_protocol_sha256 \
+            "$(jq -er '.proof_helper_protocol_sha256 // ""' "$record")" \
         '{
           schema:$schema,
           generation:$generation,
@@ -755,7 +924,24 @@ resolution_correction_authorization_from_file() {
           supersedes_resolution_sha256:$supersedes_resolution_sha256,
           selected_manifest_sha256:$selected_manifest_sha256,
           authorize_reason:$authorize_reason
-        }'
+        } +
+        (if $schema == 2 then {
+          active_install_journal_sha256:$active_install_journal_sha256,
+          active_product_proof_temp_sha256:$active_product_proof_temp_sha256,
+          sealed_inputs_resolution_sha256:$sealed_inputs_resolution_sha256,
+          planned_product_base_commit:$planned_product_base_commit,
+          proof_helper_source_commit:$proof_helper_source_commit,
+          proof_helper_source_tree_sha256:$proof_helper_source_tree_sha256,
+          proof_helper_sha256:$proof_helper_sha256,
+          proof_helper_control_plane_sha256:$proof_helper_control_plane_sha256,
+          proof_helper_toolchain_sha256:$proof_helper_toolchain_sha256,
+          proof_helper_rustflags_sha256:$proof_helper_rustflags_sha256,
+          proof_helper_build_target:$proof_helper_build_target,
+          proof_helper_build_profile:$proof_helper_build_profile,
+          proof_helper_build_clean:$proof_helper_build_clean,
+          proof_helper_execution_path:$proof_helper_execution_path,
+          proof_helper_protocol_sha256:$proof_helper_protocol_sha256
+        } else {} end)'
 }
 
 validate_resolution_correction_authorization() {
@@ -766,9 +952,11 @@ validate_resolution_correction_authorization() {
         def digest: type == "string" and test("^[0-9a-f]{64}$");
         def commit: type == "string" and test("^[0-9a-f]{40}$");
         def uint: type == "number" and . >= 0 and . <= 9007199254740991 and floor == .;
-        (.schema == 1) and
+        (.schema == 1 or .schema == 2) and
         (.generation | uint and . > 0) and
-        (.resolution_revision | uint and . >= 2) and
+        (.resolution_revision | uint and . >= 2 and . <= 3) and
+        ((.schema == 1 and .resolution_revision == 2) or
+         (.schema == 2 and .resolution_revision == 3)) and
         (.resolution_tag ==
           ("authority-resolution-v1-g" + (.generation | tostring) +
            "-r" + (.resolution_revision | tostring))) and
@@ -779,14 +967,45 @@ validate_resolution_correction_authorization() {
         (.correction_review_sha256 | digest) and
         (.supersedes_resolution_sha256 | digest) and
         (.selected_manifest_sha256 | digest) and
-        (.authorize_reason == "recovery_tool_execution_failure") and
+        (if .schema == 1 then
+           .authorize_reason == "recovery_tool_execution_failure"
+         else
+           (.authorize_reason == "product_state_proof_execution_failure") and
+           (.active_install_journal_sha256 | digest) and
+           (.active_product_proof_temp_sha256 ==
+             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") and
+           (.sealed_inputs_resolution_sha256 == .supersedes_resolution_sha256) and
+           (.planned_product_base_commit | commit) and
+           (.planned_product_base_commit == .proof_helper_source_commit) and
+           (.proof_helper_source_commit | commit) and
+           (.proof_helper_source_tree_sha256 | digest) and
+           (.proof_helper_sha256 | digest) and
+           (.proof_helper_control_plane_sha256 | digest) and
+           (.proof_helper_toolchain_sha256 | digest) and
+           (.proof_helper_rustflags_sha256 | digest) and
+           (.proof_helper_build_target == "x86_64-unknown-linux-gnu") and
+           (.proof_helper_build_profile == "release") and
+           (.proof_helper_build_clean == "clean") and
+           (.proof_helper_execution_path ==
+             "/usr/local/libexec/syntaur-authority-replacement-proof-v1/syntaur-ship") and
+           (.proof_helper_protocol_sha256 | digest)
+         end) and
         (keys | sort) == ([
           "authorize_reason", "correction_review_sha256", "generation",
           "manifest_helper_sha256", "recovery_tool_sha256",
           "resolution_revision", "resolution_sha256", "resolution_tag",
           "resolution_workflow_commit", "schema", "selected_manifest_sha256",
           "supersedes_resolution_sha256"
-        ] | sort)
+        ] + (if .schema == 2 then [
+          "active_install_journal_sha256", "active_product_proof_temp_sha256",
+          "sealed_inputs_resolution_sha256", "planned_product_base_commit",
+          "proof_helper_source_commit", "proof_helper_source_tree_sha256",
+          "proof_helper_sha256", "proof_helper_control_plane_sha256",
+          "proof_helper_toolchain_sha256", "proof_helper_rustflags_sha256",
+          "proof_helper_build_target", "proof_helper_build_profile",
+          "proof_helper_build_clean", "proof_helper_execution_path",
+          "proof_helper_protocol_sha256"
+        ] else [] end) | sort)
     ' "$record" >/dev/null \
         || die 'authority resolution correction authorization shape or values are invalid'
     local canonical
@@ -797,6 +1016,8 @@ validate_resolution_correction_authorization() {
 
 render_resolution_correction_authorization() {
     local output=$1
+    local authorization_schema=1
+    local authorize_reason=recovery_tool_execution_failure
     : "${SELECTED_AUTHORITY_GENERATION:?}"
     : "${RESOLUTION_REVISION:?}"
     : "${RESOLUTION_SHA256:?}"
@@ -806,8 +1027,27 @@ render_resolution_correction_authorization() {
     : "${CORRECTION_REVIEW_SHA256:?}"
     : "${SUPERSEDES_RESOLUTION_SHA256:?}"
     : "${SELECTED_AUTHORITY_MANIFEST_SHA256:?}"
+    if [[ $RESOLUTION_REVISION == 3 ]]; then
+        authorization_schema=2
+        authorize_reason=product_state_proof_execution_failure
+        : "${ACTIVE_INSTALL_JOURNAL_SHA256:?}"
+        : "${ACTIVE_PRODUCT_PROOF_TEMP_SHA256:?}"
+        : "${SEALED_INPUTS_RESOLUTION_SHA256:?}"
+        : "${PLANNED_PRODUCT_BASE_COMMIT:?}"
+        : "${PROOF_HELPER_SOURCE_COMMIT:?}"
+        : "${PROOF_HELPER_SOURCE_TREE_SHA256:?}"
+        : "${PROOF_HELPER_SHA256:?}"
+        : "${PROOF_HELPER_CONTROL_PLANE_SHA256:?}"
+        : "${PROOF_HELPER_TOOLCHAIN_SHA256:?}"
+        : "${PROOF_HELPER_RUSTFLAGS_SHA256:?}"
+        : "${PROOF_HELPER_BUILD_TARGET:?}"
+        : "${PROOF_HELPER_BUILD_PROFILE:?}"
+        : "${PROOF_HELPER_BUILD_CLEAN:?}"
+        : "${PROOF_HELPER_EXECUTION_PATH:?}"
+        : "${PROOF_HELPER_PROTOCOL_SHA256:?}"
+    fi
     jq -cjn \
-        --argjson schema 1 \
+        --argjson schema "$authorization_schema" \
         --argjson generation "$SELECTED_AUTHORITY_GENERATION" \
         --argjson resolution_revision "$RESOLUTION_REVISION" \
         --arg resolution_tag \
@@ -819,7 +1059,22 @@ render_resolution_correction_authorization() {
         --arg correction_review_sha256 "$CORRECTION_REVIEW_SHA256" \
         --arg supersedes_resolution_sha256 "$SUPERSEDES_RESOLUTION_SHA256" \
         --arg selected_manifest_sha256 "$SELECTED_AUTHORITY_MANIFEST_SHA256" \
-        --arg authorize_reason recovery_tool_execution_failure \
+        --arg authorize_reason "$authorize_reason" \
+        --arg active_install_journal_sha256 "${ACTIVE_INSTALL_JOURNAL_SHA256:-}" \
+        --arg active_product_proof_temp_sha256 "${ACTIVE_PRODUCT_PROOF_TEMP_SHA256:-}" \
+        --arg sealed_inputs_resolution_sha256 "${SEALED_INPUTS_RESOLUTION_SHA256:-}" \
+        --arg planned_product_base_commit "${PLANNED_PRODUCT_BASE_COMMIT:-}" \
+        --arg proof_helper_source_commit "${PROOF_HELPER_SOURCE_COMMIT:-}" \
+        --arg proof_helper_source_tree_sha256 "${PROOF_HELPER_SOURCE_TREE_SHA256:-}" \
+        --arg proof_helper_sha256 "${PROOF_HELPER_SHA256:-}" \
+        --arg proof_helper_control_plane_sha256 "${PROOF_HELPER_CONTROL_PLANE_SHA256:-}" \
+        --arg proof_helper_toolchain_sha256 "${PROOF_HELPER_TOOLCHAIN_SHA256:-}" \
+        --arg proof_helper_rustflags_sha256 "${PROOF_HELPER_RUSTFLAGS_SHA256:-}" \
+        --arg proof_helper_build_target "${PROOF_HELPER_BUILD_TARGET:-}" \
+        --arg proof_helper_build_profile "${PROOF_HELPER_BUILD_PROFILE:-}" \
+        --arg proof_helper_build_clean "${PROOF_HELPER_BUILD_CLEAN:-}" \
+        --arg proof_helper_execution_path "${PROOF_HELPER_EXECUTION_PATH:-}" \
+        --arg proof_helper_protocol_sha256 "${PROOF_HELPER_PROTOCOL_SHA256:-}" \
         '{
           schema:$schema,
           generation:$generation,
@@ -833,7 +1088,24 @@ render_resolution_correction_authorization() {
           supersedes_resolution_sha256:$supersedes_resolution_sha256,
           selected_manifest_sha256:$selected_manifest_sha256,
           authorize_reason:$authorize_reason
-        }' >"$output"
+        } +
+        (if $schema == 2 then {
+          active_install_journal_sha256:$active_install_journal_sha256,
+          active_product_proof_temp_sha256:$active_product_proof_temp_sha256,
+          sealed_inputs_resolution_sha256:$sealed_inputs_resolution_sha256,
+          planned_product_base_commit:$planned_product_base_commit,
+          proof_helper_source_commit:$proof_helper_source_commit,
+          proof_helper_source_tree_sha256:$proof_helper_source_tree_sha256,
+          proof_helper_sha256:$proof_helper_sha256,
+          proof_helper_control_plane_sha256:$proof_helper_control_plane_sha256,
+          proof_helper_toolchain_sha256:$proof_helper_toolchain_sha256,
+          proof_helper_rustflags_sha256:$proof_helper_rustflags_sha256,
+          proof_helper_build_target:$proof_helper_build_target,
+          proof_helper_build_profile:$proof_helper_build_profile,
+          proof_helper_build_clean:$proof_helper_build_clean,
+          proof_helper_execution_path:$proof_helper_execution_path,
+          proof_helper_protocol_sha256:$proof_helper_protocol_sha256
+        } else {} end)' >"$output"
     validate_resolution_correction_authorization "$output"
 }
 
@@ -875,6 +1147,17 @@ replacement_resolution_from_file() {
         --arg superseded_recovery_tool_sha256 "$(jq -er '.superseded_recovery_tool_sha256 // ""' "$record")" \
         --arg correction_reason "$(jq -er '.correction_reason // ""' "$record")" \
         --arg correction_review_sha256 "$(jq -er '.correction_review_sha256 // ""' "$record")" \
+        --arg proof_helper_source_commit "$(jq -er '.proof_helper_source_commit // ""' "$record")" \
+        --arg proof_helper_source_tree_sha256 "$(jq -er '.proof_helper_source_tree_sha256 // ""' "$record")" \
+        --arg proof_helper_sha256 "$(jq -er '.proof_helper_sha256 // ""' "$record")" \
+        --arg proof_helper_control_plane_sha256 "$(jq -er '.proof_helper_control_plane_sha256 // ""' "$record")" \
+        --arg proof_helper_toolchain_sha256 "$(jq -er '.proof_helper_toolchain_sha256 // ""' "$record")" \
+        --arg proof_helper_rustflags_sha256 "$(jq -er '.proof_helper_rustflags_sha256 // ""' "$record")" \
+        --arg proof_helper_build_target "$(jq -er '.proof_helper_build_target // ""' "$record")" \
+        --arg proof_helper_build_profile "$(jq -er '.proof_helper_build_profile // ""' "$record")" \
+        --arg proof_helper_build_clean "$(jq -er '.proof_helper_build_clean // ""' "$record")" \
+        --arg proof_helper_execution_path "$(jq -er '.proof_helper_execution_path // ""' "$record")" \
+        --arg proof_helper_protocol_sha256 "$(jq -er '.proof_helper_protocol_sha256 // ""' "$record")" \
         '{
           schema:$schema,
           reason:$reason,
@@ -913,6 +1196,19 @@ replacement_resolution_from_file() {
           superseded_recovery_tool_sha256:$superseded_recovery_tool_sha256,
           correction_reason:$correction_reason,
           correction_review_sha256:$correction_review_sha256
+        } else {} end) +
+        (if $schema == 2 and $resolution_revision == 3 then {
+          proof_helper_source_commit:$proof_helper_source_commit,
+          proof_helper_source_tree_sha256:$proof_helper_source_tree_sha256,
+          proof_helper_sha256:$proof_helper_sha256,
+          proof_helper_control_plane_sha256:$proof_helper_control_plane_sha256,
+          proof_helper_toolchain_sha256:$proof_helper_toolchain_sha256,
+          proof_helper_rustflags_sha256:$proof_helper_rustflags_sha256,
+          proof_helper_build_target:$proof_helper_build_target,
+          proof_helper_build_profile:$proof_helper_build_profile,
+          proof_helper_build_clean:$proof_helper_build_clean,
+          proof_helper_execution_path:$proof_helper_execution_path,
+          proof_helper_protocol_sha256:$proof_helper_protocol_sha256
         } else {} end)'
 }
 
@@ -974,15 +1270,42 @@ validate_replacement_resolution() {
             has("superseded_recovery_tool_sha256") or
             has("correction_reason") or has("correction_review_sha256")) | not)
         else
-          (.resolution_revision | uint and . >= 2) and
+          (.resolution_revision | uint and . >= 2 and . <= 3) and
           (.supersedes_resolution_tag ==
             ("authority-resolution-v1-g" + (.selected_generation | tostring) +
              (if .resolution_revision == 2 then ""
               else "-r" + ((.resolution_revision - 1) | tostring) end))) and
           (.supersedes_resolution_sha256 | digest) and
           (.superseded_recovery_tool_sha256 | digest) and
-          (.correction_reason == "recovery_tool_execution_failure") and
-          (.correction_review_sha256 | digest)
+          (.correction_review_sha256 | digest) and
+          (if .resolution_revision == 2 then
+             (.correction_reason == "recovery_tool_execution_failure") and
+             ((has("proof_helper_source_commit") or
+               has("proof_helper_source_tree_sha256") or
+               has("proof_helper_sha256") or
+               has("proof_helper_control_plane_sha256") or
+               has("proof_helper_toolchain_sha256") or
+               has("proof_helper_rustflags_sha256") or
+               has("proof_helper_build_target") or
+               has("proof_helper_build_profile") or
+               has("proof_helper_build_clean") or
+               has("proof_helper_execution_path") or
+               has("proof_helper_protocol_sha256")) | not)
+           else
+             (.correction_reason == "product_state_proof_execution_failure") and
+             (.proof_helper_source_commit | commit) and
+             (.proof_helper_source_tree_sha256 | digest) and
+             (.proof_helper_sha256 | digest) and
+             (.proof_helper_control_plane_sha256 | digest) and
+             (.proof_helper_toolchain_sha256 | digest) and
+             (.proof_helper_rustflags_sha256 | digest) and
+             (.proof_helper_build_target == "x86_64-unknown-linux-gnu") and
+             (.proof_helper_build_profile == "release") and
+             (.proof_helper_build_clean == "clean") and
+             (.proof_helper_execution_path ==
+               "/usr/local/libexec/syntaur-authority-replacement-proof-v1/syntaur-ship") and
+             (.proof_helper_protocol_sha256 | digest)
+           end)
         end) and
         (keys | sort) == (([
           "manifest_helper_sha256", "planned_product_base_commit",
@@ -1002,6 +1325,14 @@ validate_replacement_resolution() {
           "correction_reason", "correction_review_sha256", "resolution_revision",
           "superseded_recovery_tool_sha256", "supersedes_resolution_sha256",
           "supersedes_resolution_tag"
+        ] else [] end) +
+        (if .schema == 2 and .resolution_revision == 3 then [
+          "proof_helper_build_clean", "proof_helper_build_profile",
+          "proof_helper_build_target", "proof_helper_control_plane_sha256",
+          "proof_helper_execution_path", "proof_helper_protocol_sha256",
+          "proof_helper_rustflags_sha256", "proof_helper_sha256",
+          "proof_helper_source_commit", "proof_helper_source_tree_sha256",
+          "proof_helper_toolchain_sha256"
         ] else [] end)) | sort)
     ' "$record" >/dev/null || die 'authority replacement resolution shape or values are invalid'
     local canonical
@@ -1028,6 +1359,7 @@ render_replacement_resolution() {
     local output=$1
     local resolution_revision=${RESOLUTION_REVISION:-1}
     local resolution_schema=1
+    local correction_reason=recovery_tool_execution_failure
     [[ $resolution_revision =~ ^[1-9][0-9]{0,15}$ \
         && $resolution_revision -le 9007199254740991 ]] \
         || die 'replacement resolution revision is invalid'
@@ -1037,6 +1369,20 @@ render_replacement_resolution() {
         : "${SUPERSEDES_RESOLUTION_SHA256:?}"
         : "${SUPERSEDED_RECOVERY_TOOL_SHA256:?}"
         : "${CORRECTION_REVIEW_SHA256:?}"
+    fi
+    if [[ $resolution_revision == 3 ]]; then
+        correction_reason=product_state_proof_execution_failure
+        : "${PROOF_HELPER_SOURCE_COMMIT:?}"
+        : "${PROOF_HELPER_SOURCE_TREE_SHA256:?}"
+        : "${PROOF_HELPER_SHA256:?}"
+        : "${PROOF_HELPER_CONTROL_PLANE_SHA256:?}"
+        : "${PROOF_HELPER_TOOLCHAIN_SHA256:?}"
+        : "${PROOF_HELPER_RUSTFLAGS_SHA256:?}"
+        : "${PROOF_HELPER_BUILD_TARGET:?}"
+        : "${PROOF_HELPER_BUILD_PROFILE:?}"
+        : "${PROOF_HELPER_BUILD_CLEAN:?}"
+        : "${PROOF_HELPER_EXECUTION_PATH:?}"
+        : "${PROOF_HELPER_PROTOCOL_SHA256:?}"
     fi
     : "${REPLACEMENT_PREDECESSOR_GENERATION:?}"
     : "${REPLACEMENT_PREDECESSOR_MANIFEST_SHA256:?}"
@@ -1097,8 +1443,19 @@ render_replacement_resolution() {
         --arg supersedes_resolution_tag "${SUPERSEDES_RESOLUTION_TAG:-}" \
         --arg supersedes_resolution_sha256 "${SUPERSEDES_RESOLUTION_SHA256:-}" \
         --arg superseded_recovery_tool_sha256 "${SUPERSEDED_RECOVERY_TOOL_SHA256:-}" \
-        --arg correction_reason recovery_tool_execution_failure \
+        --arg correction_reason "$correction_reason" \
         --arg correction_review_sha256 "${CORRECTION_REVIEW_SHA256:-}" \
+        --arg proof_helper_source_commit "${PROOF_HELPER_SOURCE_COMMIT:-}" \
+        --arg proof_helper_source_tree_sha256 "${PROOF_HELPER_SOURCE_TREE_SHA256:-}" \
+        --arg proof_helper_sha256 "${PROOF_HELPER_SHA256:-}" \
+        --arg proof_helper_control_plane_sha256 "${PROOF_HELPER_CONTROL_PLANE_SHA256:-}" \
+        --arg proof_helper_toolchain_sha256 "${PROOF_HELPER_TOOLCHAIN_SHA256:-}" \
+        --arg proof_helper_rustflags_sha256 "${PROOF_HELPER_RUSTFLAGS_SHA256:-}" \
+        --arg proof_helper_build_target "${PROOF_HELPER_BUILD_TARGET:-}" \
+        --arg proof_helper_build_profile "${PROOF_HELPER_BUILD_PROFILE:-}" \
+        --arg proof_helper_build_clean "${PROOF_HELPER_BUILD_CLEAN:-}" \
+        --arg proof_helper_execution_path "${PROOF_HELPER_EXECUTION_PATH:-}" \
+        --arg proof_helper_protocol_sha256 "${PROOF_HELPER_PROTOCOL_SHA256:-}" \
         '{
           schema:$schema,
           reason:$reason,
@@ -1137,6 +1494,19 @@ render_replacement_resolution() {
           superseded_recovery_tool_sha256:$superseded_recovery_tool_sha256,
           correction_reason:$correction_reason,
           correction_review_sha256:$correction_review_sha256
+        } else {} end) +
+        (if $schema == 2 and $resolution_revision == 3 then {
+          proof_helper_source_commit:$proof_helper_source_commit,
+          proof_helper_source_tree_sha256:$proof_helper_source_tree_sha256,
+          proof_helper_sha256:$proof_helper_sha256,
+          proof_helper_control_plane_sha256:$proof_helper_control_plane_sha256,
+          proof_helper_toolchain_sha256:$proof_helper_toolchain_sha256,
+          proof_helper_rustflags_sha256:$proof_helper_rustflags_sha256,
+          proof_helper_build_target:$proof_helper_build_target,
+          proof_helper_build_profile:$proof_helper_build_profile,
+          proof_helper_build_clean:$proof_helper_build_clean,
+          proof_helper_execution_path:$proof_helper_execution_path,
+          proof_helper_protocol_sha256:$proof_helper_protocol_sha256
         } else {} end)' >"$output"
     validate_replacement_resolution "$output"
 }
@@ -1145,7 +1515,7 @@ validate_replacement_resolution_assets() {
     local directory=$1
     [[ -d $directory && ! -L $directory ]] \
         || die 'authority replacement resolution directory is unsafe'
-    local actual expected resolution review correction schema
+    local actual expected resolution review correction schema revision
     resolution=$directory/release-authority-replacement-v1.json
     review=$directory/release-authority-selection-review-v1.json
     [[ -f $resolution && ! -L $resolution ]] \
@@ -1164,6 +1534,12 @@ validate_replacement_resolution_assets() {
     if [[ $schema == 2 ]]; then
         expected=$(printf '%s\n' "$expected" \
             release-authority-resolution-correction-v1.json | LC_ALL=C sort)
+        revision=$(manifest_value "$resolution" resolution_revision)
+        if [[ $revision == 3 ]]; then
+            expected=$(printf '%s\n' "$expected" \
+                syntaur-authority-replacement-proof-linux-x86_64 \
+                | LC_ALL=C sort)
+        fi
     fi
     [[ $actual == "$expected" ]] \
         || die 'authority replacement resolution asset set is inexact'
@@ -1181,6 +1557,15 @@ validate_replacement_resolution_assets() {
         [[ -f $correction && ! -L $correction ]] \
             || die 'authority resolution correction review is absent or unsafe'
         validate_resolution_correction_review "$correction"
+        if [[ $revision == 3 ]]; then
+            [[ -f $directory/syntaur-authority-replacement-proof-linux-x86_64 \
+                && ! -L $directory/syntaur-authority-replacement-proof-linux-x86_64 ]] \
+                || die 'authority replacement proof helper is absent or unsafe'
+            [[ $(sha256_file \
+                "$directory/syntaur-authority-replacement-proof-linux-x86_64") == \
+                "$(manifest_value "$resolution" proof_helper_sha256)" ]] \
+                || die 'authority replacement proof helper differs from the signed resolution'
+        fi
     fi
     validate_selection_review "$review"
     local tool_sha helper_sha review_sha
@@ -1195,8 +1580,21 @@ validate_replacement_resolution_assets() {
         || die 'authority replacement manifest helper differs from the signed resolution'
     [[ $review_sha == "$(manifest_value "$resolution" selection_review_sha256)" ]] \
         || die 'authority replacement selection review differs from the signed resolution'
-    [[ $(selection_review_from_file "$resolution") == "$(<"$review")" ]] \
-        || die 'authority replacement resolution does not bind the exact selection review'
+    if [[ $schema == 2 && $revision == 3 ]]; then
+        [[ $(selection_review_from_file "$resolution" \
+                | jq -c --arg base \
+                    "$(manifest_value "$correction" \
+                        superseded_planned_product_base_commit)" \
+                    '.planned_product_base_commit = $base') == "$(<"$review")" ]] \
+            || die 'r3 resolution does not preserve the superseded exact selection review'
+        [[ $(manifest_value "$correction" \
+                superseded_planned_product_base_commit) == \
+                "$(manifest_value "$resolution" selected_authority_commit)" ]] \
+            || die 'r3 correction does not bind the selected authority base it supersedes'
+    else
+        [[ $(selection_review_from_file "$resolution") == "$(<"$review")" ]] \
+            || die 'authority replacement resolution does not bind the exact selection review'
+    fi
     if [[ $schema == 2 ]]; then
         [[ $(sha256_file "$correction") == \
             "$(manifest_value "$resolution" correction_review_sha256)" ]] \
@@ -1213,6 +1611,29 @@ validate_replacement_resolution_assets() {
             --argjson active_generation "$(manifest_value "$resolution" predecessor_generation)" \
             --arg active_sha "$(manifest_value "$resolution" predecessor_manifest_sha256)" \
             --arg product_sha "$(manifest_value "$resolution" settled_product_state_sha256)" \
+            --arg planned_base "$(manifest_value "$resolution" planned_product_base_commit)" \
+            --arg proof_helper_source_commit \
+                "$(jq -er '.proof_helper_source_commit // ""' "$resolution")" \
+            --arg proof_helper_source_tree_sha256 \
+                "$(jq -er '.proof_helper_source_tree_sha256 // ""' "$resolution")" \
+            --arg proof_helper_sha256 \
+                "$(jq -er '.proof_helper_sha256 // ""' "$resolution")" \
+            --arg proof_helper_control_plane_sha256 \
+                "$(jq -er '.proof_helper_control_plane_sha256 // ""' "$resolution")" \
+            --arg proof_helper_toolchain_sha256 \
+                "$(jq -er '.proof_helper_toolchain_sha256 // ""' "$resolution")" \
+            --arg proof_helper_rustflags_sha256 \
+                "$(jq -er '.proof_helper_rustflags_sha256 // ""' "$resolution")" \
+            --arg proof_helper_build_target \
+                "$(jq -er '.proof_helper_build_target // ""' "$resolution")" \
+            --arg proof_helper_build_profile \
+                "$(jq -er '.proof_helper_build_profile // ""' "$resolution")" \
+            --arg proof_helper_build_clean \
+                "$(jq -er '.proof_helper_build_clean // ""' "$resolution")" \
+            --arg proof_helper_execution_path \
+                "$(jq -er '.proof_helper_execution_path // ""' "$resolution")" \
+            --arg proof_helper_protocol_sha256 \
+                "$(jq -er '.proof_helper_protocol_sha256 // ""' "$resolution")" \
             '.generation == $generation and
              .resolution_revision == $revision and
              .supersedes_resolution_tag == $supersedes_tag and
@@ -1220,11 +1641,29 @@ validate_replacement_resolution_assets() {
              .superseded_recovery_tool_sha256 == $superseded_tool and
              .corrected_recovery_tool_sha256 == $corrected_tool and
              .corrected_manifest_helper_sha256 == $corrected_helper and
-             .active_generation == $active_generation and
-             .active_manifest_sha256 == $active_sha and
              .active_product_state_sha256 == $product_sha and
              .selected_manifest_sha256 == $selected_sha and
-             .correction_reason == "recovery_tool_execution_failure"' \
+             (if $revision == 2 then
+                .active_generation == $active_generation and
+                .active_manifest_sha256 == $active_sha and
+                .correction_reason == "recovery_tool_execution_failure"
+              else
+                .active_generation == $generation and
+                .active_manifest_sha256 == $selected_sha and
+                .correction_reason == "product_state_proof_execution_failure" and
+                .corrected_planned_product_base_commit == $planned_base and
+                .proof_helper_source_commit == $proof_helper_source_commit and
+                .proof_helper_source_tree_sha256 == $proof_helper_source_tree_sha256 and
+                .proof_helper_sha256 == $proof_helper_sha256 and
+                .proof_helper_control_plane_sha256 == $proof_helper_control_plane_sha256 and
+                .proof_helper_toolchain_sha256 == $proof_helper_toolchain_sha256 and
+                .proof_helper_rustflags_sha256 == $proof_helper_rustflags_sha256 and
+                .proof_helper_build_target == $proof_helper_build_target and
+                .proof_helper_build_profile == $proof_helper_build_profile and
+                .proof_helper_build_clean == $proof_helper_build_clean and
+                .proof_helper_execution_path == $proof_helper_execution_path and
+                .proof_helper_protocol_sha256 == $proof_helper_protocol_sha256
+              end)' \
             "$correction" >/dev/null \
             || die 'authority resolution correction review does not bind the signed correction'
     fi

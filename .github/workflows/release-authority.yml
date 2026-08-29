@@ -1695,11 +1695,335 @@ jobs:
               "$(sha256sum "$review" | awk '{print $1}')" "$GITHUB_SHA"
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
+  replacement_proof_helper:
+    needs:
+      - predecessor
+      - resolution_policy
+    if: needs.predecessor.outputs.target_already_published == 'true' && inputs.resolution_revision == '3'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: release-authority-source
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact public proof-helper policy
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+          path: public-workflow
+
+      - name: Select exact reviewed private proof-helper source
+        id: proof_source
+        shell: bash
+        env:
+          GENERATION: ${{ needs.predecessor.outputs.generation }}
+        run: |
+          set -euo pipefail
+          correction="public-workflow/.github/authority-resolution-corrections/g${GENERATION}-r3.json"
+          bash public-workflow/scripts/release-authority-manifest.sh \
+            validate-resolution-correction-review "$correction"
+          {
+            printf 'source_commit=%s\n' \
+              "$(jq -er '.proof_helper_source_commit' "$correction")"
+            printf 'source_tree_sha256=%s\n' \
+              "$(jq -er '.proof_helper_source_tree_sha256' "$correction")"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Export exact reviewed private proof-helper source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          repository: buddyholly007/syntaur
+          ref: ${{ steps.proof_source.outputs.source_commit }}
+          ssh-key: ${{ secrets.SYNTAUR_SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+          path: source
+          fetch-depth: 2
+
+      - name: Prove exact source topology and remove credential authority
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ steps.proof_source.outputs.source_commit }}
+          SOURCE_TREE_SHA256: ${{ steps.proof_source.outputs.source_tree_sha256 }}
+          GENERATION: ${{ needs.predecessor.outputs.generation }}
+        run: |
+          set -euo pipefail
+          correction="public-workflow/.github/authority-resolution-corrections/g${GENERATION}-r3.json"
+          test -z "$(git -C source config --local --get-all core.sshCommand || true)"
+          test -z "$(git -C source config --local \
+            --get-all http.https://github.com/.extraheader || true)"
+          test "$(git -C source rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(git -C source rev-list --parents -n 1 HEAD | awk '{print NF}')" = 2
+          test "$(git -C source rev-parse HEAD^)" \
+            = "$(jq -er '.superseded_planned_product_base_commit' "$correction")"
+          test "$(bash public-workflow/scripts/release-authority-manifest.sh \
+            source-tree-sha256 source "$SOURCE_COMMIT")" = "$SOURCE_TREE_SHA256"
+          test "$(<source/VERSION)" = 0.7.163
+          test -z "$(git -C source status --porcelain=v1 --untracked-files=all)"
+          test -z "$(find source -type l -print -quit)"
+          test -z "$(find source -type f -links +1 -print -quit)"
+          leaked_keys=$(find "$RUNNER_TEMP" -type f -size -128k -print0 \
+            | xargs -0 -r grep -Il '^-----BEGIN OPENSSH PRIVATE KEY-----$' || true)
+          test -z "$leaked_keys"
+          source_date_epoch=$(git -C source show -s --format=%ct "$SOURCE_COMMIT")
+          printf '%s' "$source_date_epoch" | grep -Eq '^[1-9][0-9]{8,15}$'
+          printf 'SOURCE_DATE_EPOCH=%s\n' "$source_date_epoch" >>"$GITHUB_ENV"
+          sudo chown -R 65534:65534 source
+
+      - name: Prepare pinned proof-helper builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          context="$RUNNER_TEMP/proof-helper-builder-context"
+          mkdir -m 0700 "$context"
+          {
+            printf 'FROM %s\n' "$AUTHORITY_BUILDER_IMAGE"
+            cat <<'EOF'
+          RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources \
+              && printf '%s\n' \
+                'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20260727T000000Z bookworm main' \
+                'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20260727T000000Z bookworm-updates main' \
+                > /etc/apt/sources.list \
+              && apt-get -o Acquire::Check-Valid-Until=false update \
+              && apt-get install -y --no-install-recommends \
+                ca-certificates git libdbus-1-dev passwd pkg-config \
+              && useradd --uid 10001 --create-home --shell /usr/sbin/nologin proof \
+              && rm -rf /var/lib/apt/lists/*
+          EOF
+          } >"$context/Dockerfile"
+          docker pull "$AUTHORITY_BUILDER_IMAGE"
+          docker build --pull=false --file "$context/Dockerfile" \
+            --tag syntaur-r3-proof-helper-builder "$context"
+
+      - name: Fetch locked dependencies without candidate execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -m 0755 "$RUNNER_TEMP/proof-cargo"
+          sudo chown 65534:65534 "$RUNNER_TEMP/proof-cargo"
+          docker run --rm \
+            --network bridge \
+            --read-only \
+            --user 65534:65534 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --pids-limit 512 \
+            --tmpfs /tmp:rw,nosuid,nodev,size=2g \
+            --mount "type=bind,src=${GITHUB_WORKSPACE}/source,dst=/source,readonly" \
+            --mount "type=bind,src=${RUNNER_TEMP}/proof-cargo,dst=/cargo" \
+            --workdir /tmp \
+            --env CARGO_HOME=/cargo \
+            --env CARGO_NET_GIT_FETCH_WITH_CLI=false \
+            --env CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
+            syntaur-r3-proof-helper-builder \
+            /usr/bin/bash --noprofile --norc -ceu '
+              cargo fetch \
+                --config "registry.global-credential-providers=[]" \
+                --config "net.git-fetch-with-cli=false" \
+                --manifest-path /source/Cargo.toml \
+                --locked --target x86_64-unknown-linux-gnu \
+                >/tmp/cargo-fetch.log 2>&1
+            '
+
+      - name: Build twice and byte-compare exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          for build in a b; do
+            target="$RUNNER_TEMP/proof-target-$build"
+            mkdir -m 0755 "$target"
+            sudo chown 65534:65534 "$target"
+            docker run --rm \
+              --network none \
+              --read-only \
+              --user 65534:65534 \
+              --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --pids-limit 1024 \
+              --memory 14g \
+              --cpus 4 \
+              --tmpfs /tmp:rw,nosuid,nodev,size=4g \
+              --mount "type=bind,src=${GITHUB_WORKSPACE}/source,dst=/source,readonly" \
+              --mount "type=bind,src=${RUNNER_TEMP}/proof-cargo,dst=/cargo" \
+              --mount "type=bind,src=${target},dst=/target" \
+              --workdir /source \
+              --env HOME=/tmp/home \
+              --env CARGO_HOME=/cargo \
+              --env CARGO_TARGET_DIR=/target \
+              --env CARGO_INCREMENTAL=0 \
+              --env CARGO_NET_OFFLINE=true \
+              --env SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+              --env GIT_CONFIG_COUNT=1 \
+              --env GIT_CONFIG_KEY_0=safe.directory \
+              --env GIT_CONFIG_VALUE_0=/source \
+              syntaur-r3-proof-helper-builder \
+              /usr/bin/bash --noprofile --norc -ceu '
+                cargo build --release --frozen --offline \
+                  --target x86_64-unknown-linux-gnu -p syntaur-ship \
+                  >/tmp/proof-helper-build.log 2>&1
+                install --mode=0555 \
+                  /target/x86_64-unknown-linux-gnu/release/syntaur-ship \
+                  /target/syntaur-authority-replacement-proof-linux-x86_64
+                test "$(stat -c %h \
+                  /target/syntaur-authority-replacement-proof-linux-x86_64)" = 1
+                /target/syntaur-authority-replacement-proof-linux-x86_64 \
+                  authority-replacement-proof-helper-build-attestation \
+                  > /target/proof-helper-build-attestation.json
+              '
+          done
+          helper_a="$RUNNER_TEMP/proof-target-a/syntaur-authority-replacement-proof-linux-x86_64"
+          helper_b="$RUNNER_TEMP/proof-target-b/syntaur-authority-replacement-proof-linux-x86_64"
+          cmp "$helper_a" "$helper_b"
+          cmp "$RUNNER_TEMP/proof-target-a/proof-helper-build-attestation.json" \
+            "$RUNNER_TEMP/proof-target-b/proof-helper-build-attestation.json"
+
+      - name: Execute real nonroot and adversarial path probes
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="$RUNNER_TEMP/proof-target-a"
+          docker run --rm \
+            --network none \
+            --read-only \
+            --user 65534:65534 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --pids-limit 1024 \
+            --memory 14g \
+            --cpus 4 \
+            --tmpfs /tmp:rw,nosuid,nodev,size=4g \
+            --mount "type=bind,src=${GITHUB_WORKSPACE}/source,dst=/source,readonly" \
+            --mount "type=bind,src=${RUNNER_TEMP}/proof-cargo,dst=/cargo" \
+            --mount "type=bind,src=${target},dst=/target" \
+            --workdir /source \
+            --env HOME=/tmp/home \
+            --env CARGO_HOME=/cargo \
+            --env CARGO_TARGET_DIR=/target \
+            --env CARGO_INCREMENTAL=0 \
+            --env CARGO_NET_OFFLINE=true \
+            --env SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+            --env GIT_CONFIG_COUNT=1 \
+            --env GIT_CONFIG_KEY_0=safe.directory \
+            --env GIT_CONFIG_VALUE_0=/source \
+            syntaur-r3-proof-helper-builder \
+            /usr/bin/bash --noprofile --norc -ceu '
+              cargo test --frozen --offline \
+                --target x86_64-unknown-linux-gnu \
+                -p syntaur-ship --no-run --message-format=json \
+                > /target/proof-helper-tests.jsons
+            '
+          mapfile -t test_bins < <(jq -r \
+            'select(.reason == "compiler-artifact" and
+                    .profile.test == true and
+                    .target.name == "syntaur-ship" and
+                    .executable != null) |
+             .executable' "$target/proof-helper-tests.jsons" | sort -u)
+          test "${#test_bins[@]}" = 1
+          test_bin=${test_bins[0]#/target/}
+          fixture=authority::tests::replacement_product_state_identity_subprocess_fixture
+          docker run --rm \
+            --network none --read-only --user 10001:10001 \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --mount "type=bind,src=${target},dst=/target,readonly" \
+            --env HOME=/home/proof --env USER=proof --env LOGNAME=proof \
+            --env AUTHORITY_REPLACEMENT_TEST_CHILD=nonroot \
+            syntaur-r3-proof-helper-builder \
+            "/target/$test_bin" --exact "$fixture" --ignored --nocapture
+          docker run --rm \
+            --network none --read-only --user 0:0 \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --mount "type=bind,src=${target},dst=/target,readonly" \
+            --env HOME=/root --env USER=root --env LOGNAME=root \
+            --env SUDO_UID=10001 --env SUDO_GID=10001 --env SUDO_USER=proof \
+            --env AUTHORITY_REPLACEMENT_TEST_CHILD=root \
+            syntaur-r3-proof-helper-builder \
+            "/target/$test_bin" --exact "$fixture" --ignored --nocapture
+          helper="$RUNNER_TEMP/proof-target-a/syntaur-authority-replacement-proof-linux-x86_64"
+          "$helper" authority-replacement-proof-helper-build-attestation \
+            >"$RUNNER_TEMP/nonroot-proof-helper-attestation.json"
+          if "$helper" authority-replacement-product-state-helper; then
+            printf 'proof helper accepted a non-fixed execution path\n' >&2
+            exit 1
+          fi
+          if sudo -n /usr/bin/env -i \
+            PATH=/usr/bin:/bin HOME=/root USER=root LOGNAME=root \
+            "$helper" authority-replacement-proof-helper-build-attestation; then
+            printf 'proof-helper attestation accepted a privileged entry\n' >&2
+            exit 1
+          fi
+          cmp "$RUNNER_TEMP/nonroot-proof-helper-attestation.json" \
+            "$RUNNER_TEMP/proof-target-a/proof-helper-build-attestation.json"
+
+      - name: Bind and package exact proof helper
+        shell: bash
+        env:
+          GENERATION: ${{ needs.predecessor.outputs.generation }}
+          SOURCE_COMMIT: ${{ steps.proof_source.outputs.source_commit }}
+          SOURCE_TREE_SHA256: ${{ steps.proof_source.outputs.source_tree_sha256 }}
+        run: |
+          set -euo pipefail
+          correction="public-workflow/.github/authority-resolution-corrections/g${GENERATION}-r3.json"
+          helper="$RUNNER_TEMP/proof-target-a/syntaur-authority-replacement-proof-linux-x86_64"
+          attestation="$RUNNER_TEMP/proof-target-a/proof-helper-build-attestation.json"
+          jq -e '
+            (.schema == 1) and
+            ((keys | sort) == ([
+              "build_clean", "build_profile", "build_target",
+              "control_plane_sha256", "executable_sha256",
+              "protocol_sha256", "rustflags_sha256", "schema",
+              "source_commit", "toolchain_sha256"
+            ] | sort))
+          ' "$attestation" >/dev/null
+          test "$(jq -er '.source_commit' "$attestation")" = "$SOURCE_COMMIT"
+          test "$(jq -er '.executable_sha256' "$attestation")" \
+            = "$(sha256sum "$helper" | awk '{print $1}')"
+          test "$(jq -er '.executable_sha256' "$attestation")" \
+            = "$(jq -er '.proof_helper_sha256' "$correction")"
+          test "$SOURCE_TREE_SHA256" \
+            = "$(jq -er '.proof_helper_source_tree_sha256' "$correction")"
+          test "$(jq -er '.control_plane_sha256' "$attestation")" \
+            = "$(jq -er '.proof_helper_control_plane_sha256' "$correction")"
+          test "$(jq -er '.toolchain_sha256' "$attestation")" \
+            = "$(jq -er '.proof_helper_toolchain_sha256' "$correction")"
+          test "$(jq -er '.rustflags_sha256' "$attestation")" \
+            = "$(jq -er '.proof_helper_rustflags_sha256' "$correction")"
+          test "$(jq -er '.build_target' "$attestation")" \
+            = "$(jq -er '.proof_helper_build_target' "$correction")"
+          test "$(jq -er '.build_profile' "$attestation")" \
+            = "$(jq -er '.proof_helper_build_profile' "$correction")"
+          test "$(jq -er '.build_clean' "$attestation")" \
+            = "$(jq -er '.proof_helper_build_clean' "$correction")"
+          test "$(jq -er '.protocol_sha256' "$attestation")" \
+            = "$(jq -er '.proof_helper_protocol_sha256' "$correction")"
+          test "$(jq -er '.protocol_sha256' "$attestation")" \
+            = "$(jq -er '.proof_helper_subprocess_protocol_sha256' "$correction")"
+          package="$RUNNER_TEMP/replacement-proof-helper"
+          mkdir -m 0700 "$package"
+          install -m 0500 "$helper" \
+            "$package/syntaur-authority-replacement-proof-linux-x86_64"
+          install -m 0400 "$attestation" \
+            "$package/proof-helper-build-attestation.json"
+          chmod 0500 "$package"
+
+      - name: Upload source-free replacement proof helper
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: replacement-proof-helper-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/replacement-proof-helper
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+
   recover_sign_resolution:
     needs:
       - predecessor
       - resolution_policy
-    if: needs.predecessor.outputs.target_already_published == 'true'
+      - replacement_proof_helper
+    if: >-
+      always() &&
+      needs.predecessor.outputs.target_already_published == 'true' &&
+      needs.resolution_policy.result == 'success' &&
+      (inputs.resolution_revision != '3' ||
+       needs.replacement_proof_helper.result == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -1712,6 +2036,27 @@ jobs:
         with:
           persist-credentials: false
           path: public-workflow
+
+      - name: Download exact replacement proof helper
+        if: inputs.resolution_revision == '3'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: replacement-proof-helper-run-${{ github.run_id }}-attempt-*
+          path: replacement-proof-helper-artifacts
+
+      - name: Select exact replacement proof helper
+        if: inputs.resolution_revision == '3'
+        shell: bash
+        run: |
+          set -euo pipefail
+          selected=$(find replacement-proof-helper-artifacts \
+            -mindepth 1 -maxdepth 1 -type d \
+            -name "replacement-proof-helper-run-${GITHUB_RUN_ID}-attempt-*" \
+            -printf '%f\n' | sort -V | sed -n '$p')
+          test -n "$selected"
+          test -z "$(find replacement-proof-helper-artifacts \
+            -mindepth 1 -maxdepth 1 -type d ! -name "$selected" -print -quit)"
+          mv "replacement-proof-helper-artifacts/$selected" replacement-proof-helper
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
@@ -1807,6 +2152,30 @@ jobs:
             correction_review_sha256=$(sha256sum "$correction" | awk '{print $1}')
             test "$(jq -er '.selected_manifest_sha256' "$correction")" \
               = "$(sha256sum "$target_manifest" | awk '{print $1}')"
+            if [[ $RESOLUTION_REVISION == 3 ]]; then
+              proof_package=replacement-proof-helper
+              proof_helper="$proof_package/syntaur-authority-replacement-proof-linux-x86_64"
+              proof_attestation="$proof_package/proof-helper-build-attestation.json"
+              proof_actual=$(find "$proof_package" -mindepth 1 -maxdepth 1 \
+                -type f -printf '%f\n' | LC_ALL=C sort)
+              proof_expected=$(printf '%s\n' \
+                proof-helper-build-attestation.json \
+                syntaur-authority-replacement-proof-linux-x86_64 \
+                | LC_ALL=C sort)
+              test "$proof_actual" = "$proof_expected"
+              test -f "$proof_helper" && test ! -L "$proof_helper"
+              test -f "$proof_attestation" && test ! -L "$proof_attestation"
+              test "$(sha256sum "$proof_helper" | awk '{print $1}')" \
+                = "$(jq -er '.proof_helper_sha256' "$correction")"
+              test "$(jq -er '.source_commit' "$proof_attestation")" \
+                = "$(jq -er '.proof_helper_source_commit' "$correction")"
+              test "$(jq -er '.protocol_sha256' "$proof_attestation")" \
+                = "$(jq -er '.proof_helper_protocol_sha256' "$correction")"
+              PLANNED_PRODUCT_BASE_COMMIT=$(jq -er \
+                '.corrected_planned_product_base_commit' "$correction")
+              test "$PLANNED_PRODUCT_BASE_COMMIT" \
+                = "$(jq -er '.proof_helper_source_commit' "$correction")"
+            fi
 
             superseded="$RUNNER_TEMP/superseded-resolution"
             mkdir -m 0700 "$superseded"
@@ -1847,10 +2216,20 @@ jobs:
               --jq '.object.sha')" = "$superseded_workflow_commit"
             test "$(jq -er '.manifest_helper_sha256' "$superseded_record")" \
               = "$(jq -er '.superseded_manifest_helper_sha256' "$correction")"
-            test "$(jq -er '.active_generation' "$correction")" \
-              = "$PREVIOUS_GENERATION"
-            test "$(jq -er '.active_manifest_sha256' "$correction")" \
-              = "$PREVIOUS_MANIFEST_SHA256"
+            if [[ $RESOLUTION_REVISION == 3 ]]; then
+              test "$(jq -er '.active_generation' "$correction")" = "$GENERATION"
+              test "$(jq -er '.active_manifest_sha256' "$correction")" \
+                = "$(sha256sum "$target_manifest" | awk '{print $1}')"
+              test "$(jq -er '.sealed_inputs_resolution_sha256' "$correction")" \
+                = "$supersedes_resolution_sha256"
+              test "$(jq -er '.superseded_planned_product_base_commit' "$correction")" \
+                = "$(jq -er '.planned_product_base_commit' "$superseded_record")"
+            else
+              test "$(jq -er '.active_generation' "$correction")" \
+                = "$PREVIOUS_GENERATION"
+              test "$(jq -er '.active_manifest_sha256' "$correction")" \
+                = "$PREVIOUS_MANIFEST_SHA256"
+            fi
             test "$(jq -er '.active_product_state_sha256' "$correction")" \
               = "$SETTLED_PRODUCT_STATE_SHA256"
             test "$(jq -er '.corrected_recovery_tool_sha256' "$correction")" \
@@ -1927,6 +2306,32 @@ jobs:
               install -m 0400 "$correction" \
                 "$resolution/release-authority-resolution-correction-v1.json"
             fi
+            if [[ $RESOLUTION_REVISION == 3 ]]; then
+              install -m 0500 \
+                "$proof_helper" \
+                "$resolution/syntaur-authority-replacement-proof-linux-x86_64"
+              PROOF_HELPER_SOURCE_COMMIT=$(jq -er \
+                '.proof_helper_source_commit' "$correction")
+              PROOF_HELPER_SOURCE_TREE_SHA256=$(jq -er \
+                '.proof_helper_source_tree_sha256' "$correction")
+              PROOF_HELPER_SHA256=$(jq -er '.proof_helper_sha256' "$correction")
+              PROOF_HELPER_CONTROL_PLANE_SHA256=$(jq -er \
+                '.proof_helper_control_plane_sha256' "$correction")
+              PROOF_HELPER_TOOLCHAIN_SHA256=$(jq -er \
+                '.proof_helper_toolchain_sha256' "$correction")
+              PROOF_HELPER_RUSTFLAGS_SHA256=$(jq -er \
+                '.proof_helper_rustflags_sha256' "$correction")
+              PROOF_HELPER_BUILD_TARGET=$(jq -er \
+                '.proof_helper_build_target' "$correction")
+              PROOF_HELPER_BUILD_PROFILE=$(jq -er \
+                '.proof_helper_build_profile' "$correction")
+              PROOF_HELPER_BUILD_CLEAN=$(jq -er \
+                '.proof_helper_build_clean' "$correction")
+              PROOF_HELPER_EXECUTION_PATH=$(jq -er \
+                '.proof_helper_execution_path' "$correction")
+              PROOF_HELPER_PROTOCOL_SHA256=$(jq -er \
+                '.proof_helper_protocol_sha256' "$correction")
+            fi
             REPLACEMENT_PREDECESSOR_GENERATION=$PREVIOUS_GENERATION
             REPLACEMENT_PREDECESSOR_MANIFEST_SHA256=$PREVIOUS_MANIFEST_SHA256
             SELECTED_AUTHORITY_GENERATION=$GENERATION
@@ -1961,6 +2366,14 @@ jobs:
             export RESOLUTION_WORKFLOW_COMMIT RESOLUTION_REVISION
             export SUPERSEDES_RESOLUTION_TAG SUPERSEDES_RESOLUTION_SHA256
             export SUPERSEDED_RECOVERY_TOOL_SHA256 CORRECTION_REVIEW_SHA256
+            if [[ $RESOLUTION_REVISION == 3 ]]; then
+              export PROOF_HELPER_SOURCE_COMMIT PROOF_HELPER_SOURCE_TREE_SHA256
+              export PROOF_HELPER_SHA256 PROOF_HELPER_CONTROL_PLANE_SHA256
+              export PROOF_HELPER_TOOLCHAIN_SHA256 PROOF_HELPER_RUSTFLAGS_SHA256
+              export PROOF_HELPER_BUILD_TARGET PROOF_HELPER_BUILD_PROFILE
+              export PROOF_HELPER_BUILD_CLEAN PROOF_HELPER_EXECUTION_PATH
+              export PROOF_HELPER_PROTOCOL_SHA256
+            fi
             bash public-workflow/scripts/release-authority-manifest.sh \
               render-replacement-resolution \
               "$resolution/release-authority-replacement-v1.json"
@@ -2002,7 +2415,23 @@ jobs:
               = "$correction_review_sha256"
             cmp "$correction" \
               "$resolution/release-authority-resolution-correction-v1.json"
-            jq -cS 'del(
+            r3=false
+            if [[ $RESOLUTION_REVISION == 3 ]]; then
+              r3=true
+              test "$(jq -er '.planned_product_base_commit' "$record")" \
+                = "$(jq -er '.corrected_planned_product_base_commit' "$correction")"
+              for field in \
+                proof_helper_source_commit proof_helper_source_tree_sha256 \
+                proof_helper_sha256 proof_helper_control_plane_sha256 \
+                proof_helper_toolchain_sha256 proof_helper_rustflags_sha256 \
+                proof_helper_build_target proof_helper_build_profile \
+                proof_helper_build_clean proof_helper_execution_path \
+                proof_helper_protocol_sha256; do
+                test "$(jq -er --arg field "$field" '.[$field]' "$record")" \
+                  = "$(jq -er --arg field "$field" '.[$field]' "$correction")"
+              done
+            fi
+            jq -cS --argjson r3 "$r3" 'del(
               .schema,
               .recovery_tool_sha256,
               .manifest_helper_sha256,
@@ -2013,8 +2442,23 @@ jobs:
               .superseded_recovery_tool_sha256,
               .correction_reason,
               .correction_review_sha256
-            )' "$superseded_record" >"$RUNNER_TEMP/superseded-resolution-tuple.json"
-            jq -cS 'del(
+            ) |
+            if $r3 then del(
+              .planned_product_base_commit,
+              .proof_helper_source_commit,
+              .proof_helper_source_tree_sha256,
+              .proof_helper_sha256,
+              .proof_helper_control_plane_sha256,
+              .proof_helper_toolchain_sha256,
+              .proof_helper_rustflags_sha256,
+              .proof_helper_build_target,
+              .proof_helper_build_profile,
+              .proof_helper_build_clean,
+              .proof_helper_execution_path,
+              .proof_helper_protocol_sha256
+            ) else . end' "$superseded_record" \
+              >"$RUNNER_TEMP/superseded-resolution-tuple.json"
+            jq -cS --argjson r3 "$r3" 'del(
               .schema,
               .recovery_tool_sha256,
               .manifest_helper_sha256,
@@ -2025,7 +2469,22 @@ jobs:
               .superseded_recovery_tool_sha256,
               .correction_reason,
               .correction_review_sha256
-            )' "$record" >"$RUNNER_TEMP/corrected-resolution-tuple.json"
+            ) |
+            if $r3 then del(
+              .planned_product_base_commit,
+              .proof_helper_source_commit,
+              .proof_helper_source_tree_sha256,
+              .proof_helper_sha256,
+              .proof_helper_control_plane_sha256,
+              .proof_helper_toolchain_sha256,
+              .proof_helper_rustflags_sha256,
+              .proof_helper_build_target,
+              .proof_helper_build_profile,
+              .proof_helper_build_clean,
+              .proof_helper_execution_path,
+              .proof_helper_protocol_sha256
+            ) else . end' "$record" \
+              >"$RUNNER_TEMP/corrected-resolution-tuple.json"
             cmp "$RUNNER_TEMP/superseded-resolution-tuple.json" \
               "$RUNNER_TEMP/corrected-resolution-tuple.json"
           fi
