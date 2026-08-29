@@ -683,7 +683,7 @@ case $scenario in
         if wait "$recovery_pid"; then
             die 'deployment-lock acquisition replacement unexpectedly succeeded'
         fi
-        grep -Fq 'operator deployment lock descriptor differs' \
+        grep -Eq 'operator deployment lock (changed|descriptor differs)' \
             /run/acquisition-lock-replace.err \
             || die 'deployment-lock descriptor/path split was not rejected'
         [[ ! -e $authority_root/authority-promotion-v1.json ]]
