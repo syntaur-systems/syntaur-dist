@@ -691,7 +691,11 @@ jobs:
 
   repository_policy:
     needs: predecessor
-    if: needs.predecessor.outputs.already_published != 'true' && needs.predecessor.outputs.target_already_published != 'true'
+    if: >-
+      (needs.predecessor.outputs.already_published != 'true' &&
+       needs.predecessor.outputs.target_already_published != 'true') ||
+      (needs.predecessor.outputs.target_already_published == 'true' &&
+       inputs.resolution_revision == '3')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release-authority-source
@@ -714,13 +718,18 @@ jobs:
     needs:
       - predecessor
       - repository_policy
-    if: needs.predecessor.outputs.already_published != 'true' && needs.predecessor.outputs.target_already_published != 'true'
+    if: >-
+      (needs.predecessor.outputs.already_published != 'true' &&
+       needs.predecessor.outputs.target_already_published != 'true') ||
+      (needs.predecessor.outputs.target_already_published == 'true' &&
+       inputs.resolution_revision == '3')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release-authority-source
     permissions:
       contents: read
     outputs:
+      source_commit: ${{ steps.metadata.outputs.source_commit }}
       authority_tree_sha256: ${{ steps.metadata.outputs.authority_tree_sha256 }}
       source_date_epoch: ${{ steps.metadata.outputs.source_date_epoch }}
     steps:
@@ -730,11 +739,62 @@ jobs:
           persist-credentials: false
           path: public-workflow
 
+      - name: Select exact private source tuple without executing it
+        id: source
+        shell: bash
+        env:
+          GENERATION: ${{ needs.predecessor.outputs.generation }}
+          TARGET_ALREADY_PUBLISHED: ${{ needs.predecessor.outputs.target_already_published }}
+          RESOLUTION_REVISION: ${{ inputs.resolution_revision }}
+          AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).authority_commit }}
+          AUTHORITY_TREE_SHA256: ${{ fromJSON(inputs.approval_record).authority_tree_sha256 }}
+          AUTHORITY_VERSION: ${{ fromJSON(inputs.approval_record).authority_version }}
+          VERIFICATION_POLICY_REVISION: ${{ fromJSON(inputs.approval_record).verification_policy_revision }}
+        run: |
+          set -euo pipefail
+          source_mode=authority
+          source_commit=$AUTHORITY_COMMIT
+          source_tree_sha256=$AUTHORITY_TREE_SHA256
+          source_parent=$VERIFICATION_POLICY_REVISION
+          source_version=$AUTHORITY_VERSION
+          if [[ $TARGET_ALREADY_PUBLISHED == true ]]; then
+            test "$RESOLUTION_REVISION" = 3
+            source_mode=replacement-proof-helper
+            correction="public-workflow/.github/authority-resolution-corrections/g${GENERATION}-r3.json"
+            review="public-workflow/.github/authority-replacement-reviews/g${GENERATION}.json"
+            bash public-workflow/scripts/release-authority-manifest.sh \
+              validate-resolution-correction-review "$correction"
+            bash public-workflow/scripts/release-authority-manifest.sh \
+              validate-selection-review "$review"
+            test "$(jq -er '.generation' "$correction")" = "$GENERATION"
+            test "$(jq -er '.selected_generation' "$review")" = "$GENERATION"
+            source_commit=$(jq -er '.proof_helper_source_commit' "$correction")
+            source_tree_sha256=$(jq -er \
+              '.proof_helper_source_tree_sha256' "$correction")
+            source_parent=$(jq -er \
+              '.superseded_planned_product_base_commit' "$correction")
+            source_version=$(jq -er '.selected_authority_version' "$review")
+            test "$source_commit" \
+              = "$(jq -er '.corrected_planned_product_base_commit' "$correction")"
+          fi
+          printf '%s' "$source_commit" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$source_parent" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$source_tree_sha256" | grep -Eq '^[0-9a-f]{64}$'
+          printf '%s' "$source_version" \
+            | grep -Eq '^(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})\.(0|[1-9][0-9]{0,9})$'
+          {
+            printf 'source_mode=%s\n' "$source_mode"
+            printf 'source_commit=%s\n' "$source_commit"
+            printf 'source_tree_sha256=%s\n' "$source_tree_sha256"
+            printf 'source_parent=%s\n' "$source_parent"
+            printf 'source_version=%s\n' "$source_version"
+          } >>"$GITHUB_OUTPUT"
+
       - name: Export exact private source metadata without executing it
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           repository: buddyholly007/syntaur
-          ref: ${{ fromJSON(inputs.approval_record).authority_commit }}
+          ref: ${{ steps.source.outputs.source_commit }}
           ssh-key: ${{ secrets.SYNTAUR_SOURCE_DEPLOY_KEY }}
           persist-credentials: false
           path: source
@@ -744,10 +804,12 @@ jobs:
         id: metadata
         shell: bash
         env:
-          AUTHORITY_COMMIT: ${{ fromJSON(inputs.approval_record).authority_commit }}
+          SOURCE_MODE: ${{ steps.source.outputs.source_mode }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
+          SOURCE_TREE_SHA256: ${{ steps.source.outputs.source_tree_sha256 }}
+          SOURCE_PARENT: ${{ steps.source.outputs.source_parent }}
+          SOURCE_VERSION: ${{ steps.source.outputs.source_version }}
           VERIFICATION_POLICY_REVISION: ${{ fromJSON(inputs.approval_record).verification_policy_revision }}
-          AUTHORITY_VERSION: ${{ fromJSON(inputs.approval_record).authority_version }}
-          EXPECTED_AUTHORITY_TREE_SHA256: ${{ fromJSON(inputs.approval_record).authority_tree_sha256 }}
           EXPECTED_PROVISIONER_SHA256: ${{ fromJSON(inputs.approval_record).provisioner_sha256 }}
           VERIFIER_SCHEMA: ${{ fromJSON(inputs.approval_record).verifier_schema }}
           GENESIS: ${{ needs.predecessor.outputs.genesis }}
@@ -759,9 +821,14 @@ jobs:
           leaked_keys=$(find "$RUNNER_TEMP" -type f -size -128k -print0 \
             | xargs -0 -r grep -Il '^-----BEGIN OPENSSH PRIVATE KEY-----$' || true)
           test -z "$leaked_keys"
-          test "$(git -C source rev-parse HEAD)" = "$AUTHORITY_COMMIT"
-          if [[ $GENESIS == true ]]; then
-            test "$VERIFICATION_POLICY_REVISION" = "$AUTHORITY_COMMIT"
+          test "$(git -C source rev-parse HEAD)" = "$SOURCE_COMMIT"
+          if [[ $SOURCE_MODE == replacement-proof-helper ]]; then
+            test "$GENESIS" = false
+            test "$(git -C source rev-list --parents -n 1 HEAD | awk '{print NF}')" = 2
+            test "$(git -C source rev-parse HEAD^)" = "$SOURCE_PARENT"
+          elif [[ $GENESIS == true ]]; then
+            test "$SOURCE_MODE" = authority
+            test "$VERIFICATION_POLICY_REVISION" = "$SOURCE_COMMIT"
             g1_parser_root="$RUNNER_TEMP/g1-toml-parser"
             mkdir -m 0700 "$g1_parser_root"
             /usr/bin/curl -fsSLo "$g1_parser_root/yq.download" \
@@ -772,17 +839,18 @@ jobs:
             install -m 0500 "$g1_parser_root/yq.download" "$g1_parser_root/yq"
             bash public-workflow/scripts/verify-g1-authority-source.sh \
               source \
-              "$AUTHORITY_COMMIT" \
+              "$SOURCE_COMMIT" \
               b003360f63707d92fd0df1fd12384282f1c3004f \
               1bf740acd5a7223e98370f668148f01ebfb6eff8 \
               0.7.114 \
               "$g1_parser_root/yq"
           else
-            test "$(git -C source rev-parse "${AUTHORITY_COMMIT}^")" \
-              = "$VERIFICATION_POLICY_REVISION"
+            test "$SOURCE_MODE" = authority
+            test "$(git -C source rev-parse "${SOURCE_COMMIT}^")" \
+              = "$SOURCE_PARENT"
           fi
-          cmp -s source/VERSION <(printf '%s' "$AUTHORITY_VERSION") \
-            || cmp -s source/VERSION <(printf '%s\n' "$AUTHORITY_VERSION")
+          cmp -s source/VERSION <(printf '%s' "$SOURCE_VERSION") \
+            || cmp -s source/VERSION <(printf '%s\n' "$SOURCE_VERSION")
           source_schema=$(sed -nE \
             's/^pub const VERIFICATION_ATTESTATION_SCHEMA_VERSION: u32 = ([0-9]+);$/\1/p' \
             source/crates/syntaur-verify/src/run.rs)
@@ -795,11 +863,12 @@ jobs:
             | awk '{print $1}')" = "$EXPECTED_PROVISIONER_SHA256"
           authority_tree_sha256=$(bash \
             public-workflow/scripts/release-authority-manifest.sh \
-            source-tree-sha256 source "$AUTHORITY_COMMIT")
-          test "$authority_tree_sha256" = "$EXPECTED_AUTHORITY_TREE_SHA256"
-          source_date_epoch=$(git -C source show -s --format=%ct "$AUTHORITY_COMMIT")
+            source-tree-sha256 source "$SOURCE_COMMIT")
+          test "$authority_tree_sha256" = "$SOURCE_TREE_SHA256"
+          source_date_epoch=$(git -C source show -s --format=%ct "$SOURCE_COMMIT")
           printf '%s' "$source_date_epoch" | grep -Eq '^[1-9][0-9]{0,11}$'
           {
+            printf 'source_commit=%s\n' "$SOURCE_COMMIT"
             printf 'authority_tree_sha256=%s\n' "$authority_tree_sha256"
             printf 'source_date_epoch=%s\n' "$source_date_epoch"
           } >>"$GITHUB_OUTPUT"
@@ -847,7 +916,7 @@ jobs:
             "$export_dir/source.tar.age" | awk '{print $1}')
           jq -cjn \
             --argjson schema 1 \
-            --arg authority_commit "$AUTHORITY_COMMIT" \
+            --arg authority_commit "$SOURCE_COMMIT" \
             --arg authority_tree_sha256 "$authority_tree_sha256" \
             --argjson source_date_epoch "$source_date_epoch" \
             --arg source_archive_sha256 "$source_archive_sha256" \
@@ -1699,12 +1768,14 @@ jobs:
     needs:
       - predecessor
       - resolution_policy
+      - source_metadata
     if: needs.predecessor.outputs.target_already_published == 'true' && inputs.resolution_revision == '3'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: release-authority-source
     permissions:
       contents: read
+      actions: read
     steps:
       - name: Checkout exact public proof-helper policy
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
@@ -1712,42 +1783,111 @@ jobs:
           persist-credentials: false
           path: public-workflow
 
-      - name: Select exact reviewed private proof-helper source
-        id: proof_source
-        shell: bash
-        env:
-          GENERATION: ${{ needs.predecessor.outputs.generation }}
-        run: |
-          set -euo pipefail
-          correction="public-workflow/.github/authority-resolution-corrections/g${GENERATION}-r3.json"
-          bash public-workflow/scripts/release-authority-manifest.sh \
-            validate-resolution-correction-review "$correction"
-          {
-            printf 'source_commit=%s\n' \
-              "$(jq -er '.proof_helper_source_commit' "$correction")"
-            printf 'source_tree_sha256=%s\n' \
-              "$(jq -er '.proof_helper_source_tree_sha256' "$correction")"
-          } >>"$GITHUB_OUTPUT"
-
-      - name: Export exact reviewed private proof-helper source
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - name: Download encrypted proof-helper source export
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          repository: buddyholly007/syntaur
-          ref: ${{ steps.proof_source.outputs.source_commit }}
-          ssh-key: ${{ secrets.SYNTAUR_SOURCE_DEPLOY_KEY }}
-          persist-credentials: false
-          path: source
-          fetch-depth: 2
+          pattern: encrypted-authority-source-run-${{ github.run_id }}-attempt-*
+          path: encrypted-source-artifacts
 
-      - name: Prove exact source topology and remove credential authority
+      - name: Select exact encrypted proof-helper source export
+        shell: bash
+        run: |
+          set -euo pipefail
+          selected=$(find encrypted-source-artifacts \
+            -mindepth 1 -maxdepth 1 -type d \
+            -name "encrypted-authority-source-run-${GITHUB_RUN_ID}-attempt-*" \
+            -printf '%f\n' | sort -V | sed -n '$p')
+          test -n "$selected"
+          test -z "$(find encrypted-source-artifacts \
+            -mindepth 1 -maxdepth 1 ! -type d -print -quit)"
+          test -z "$(find encrypted-source-artifacts \
+            -mindepth 1 -maxdepth 1 -type d ! -name "$selected" -print -quit)"
+          mv "encrypted-source-artifacts/$selected" encrypted-source
+
+      - name: Decrypt exact proof-helper source with step-scoped identity
         shell: bash
         env:
-          SOURCE_COMMIT: ${{ steps.proof_source.outputs.source_commit }}
-          SOURCE_TREE_SHA256: ${{ steps.proof_source.outputs.source_tree_sha256 }}
+          SOURCE_ARCHIVE_AGE_IDENTITY: ${{ secrets.SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY }}
+          SOURCE_COMMIT: ${{ needs.source_metadata.outputs.source_commit }}
+          SOURCE_TREE_SHA256: ${{ needs.source_metadata.outputs.authority_tree_sha256 }}
+          SOURCE_DATE_EPOCH: ${{ needs.source_metadata.outputs.source_date_epoch }}
+        run: |
+          set -euo pipefail
+          expected_names=$(printf '%s\n' source-export.json source.tar.age \
+            | LC_ALL=C sort)
+          actual_names=$(find encrypted-source -mindepth 1 -maxdepth 1 \
+            -type f -printf '%f\n' | LC_ALL=C sort)
+          test "$actual_names" = "$expected_names"
+          test "$(jq -er '.schema' encrypted-source/source-export.json)" = 1
+          test "$(jq -er '.authority_commit' encrypted-source/source-export.json)" \
+            = "$SOURCE_COMMIT"
+          test "$(jq -er '.authority_tree_sha256' \
+            encrypted-source/source-export.json)" = "$SOURCE_TREE_SHA256"
+          test "$(jq -er '.source_date_epoch' encrypted-source/source-export.json)" \
+            = "$SOURCE_DATE_EPOCH"
+          test "$(jq -er '.recipient' encrypted-source/source-export.json)" \
+            = "$SOURCE_ARCHIVE_AGE_RECIPIENT"
+          test "$(sha256sum encrypted-source/source.tar.age | awk '{print $1}')" \
+            = "$(jq -er '.ciphertext_sha256' encrypted-source/source-export.json)"
+
+          age_root="$RUNNER_TEMP/age"
+          mkdir -m 0700 "$age_root"
+          /usr/bin/curl -fsSLo "$age_root/age.tar.gz" \
+            "https://github.com/FiloSottile/age/releases/download/${AGE_VERSION}/age-${AGE_VERSION}-linux-amd64.tar.gz"
+          printf '%s  %s\n' \
+            "$AGE_LINUX_AMD64_SHA256" "$age_root/age.tar.gz" \
+            | sha256sum -c - >/dev/null
+          tar -xzf "$age_root/age.tar.gz" -C "$age_root"
+          mkdir -m 0700 "$age_root/bin"
+          install -m 0500 \
+            "$age_root/age/age" "$age_root/age/age-keygen" \
+            "$age_root/bin/"
+          derived_recipient=$(printf '%s\n' "$SOURCE_ARCHIVE_AGE_IDENTITY" \
+            | "$age_root/bin/age-keygen" -y -)
+          test "$derived_recipient" = "$SOURCE_ARCHIVE_AGE_RECIPIENT"
+          source_archive="$RUNNER_TEMP/source.tar"
+          printf '%s\n' "$SOURCE_ARCHIVE_AGE_IDENTITY" \
+            | "$age_root/bin/age" \
+                --decrypt \
+                --identity - \
+                --output "$source_archive" \
+                encrypted-source/source.tar.age
+          unset SOURCE_ARCHIVE_AGE_IDENTITY
+          test "$(sha256sum "$source_archive" | awk '{print $1}')" \
+            = "$(jq -er '.source_archive_sha256' \
+                encrypted-source/source-export.json)"
+          test "$(tar -tf "$source_archive" | sed -n '1p')" = source/
+          if tar -tf "$source_archive" \
+            | grep -Ev '^source(/|$)' >/dev/null; then
+            exit 1
+          fi
+          tar \
+            --extract \
+            --file "$source_archive" \
+            --directory "$GITHUB_WORKSPACE" \
+            --no-same-owner \
+            --no-same-permissions
+          rm -f "$source_archive"
+          rm -rf "$age_root"
+          printf 'SOURCE_DATE_EPOCH=%s\n' "$SOURCE_DATE_EPOCH" >>"$GITHUB_ENV"
+
+      - name: Prove plaintext proof-helper source has no credential authority
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ needs.source_metadata.outputs.source_commit }}
+          SOURCE_TREE_SHA256: ${{ needs.source_metadata.outputs.authority_tree_sha256 }}
           GENERATION: ${{ needs.predecessor.outputs.generation }}
         run: |
           set -euo pipefail
           correction="public-workflow/.github/authority-resolution-corrections/g${GENERATION}-r3.json"
+          test -z "${SOURCE_ARCHIVE_AGE_IDENTITY:-}"
+          test -z "${SYNTAUR_SOURCE_DEPLOY_KEY:-}"
+          leaked_identities=$(find "$RUNNER_TEMP" "$GITHUB_WORKSPACE" \
+            -type f -size -128k -print0 \
+            | xargs -0 -r grep -Il \
+                -e '^AGE-SECRET-KEY-' \
+                -e '^-----BEGIN OPENSSH PRIVATE KEY-----$' || true)
+          test -z "$leaked_identities"
           test -z "$(git -C source config --local --get-all core.sshCommand || true)"
           test -z "$(git -C source config --local \
             --get-all http.https://github.com/.extraheader || true)"
@@ -1761,12 +1901,8 @@ jobs:
           test -z "$(git -C source status --porcelain=v1 --untracked-files=all)"
           test -z "$(find source -type l -print -quit)"
           test -z "$(find source -type f -links +1 -print -quit)"
-          leaked_keys=$(find "$RUNNER_TEMP" -type f -size -128k -print0 \
-            | xargs -0 -r grep -Il '^-----BEGIN OPENSSH PRIVATE KEY-----$' || true)
-          test -z "$leaked_keys"
-          source_date_epoch=$(git -C source show -s --format=%ct "$SOURCE_COMMIT")
-          printf '%s' "$source_date_epoch" | grep -Eq '^[1-9][0-9]{8,15}$'
-          printf 'SOURCE_DATE_EPOCH=%s\n' "$source_date_epoch" >>"$GITHUB_ENV"
+          test "$(git -C source show -s --format=%ct "$SOURCE_COMMIT")" \
+            = "${SOURCE_DATE_EPOCH}"
           sudo chown -R 65534:65534 source
 
       - name: Prepare pinned proof-helper builder
@@ -1957,8 +2093,8 @@ jobs:
         shell: bash
         env:
           GENERATION: ${{ needs.predecessor.outputs.generation }}
-          SOURCE_COMMIT: ${{ steps.proof_source.outputs.source_commit }}
-          SOURCE_TREE_SHA256: ${{ steps.proof_source.outputs.source_tree_sha256 }}
+          SOURCE_COMMIT: ${{ needs.source_metadata.outputs.source_commit }}
+          SOURCE_TREE_SHA256: ${{ needs.source_metadata.outputs.authority_tree_sha256 }}
         run: |
           set -euo pipefail
           correction="public-workflow/.github/authority-resolution-corrections/g${GENERATION}-r3.json"

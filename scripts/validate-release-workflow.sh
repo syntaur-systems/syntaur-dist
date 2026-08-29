@@ -336,14 +336,14 @@ if [ -f "$authority_workflow" ]; then
     select(.value | tostring | contains("SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY")) |
     .key
   ' <<<"$jobs_json")
-  [ "$age_secret_jobs" = isolated_build ] || {
-    echo "source decryption identity escaped isolated_build: $age_secret_jobs" >&2
+  [ "$age_secret_jobs" = $'isolated_build\nreplacement_proof_helper' ] || {
+    echo "source decryption identity escaped its two isolated build jobs: $age_secret_jobs" >&2
     exit 1
   }
   [ "$(grep -o 'secrets.SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY' \
-    "$authority_workflow" | wc -l)" -eq 1 ]
+    "$authority_workflow" | wc -l)" -eq 2 ]
   [ "$(grep -Fc 'sudo chown -R 65534:65534 source' \
-    "$authority_workflow")" -eq 1 ] || {
+    "$authority_workflow")" -eq 2 ] || {
     echo "authority source ownership is not normalized for the unprivileged builder" >&2
     exit 1
   }
@@ -396,7 +396,12 @@ if [ -f "$authority_workflow" ]; then
   [ "$(yq -r '.jobs.recover_publish_resolution.environment' \
     "$authority_workflow")" = release-authority ]
   jq -e '
-    (.recover_sign_resolution.needs == ["predecessor", "resolution_policy"]) and
+    (.replacement_proof_helper.needs ==
+      ["predecessor", "resolution_policy", "source_metadata"]) and
+    (.replacement_proof_helper.permissions ==
+      {"contents":"read", "actions":"read"}) and
+    (.recover_sign_resolution.needs ==
+      ["predecessor", "resolution_policy", "replacement_proof_helper"]) and
     (.recover_publish_resolution.needs == ["predecessor", "recover_sign_resolution"]) and
     (.resolution_policy.permissions == {"contents":"read"}) and
     (.recover_sign_resolution.permissions == {
@@ -404,6 +409,19 @@ if [ -f "$authority_workflow" ]; then
     })
   ' <<<"$jobs_json" >/dev/null || {
     echo "resolution approval, signer, and publisher topology is not exact" >&2
+    exit 1
+  }
+  jq -e '
+    (.source_metadata | tostring | contains("proof_helper_source_commit")) and
+    (.source_metadata | tostring | contains("encrypted-authority-source-run-")) and
+    (.replacement_proof_helper | tostring |
+      contains("actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131")) and
+    (.replacement_proof_helper | tostring |
+      contains("unset SOURCE_ARCHIVE_AGE_IDENTITY")) and
+    ((.replacement_proof_helper | tostring |
+      contains("secrets.SYNTAUR_SOURCE_DEPLOY_KEY")) | not)
+  ' <<<"$jobs_json" >/dev/null || {
+    echo "replacement proof-helper encrypted-source handoff is not exact" >&2
     exit 1
   }
 

@@ -957,7 +957,7 @@ for required in \
     promotion_recovery_sha256; do
     grep -Fq "$required" "$workflow"
 done
-grep -Fq 'git -C source rev-parse "${AUTHORITY_COMMIT}^"' "$workflow"
+grep -Fq 'git -C source rev-parse "${SOURCE_COMMIT}^"' "$workflow"
 grep -Fq 'authority-protocol-inputs' "$workflow"
 grep -Fq -- '--authority-protocol-self-test' "$workflow"
 grep -Fq 'shipper-self-test.json' "$workflow"
@@ -967,8 +967,11 @@ grep -Fq \
     "$workflow"
 grep -Fq -- '--network none' "$workflow"
 grep -Fq 'release-authority-source' "$workflow"
-grep -Fq 'SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY' "$workflow"
-grep -Fq 'sudo chown -R 65534:65534 source' "$workflow"
+[[ $(grep -Fc 'secrets.SYNTAUR_SOURCE_DEPLOY_KEY' "$workflow") -eq 1 ]]
+[[ $(grep -Fc 'secrets.SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY' "$workflow") -eq 2 ]]
+[[ $(grep -Fc 'sudo chown -R 65534:65534 source' "$workflow") -eq 2 ]]
+grep -Fq 'proof_helper_source_commit' "$workflow"
+grep -Fq 'unset SOURCE_ARCHIVE_AGE_IDENTITY' "$workflow"
 grep -Fq 'encrypted-authority-source-run-' "$workflow"
 [[ $(grep -Fc -- '--repo "$GITHUB_REPOSITORY"' "$workflow") -eq 28 ]]
 grep -Fq 'mkdir -m 0700 "$age_root/bin"' "$workflow"
