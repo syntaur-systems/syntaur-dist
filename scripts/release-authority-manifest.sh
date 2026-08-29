@@ -390,7 +390,7 @@ render_approval_record() {
 selection_review_from_file() {
     local record=$1
     jq -cjn \
-        --argjson schema "$(manifest_value "$record" schema)" \
+        --argjson schema 1 \
         --arg reason "$(manifest_value "$record" reason)" \
         --argjson predecessor_generation "$(manifest_value "$record" predecessor_generation)" \
         --arg predecessor_manifest_sha256 "$(manifest_value "$record" predecessor_manifest_sha256)" \
@@ -591,6 +591,225 @@ render_selection_review() {
     validate_selection_review "$output"
 }
 
+resolution_correction_review_from_file() {
+    local record=$1
+    jq -cjn \
+        --argjson schema "$(manifest_value "$record" schema)" \
+        --argjson generation "$(manifest_value "$record" generation)" \
+        --argjson resolution_revision "$(manifest_value "$record" resolution_revision)" \
+        --arg resolution_tag "$(manifest_value "$record" resolution_tag)" \
+        --arg supersedes_resolution_tag "$(manifest_value "$record" supersedes_resolution_tag)" \
+        --arg supersedes_resolution_sha256 "$(manifest_value "$record" supersedes_resolution_sha256)" \
+        --arg superseded_resolution_workflow_commit "$(manifest_value "$record" superseded_resolution_workflow_commit)" \
+        --arg superseded_recovery_tool_sha256 "$(manifest_value "$record" superseded_recovery_tool_sha256)" \
+        --arg superseded_manifest_helper_sha256 "$(manifest_value "$record" superseded_manifest_helper_sha256)" \
+        --arg corrected_recovery_tool_sha256 "$(manifest_value "$record" corrected_recovery_tool_sha256)" \
+        --arg corrected_manifest_helper_sha256 "$(manifest_value "$record" corrected_manifest_helper_sha256)" \
+        --argjson active_generation "$(manifest_value "$record" active_generation)" \
+        --arg active_manifest_sha256 "$(manifest_value "$record" active_manifest_sha256)" \
+        --arg active_product_state_sha256 "$(manifest_value "$record" active_product_state_sha256)" \
+        --arg selected_manifest_sha256 "$(manifest_value "$record" selected_manifest_sha256)" \
+        --arg correction_reason "$(manifest_value "$record" correction_reason)" \
+        --arg failure_class "$(manifest_value "$record" failure_class)" \
+        --arg failure_stage "$(manifest_value "$record" failure_stage)" \
+        --argjson authority_mutated "$(jq -r '.authority_mutated' "$record")" \
+        --argjson product_state_mutated "$(jq -r '.product_state_mutated' "$record")" \
+        --argjson install_journal_present "$(jq -r '.install_journal_present' "$record")" \
+        --argjson rollback_journal_present "$(jq -r '.rollback_journal_present' "$record")" \
+        --argjson install_receipt_present "$(jq -r '.install_receipt_present' "$record")" \
+        '{
+          schema:$schema,
+          generation:$generation,
+          resolution_revision:$resolution_revision,
+          resolution_tag:$resolution_tag,
+          supersedes_resolution_tag:$supersedes_resolution_tag,
+          supersedes_resolution_sha256:$supersedes_resolution_sha256,
+          superseded_resolution_workflow_commit:$superseded_resolution_workflow_commit,
+          superseded_recovery_tool_sha256:$superseded_recovery_tool_sha256,
+          superseded_manifest_helper_sha256:$superseded_manifest_helper_sha256,
+          corrected_recovery_tool_sha256:$corrected_recovery_tool_sha256,
+          corrected_manifest_helper_sha256:$corrected_manifest_helper_sha256,
+          active_generation:$active_generation,
+          active_manifest_sha256:$active_manifest_sha256,
+          active_product_state_sha256:$active_product_state_sha256,
+          selected_manifest_sha256:$selected_manifest_sha256,
+          correction_reason:$correction_reason,
+          failure_class:$failure_class,
+          failure_stage:$failure_stage,
+          authority_mutated:$authority_mutated,
+          product_state_mutated:$product_state_mutated,
+          install_journal_present:$install_journal_present,
+          rollback_journal_present:$rollback_journal_present,
+          install_receipt_present:$install_receipt_present
+        }'
+}
+
+validate_resolution_correction_review() {
+    local record=$1
+    [[ -s $record && -f $record && ! -L $record ]] \
+        || die 'authority resolution correction review is unsafe'
+    jq -e '
+        def digest: type == "string" and test("^[0-9a-f]{64}$");
+        def commit: type == "string" and test("^[0-9a-f]{40}$");
+        def uint: type == "number" and . >= 0 and . <= 9007199254740991 and floor == .;
+        (.schema == 1) and
+        (.generation | uint and . > 0) and
+        (.resolution_revision | uint and . >= 2) and
+        (.resolution_tag ==
+          ("authority-resolution-v1-g" + (.generation | tostring) +
+           "-r" + (.resolution_revision | tostring))) and
+        (.supersedes_resolution_tag ==
+          ("authority-resolution-v1-g" + (.generation | tostring) +
+           (if .resolution_revision == 2 then ""
+            else "-r" + ((.resolution_revision - 1) | tostring) end))) and
+        (.supersedes_resolution_sha256 | digest) and
+        (.superseded_resolution_workflow_commit | commit) and
+        (.superseded_recovery_tool_sha256 | digest) and
+        (.superseded_manifest_helper_sha256 | digest) and
+        (.corrected_recovery_tool_sha256 | digest) and
+        (.corrected_manifest_helper_sha256 | digest) and
+        (.corrected_recovery_tool_sha256 != .superseded_recovery_tool_sha256) and
+        (.corrected_manifest_helper_sha256 != .superseded_manifest_helper_sha256) and
+        (.active_generation == (.generation - 1)) and
+        (.active_manifest_sha256 | digest) and
+        (.active_product_state_sha256 | digest) and
+        (.selected_manifest_sha256 | digest) and
+        (.correction_reason == "recovery_tool_execution_failure") and
+        (.failure_class == "bash_dynamic_scope_unbound_operation") and
+        (.failure_stage == "sealed_input_revalidation") and
+        (.authority_mutated == false) and
+        (.product_state_mutated == false) and
+        (.install_journal_present == false) and
+        (.rollback_journal_present == false) and
+        (.install_receipt_present == false) and
+        (keys | sort) == ([
+          "active_generation", "active_manifest_sha256", "active_product_state_sha256",
+          "authority_mutated", "corrected_manifest_helper_sha256",
+          "corrected_recovery_tool_sha256", "correction_reason", "failure_class",
+          "failure_stage", "generation", "install_journal_present",
+          "install_receipt_present", "product_state_mutated", "rollback_journal_present",
+          "resolution_revision", "resolution_tag", "schema",
+          "selected_manifest_sha256", "superseded_manifest_helper_sha256",
+          "superseded_recovery_tool_sha256", "superseded_resolution_workflow_commit",
+          "supersedes_resolution_sha256", "supersedes_resolution_tag"
+        ] | sort)
+    ' "$record" >/dev/null || die 'authority resolution correction review shape or values are invalid'
+    local canonical
+    canonical=$(resolution_correction_review_from_file "$record")
+    [[ $(wc -c <"$record") -eq ${#canonical} && $(<"$record") == "$canonical" ]] \
+        || die 'authority resolution correction review is not exact canonical JSON'
+}
+
+resolution_correction_authorization_from_file() {
+    local record=$1
+    jq -cjn \
+        --argjson schema "$(manifest_value "$record" schema)" \
+        --argjson generation "$(manifest_value "$record" generation)" \
+        --argjson resolution_revision "$(manifest_value "$record" resolution_revision)" \
+        --arg resolution_tag "$(manifest_value "$record" resolution_tag)" \
+        --arg resolution_sha256 "$(manifest_value "$record" resolution_sha256)" \
+        --arg resolution_workflow_commit "$(manifest_value "$record" resolution_workflow_commit)" \
+        --arg recovery_tool_sha256 "$(manifest_value "$record" recovery_tool_sha256)" \
+        --arg manifest_helper_sha256 "$(manifest_value "$record" manifest_helper_sha256)" \
+        --arg correction_review_sha256 "$(manifest_value "$record" correction_review_sha256)" \
+        --arg supersedes_resolution_sha256 "$(manifest_value "$record" supersedes_resolution_sha256)" \
+        --arg selected_manifest_sha256 "$(manifest_value "$record" selected_manifest_sha256)" \
+        --arg authorize_reason "$(manifest_value "$record" authorize_reason)" \
+        '{
+          schema:$schema,
+          generation:$generation,
+          resolution_revision:$resolution_revision,
+          resolution_tag:$resolution_tag,
+          resolution_sha256:$resolution_sha256,
+          resolution_workflow_commit:$resolution_workflow_commit,
+          recovery_tool_sha256:$recovery_tool_sha256,
+          manifest_helper_sha256:$manifest_helper_sha256,
+          correction_review_sha256:$correction_review_sha256,
+          supersedes_resolution_sha256:$supersedes_resolution_sha256,
+          selected_manifest_sha256:$selected_manifest_sha256,
+          authorize_reason:$authorize_reason
+        }'
+}
+
+validate_resolution_correction_authorization() {
+    local record=$1
+    [[ -s $record && -f $record && ! -L $record ]] \
+        || die 'authority resolution correction authorization is unsafe'
+    jq -e '
+        def digest: type == "string" and test("^[0-9a-f]{64}$");
+        def commit: type == "string" and test("^[0-9a-f]{40}$");
+        def uint: type == "number" and . >= 0 and . <= 9007199254740991 and floor == .;
+        (.schema == 1) and
+        (.generation | uint and . > 0) and
+        (.resolution_revision | uint and . >= 2) and
+        (.resolution_tag ==
+          ("authority-resolution-v1-g" + (.generation | tostring) +
+           "-r" + (.resolution_revision | tostring))) and
+        (.resolution_sha256 | digest) and
+        (.resolution_workflow_commit | commit) and
+        (.recovery_tool_sha256 | digest) and
+        (.manifest_helper_sha256 | digest) and
+        (.correction_review_sha256 | digest) and
+        (.supersedes_resolution_sha256 | digest) and
+        (.selected_manifest_sha256 | digest) and
+        (.authorize_reason == "recovery_tool_execution_failure") and
+        (keys | sort) == ([
+          "authorize_reason", "correction_review_sha256", "generation",
+          "manifest_helper_sha256", "recovery_tool_sha256",
+          "resolution_revision", "resolution_sha256", "resolution_tag",
+          "resolution_workflow_commit", "schema", "selected_manifest_sha256",
+          "supersedes_resolution_sha256"
+        ] | sort)
+    ' "$record" >/dev/null \
+        || die 'authority resolution correction authorization shape or values are invalid'
+    local canonical
+    canonical=$(resolution_correction_authorization_from_file "$record")
+    [[ $(wc -c <"$record") -eq ${#canonical} && $(<"$record") == "$canonical" ]] \
+        || die 'authority resolution correction authorization is not exact canonical JSON'
+}
+
+render_resolution_correction_authorization() {
+    local output=$1
+    : "${SELECTED_AUTHORITY_GENERATION:?}"
+    : "${RESOLUTION_REVISION:?}"
+    : "${RESOLUTION_SHA256:?}"
+    : "${RESOLUTION_WORKFLOW_COMMIT:?}"
+    : "${RECOVERY_TOOL_SHA256:?}"
+    : "${MANIFEST_HELPER_SHA256:?}"
+    : "${CORRECTION_REVIEW_SHA256:?}"
+    : "${SUPERSEDES_RESOLUTION_SHA256:?}"
+    : "${SELECTED_AUTHORITY_MANIFEST_SHA256:?}"
+    jq -cjn \
+        --argjson schema 1 \
+        --argjson generation "$SELECTED_AUTHORITY_GENERATION" \
+        --argjson resolution_revision "$RESOLUTION_REVISION" \
+        --arg resolution_tag \
+          "authority-resolution-v1-g${SELECTED_AUTHORITY_GENERATION}-r${RESOLUTION_REVISION}" \
+        --arg resolution_sha256 "$RESOLUTION_SHA256" \
+        --arg resolution_workflow_commit "$RESOLUTION_WORKFLOW_COMMIT" \
+        --arg recovery_tool_sha256 "$RECOVERY_TOOL_SHA256" \
+        --arg manifest_helper_sha256 "$MANIFEST_HELPER_SHA256" \
+        --arg correction_review_sha256 "$CORRECTION_REVIEW_SHA256" \
+        --arg supersedes_resolution_sha256 "$SUPERSEDES_RESOLUTION_SHA256" \
+        --arg selected_manifest_sha256 "$SELECTED_AUTHORITY_MANIFEST_SHA256" \
+        --arg authorize_reason recovery_tool_execution_failure \
+        '{
+          schema:$schema,
+          generation:$generation,
+          resolution_revision:$resolution_revision,
+          resolution_tag:$resolution_tag,
+          resolution_sha256:$resolution_sha256,
+          resolution_workflow_commit:$resolution_workflow_commit,
+          recovery_tool_sha256:$recovery_tool_sha256,
+          manifest_helper_sha256:$manifest_helper_sha256,
+          correction_review_sha256:$correction_review_sha256,
+          supersedes_resolution_sha256:$supersedes_resolution_sha256,
+          selected_manifest_sha256:$selected_manifest_sha256,
+          authorize_reason:$authorize_reason
+        }' >"$output"
+    validate_resolution_correction_authorization "$output"
+}
+
 replacement_resolution_from_file() {
     local record=$1
     jq -cjn \
@@ -623,6 +842,12 @@ replacement_resolution_from_file() {
         --arg recovery_tool_sha256 "$(manifest_value "$record" recovery_tool_sha256)" \
         --arg manifest_helper_sha256 "$(manifest_value "$record" manifest_helper_sha256)" \
         --arg resolution_workflow_commit "$(manifest_value "$record" resolution_workflow_commit)" \
+        --argjson resolution_revision "$(jq -er '.resolution_revision // 1' "$record")" \
+        --arg supersedes_resolution_tag "$(jq -er '.supersedes_resolution_tag // ""' "$record")" \
+        --arg supersedes_resolution_sha256 "$(jq -er '.supersedes_resolution_sha256 // ""' "$record")" \
+        --arg superseded_recovery_tool_sha256 "$(jq -er '.superseded_recovery_tool_sha256 // ""' "$record")" \
+        --arg correction_reason "$(jq -er '.correction_reason // ""' "$record")" \
+        --arg correction_review_sha256 "$(jq -er '.correction_review_sha256 // ""' "$record")" \
         '{
           schema:$schema,
           reason:$reason,
@@ -653,7 +878,15 @@ replacement_resolution_from_file() {
           recovery_tool_sha256:$recovery_tool_sha256,
           manifest_helper_sha256:$manifest_helper_sha256,
           resolution_workflow_commit:$resolution_workflow_commit
-        }'
+        } +
+        (if $schema == 2 then {
+          resolution_revision:$resolution_revision,
+          supersedes_resolution_tag:$supersedes_resolution_tag,
+          supersedes_resolution_sha256:$supersedes_resolution_sha256,
+          superseded_recovery_tool_sha256:$superseded_recovery_tool_sha256,
+          correction_reason:$correction_reason,
+          correction_review_sha256:$correction_review_sha256
+        } else {} end)'
 }
 
 validate_replacement_resolution() {
@@ -666,7 +899,7 @@ validate_replacement_resolution() {
         def version: type == "string" and
           test("^(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})\\.(0|[1-9][0-9]{0,9})$");
         def uint: type == "number" and . >= 0 and . <= 9007199254740991 and floor == .;
-        (.schema == 1) and
+        (.schema == 1 or .schema == 2) and
         (.reason == "authority_target_mismatch") and
         (.predecessor_generation | uint and . > 0 and . < 9007199254740991) and
         (.predecessor_manifest_sha256 | digest) and
@@ -708,7 +941,23 @@ validate_replacement_resolution() {
         (.selection_review_sha256 | digest) and
         (.recovery_tool_sha256 | digest) and
         (.manifest_helper_sha256 | digest) and
-        (keys | sort) == ([
+        (if .schema == 1 then
+          ((has("resolution_revision") or has("supersedes_resolution_tag") or
+            has("supersedes_resolution_sha256") or
+            has("superseded_recovery_tool_sha256") or
+            has("correction_reason") or has("correction_review_sha256")) | not)
+        else
+          (.resolution_revision | uint and . >= 2) and
+          (.supersedes_resolution_tag ==
+            ("authority-resolution-v1-g" + (.selected_generation | tostring) +
+             (if .resolution_revision == 2 then ""
+              else "-r" + ((.resolution_revision - 1) | tostring) end))) and
+          (.supersedes_resolution_sha256 | digest) and
+          (.superseded_recovery_tool_sha256 | digest) and
+          (.correction_reason == "recovery_tool_execution_failure") and
+          (.correction_review_sha256 | digest)
+        end) and
+        (keys | sort) == (([
           "manifest_helper_sha256", "planned_product_base_commit",
           "planned_product_version", "predecessor_generation",
           "predecessor_manifest_sha256", "reason", "recovery_tool_sha256",
@@ -722,7 +971,11 @@ validate_replacement_resolution() {
           "selection_review_sha256", "settled_product_engine_commit",
           "settled_product_gateway_commit", "settled_product_state_sha256",
           "settled_product_version", "settled_promotion_policy_sha256"
-        ] | sort)
+        ] + (if .schema == 2 then [
+          "correction_reason", "correction_review_sha256", "resolution_revision",
+          "superseded_recovery_tool_sha256", "supersedes_resolution_sha256",
+          "supersedes_resolution_tag"
+        ] else [] end)) | sort)
     ' "$record" >/dev/null || die 'authority replacement resolution shape or values are invalid'
     local canonical
     canonical=$(replacement_resolution_from_file "$record")
@@ -732,6 +985,18 @@ validate_replacement_resolution() {
 
 render_replacement_resolution() {
     local output=$1
+    local resolution_revision=${RESOLUTION_REVISION:-1}
+    local resolution_schema=1
+    [[ $resolution_revision =~ ^[1-9][0-9]{0,15}$ \
+        && $resolution_revision -le 9007199254740991 ]] \
+        || die 'replacement resolution revision is invalid'
+    if [[ $resolution_revision != 1 ]]; then
+        resolution_schema=2
+        : "${SUPERSEDES_RESOLUTION_TAG:?}"
+        : "${SUPERSEDES_RESOLUTION_SHA256:?}"
+        : "${SUPERSEDED_RECOVERY_TOOL_SHA256:?}"
+        : "${CORRECTION_REVIEW_SHA256:?}"
+    fi
     : "${REPLACEMENT_PREDECESSOR_GENERATION:?}"
     : "${REPLACEMENT_PREDECESSOR_MANIFEST_SHA256:?}"
     : "${REJECTED_AUTHORITY_GENERATION:?}"
@@ -758,7 +1023,7 @@ render_replacement_resolution() {
     : "${MANIFEST_HELPER_SHA256:?}"
     : "${RESOLUTION_WORKFLOW_COMMIT:?}"
     jq -cjn \
-        --argjson schema 1 \
+        --argjson schema "$resolution_schema" \
         --arg reason authority_target_mismatch \
         --argjson predecessor_generation "$REPLACEMENT_PREDECESSOR_GENERATION" \
         --arg predecessor_manifest_sha256 "$REPLACEMENT_PREDECESSOR_MANIFEST_SHA256" \
@@ -787,6 +1052,12 @@ render_replacement_resolution() {
         --arg recovery_tool_sha256 "$RECOVERY_TOOL_SHA256" \
         --arg manifest_helper_sha256 "$MANIFEST_HELPER_SHA256" \
         --arg resolution_workflow_commit "$RESOLUTION_WORKFLOW_COMMIT" \
+        --argjson resolution_revision "$resolution_revision" \
+        --arg supersedes_resolution_tag "${SUPERSEDES_RESOLUTION_TAG:-}" \
+        --arg supersedes_resolution_sha256 "${SUPERSEDES_RESOLUTION_SHA256:-}" \
+        --arg superseded_recovery_tool_sha256 "${SUPERSEDED_RECOVERY_TOOL_SHA256:-}" \
+        --arg correction_reason recovery_tool_execution_failure \
+        --arg correction_review_sha256 "${CORRECTION_REVIEW_SHA256:-}" \
         '{
           schema:$schema,
           reason:$reason,
@@ -817,7 +1088,15 @@ render_replacement_resolution() {
           recovery_tool_sha256:$recovery_tool_sha256,
           manifest_helper_sha256:$manifest_helper_sha256,
           resolution_workflow_commit:$resolution_workflow_commit
-        }' >"$output"
+        } +
+        (if $schema == 2 then {
+          resolution_revision:$resolution_revision,
+          supersedes_resolution_tag:$supersedes_resolution_tag,
+          supersedes_resolution_sha256:$supersedes_resolution_sha256,
+          superseded_recovery_tool_sha256:$superseded_recovery_tool_sha256,
+          correction_reason:$correction_reason,
+          correction_review_sha256:$correction_review_sha256
+        } else {} end)' >"$output"
     validate_replacement_resolution "$output"
 }
 
@@ -825,7 +1104,13 @@ validate_replacement_resolution_assets() {
     local directory=$1
     [[ -d $directory && ! -L $directory ]] \
         || die 'authority replacement resolution directory is unsafe'
-    local actual expected
+    local actual expected resolution review correction schema
+    resolution=$directory/release-authority-replacement-v1.json
+    review=$directory/release-authority-selection-review-v1.json
+    [[ -f $resolution && ! -L $resolution ]] \
+        || die 'authority replacement resolution record is unsafe'
+    validate_replacement_resolution "$resolution"
+    schema=$(manifest_value "$resolution" schema)
     actual=$(find "$directory" -mindepth 1 -maxdepth 1 -printf '%f\n' \
         | LC_ALL=C sort)
     expected=$(printf '%s\n' \
@@ -835,11 +1120,12 @@ validate_replacement_resolution_assets() {
         release-authority-replacement-v1.json \
         release-authority-replacement-v1.json.cosign.bundle \
         | LC_ALL=C sort)
+    if [[ $schema == 2 ]]; then
+        expected=$(printf '%s\n' "$expected" \
+            release-authority-resolution-correction-v1.json | LC_ALL=C sort)
+    fi
     [[ $actual == "$expected" ]] \
         || die 'authority replacement resolution asset set is inexact'
-    local resolution review
-    resolution=$directory/release-authority-replacement-v1.json
-    review=$directory/release-authority-selection-review-v1.json
     for name in \
         recover-release-authority-replacement-v1.sh \
         release-authority-manifest.sh \
@@ -849,7 +1135,12 @@ validate_replacement_resolution_assets() {
         [[ -f $directory/$name && ! -L $directory/$name ]] \
             || die 'authority replacement resolution contains a non-regular entry'
     done
-    validate_replacement_resolution "$resolution"
+    if [[ $schema == 2 ]]; then
+        correction=$directory/release-authority-resolution-correction-v1.json
+        [[ -f $correction && ! -L $correction ]] \
+            || die 'authority resolution correction review is absent or unsafe'
+        validate_resolution_correction_review "$correction"
+    fi
     validate_selection_review "$review"
     local tool_sha helper_sha review_sha
     tool_sha=$(sha256_file "$directory/recover-release-authority-replacement-v1.sh")
@@ -865,6 +1156,37 @@ validate_replacement_resolution_assets() {
         || die 'authority replacement selection review differs from the signed resolution'
     [[ $(selection_review_from_file "$resolution") == "$(<"$review")" ]] \
         || die 'authority replacement resolution does not bind the exact selection review'
+    if [[ $schema == 2 ]]; then
+        [[ $(sha256_file "$correction") == \
+            "$(manifest_value "$resolution" correction_review_sha256)" ]] \
+            || die 'authority resolution correction review differs from the signed resolution'
+        jq -e \
+            --argjson generation "$(manifest_value "$resolution" selected_generation)" \
+            --argjson revision "$(manifest_value "$resolution" resolution_revision)" \
+            --arg supersedes_tag "$(manifest_value "$resolution" supersedes_resolution_tag)" \
+            --arg supersedes_sha "$(manifest_value "$resolution" supersedes_resolution_sha256)" \
+            --arg superseded_tool "$(manifest_value "$resolution" superseded_recovery_tool_sha256)" \
+            --arg selected_sha "$(manifest_value "$resolution" selected_manifest_sha256)" \
+            --arg corrected_tool "$(manifest_value "$resolution" recovery_tool_sha256)" \
+            --arg corrected_helper "$(manifest_value "$resolution" manifest_helper_sha256)" \
+            --argjson active_generation "$(manifest_value "$resolution" predecessor_generation)" \
+            --arg active_sha "$(manifest_value "$resolution" predecessor_manifest_sha256)" \
+            --arg product_sha "$(manifest_value "$resolution" settled_product_state_sha256)" \
+            '.generation == $generation and
+             .resolution_revision == $revision and
+             .supersedes_resolution_tag == $supersedes_tag and
+             .supersedes_resolution_sha256 == $supersedes_sha and
+             .superseded_recovery_tool_sha256 == $superseded_tool and
+             .corrected_recovery_tool_sha256 == $corrected_tool and
+             .corrected_manifest_helper_sha256 == $corrected_helper and
+             .active_generation == $active_generation and
+             .active_manifest_sha256 == $active_sha and
+             .active_product_state_sha256 == $product_sha and
+             .selected_manifest_sha256 == $selected_sha and
+             .correction_reason == "recovery_tool_execution_failure"' \
+            "$correction" >/dev/null \
+            || die 'authority resolution correction review does not bind the signed correction'
+    fi
 }
 
 assert_replacement() {
@@ -931,18 +1253,45 @@ validate_special_tag_namespace() {
         || die 'special authority tag inventory is unsafe'
 
     local -a names=()
-    local name generation
+    local -A seen_revisions=()
+    local -A revision_counts=()
+    local -A maximum_revisions=()
+    local name generation revision
     mapfile -t names <"$names_file"
     for name in "${names[@]}"; do
-        [[ $name =~ ^${prefix}([1-9][0-9]{0,15})$ ]] \
-            || die 'special authority tag is malformed'
-        generation=${BASH_REMATCH[1]}
+        if [[ $prefix == authority-resolution-v1-g ]]; then
+            [[ $name =~ ^${prefix}([1-9][0-9]{0,15})(-r([2-9]|[1-9][0-9]{1,15}))?$ ]] \
+                || die 'special authority tag is malformed'
+            generation=${BASH_REMATCH[1]}
+            revision=${BASH_REMATCH[3]:-1}
+            [[ $revision -le 9007199254740991 ]] \
+                || die 'special authority tag revision is invalid'
+            seen_revisions["$generation:$revision"]=1
+            revision_counts["$generation"]=$((
+                ${revision_counts["$generation"]:-0} + 1
+            ))
+            if (( revision > ${maximum_revisions["$generation"]:-0} )); then
+                maximum_revisions["$generation"]=$revision
+            fi
+        else
+            [[ $name =~ ^${prefix}([1-9][0-9]{0,15})$ ]] \
+                || die 'special authority tag is malformed'
+            generation=${BASH_REMATCH[1]}
+        fi
         [[ $generation -le $maximum_generation ]] \
             || die 'special authority tag is ahead of the approved operation'
     done
     [[ $(printf '%s\n' "${names[@]}" | sed '/^$/d' | LC_ALL=C sort -u | wc -l) \
         -eq ${#names[@]} ]] \
         || die 'special authority tag inventory contains duplicates'
+    if [[ $prefix == authority-resolution-v1-g ]]; then
+        for generation in "${!maximum_revisions[@]}"; do
+            [[ -n ${seen_revisions["$generation:1"]+present} \
+                && ${revision_counts["$generation"]} -eq \
+                    ${maximum_revisions["$generation"]} ]] \
+                || die 'special authority resolution revisions are not contiguous'
+        done
+    fi
 }
 
 validate_product_source_proofs() {
@@ -1539,6 +1888,18 @@ case ${1:-} in
         [[ $# -eq 2 ]] || die 'usage: validate-selection-review RECORD'
         validate_selection_review "$2"
         ;;
+    validate-resolution-correction-review)
+        [[ $# -eq 2 ]] || die 'usage: validate-resolution-correction-review RECORD'
+        validate_resolution_correction_review "$2"
+        ;;
+    render-resolution-correction-authorization)
+        [[ $# -eq 2 ]] || die 'usage: render-resolution-correction-authorization OUTPUT'
+        render_resolution_correction_authorization "$2"
+        ;;
+    validate-resolution-correction-authorization)
+        [[ $# -eq 2 ]] || die 'usage: validate-resolution-correction-authorization RECORD'
+        validate_resolution_correction_authorization "$2"
+        ;;
     render-replacement-resolution)
         [[ $# -eq 2 ]] || die 'usage: render-replacement-resolution OUTPUT'
         render_replacement_resolution "$2"
@@ -1623,6 +1984,6 @@ case ${1:-} in
         validate_stage_v2 "$2"
         ;;
     *)
-        die 'usage: release-authority-manifest.sh render-approval-record|validate-approval-record|render-selection-review|validate-selection-review|render-replacement-resolution|validate-replacement-resolution|validate-replacement-resolution-assets|assert-replacement|validate-special-tag-namespace|validate-product-source-proofs|asset-schema|validate|render-v2|assert-genesis|assert-successor|protocol-from-manifest|validate-protocol|shipper-self-test-from-manifest|validate-shipper-self-test|verifier-self-test-from-manifest|validate-verifier-self-test|source-tree-sha256|stage-v2|validate-stage-v2 ...'
+        die 'usage: release-authority-manifest.sh render-approval-record|validate-approval-record|render-selection-review|validate-selection-review|validate-resolution-correction-review|render-resolution-correction-authorization|validate-resolution-correction-authorization|render-replacement-resolution|validate-replacement-resolution|validate-replacement-resolution-assets|assert-replacement|validate-special-tag-namespace|validate-product-source-proofs|asset-schema|validate|render-v2|assert-genesis|assert-successor|protocol-from-manifest|validate-protocol|shipper-self-test-from-manifest|validate-shipper-self-test|verifier-self-test-from-manifest|validate-verifier-self-test|source-tree-sha256|stage-v2|validate-stage-v2 ...'
         ;;
 esac

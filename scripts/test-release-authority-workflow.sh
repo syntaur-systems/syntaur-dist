@@ -4,13 +4,17 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 helper="$repo_root/scripts/release-authority-manifest.sh"
-tmp_root=$(mktemp -d)
+tmp_root=$(mktemp -d "$repo_root/.test-release-authority-workflow.XXXXXX")
 cleanup() {
-    if [[ -n ${root_fixture:-} \
-        && $root_fixture == "$tmp_root/root-fixture" \
-        && ( -e $root_fixture || -L $root_fixture ) ]]; then
-        sudo -n rm -rf -- "$root_fixture" 2>/dev/null || true
-    fi
+    local root_owned_fixture
+    for root_owned_fixture in "${root_fixture:-}" "${entry_fixture:-}"; do
+        if [[ -n $root_owned_fixture \
+            && ( $root_owned_fixture == "$tmp_root/root-fixture" \
+                || $root_owned_fixture == "$tmp_root/replacement-entry-fixture" ) \
+            && ( -e $root_owned_fixture || -L $root_owned_fixture ) ]]; then
+            sudo -n rm -rf -- "$root_owned_fixture" 2>/dev/null || true
+        fi
+    done
     chmod -R u+rwX "$tmp_root" 2>/dev/null || true
     rm -rf "$tmp_root"
 }
@@ -392,6 +396,114 @@ rm "$resolution_dir/release-authority-selection-review-v1.json"
 mv "$resolution_dir/release-authority-selection-review-v1.json.saved" \
     "$resolution_dir/release-authority-selection-review-v1.json"
 
+superseded_resolution_sha256=$(sha256sum \
+    "$resolution_dir/release-authority-replacement-v1.json" | awk '{print $1}')
+superseded_recovery_tool_sha256=$(sha256sum \
+    "$resolution_dir/recover-release-authority-replacement-v1.sh" | awk '{print $1}')
+superseded_manifest_helper_sha256=$(sha256sum \
+    "$resolution_dir/release-authority-manifest.sh" | awk '{print $1}')
+superseded_resolution_workflow_commit=$RESOLUTION_WORKFLOW_COMMIT
+install -m 0500 "$resolution_dir/recover-release-authority-replacement-v1.sh" \
+    "$tmp_root/superseded-recovery-tool"
+install -m 0500 "$resolution_dir/release-authority-manifest.sh" \
+    "$tmp_root/superseded-manifest-helper"
+chmod 0700 \
+    "$resolution_dir/recover-release-authority-replacement-v1.sh" \
+    "$resolution_dir/release-authority-manifest.sh"
+printf '\n# corrected recovery fixture\n' \
+    >>"$resolution_dir/recover-release-authority-replacement-v1.sh"
+printf '\n# corrected manifest-helper fixture\n' \
+    >>"$resolution_dir/release-authority-manifest.sh"
+chmod 0500 \
+    "$resolution_dir/recover-release-authority-replacement-v1.sh" \
+    "$resolution_dir/release-authority-manifest.sh"
+RECOVERY_TOOL_SHA256=$(sha256sum \
+    "$resolution_dir/recover-release-authority-replacement-v1.sh" | awk '{print $1}')
+MANIFEST_HELPER_SHA256=$(sha256sum \
+    "$resolution_dir/release-authority-manifest.sh" | awk '{print $1}')
+RESOLUTION_WORKFLOW_COMMIT=$(printf '2%.0s' {1..40})
+export RECOVERY_TOOL_SHA256 MANIFEST_HELPER_SHA256 RESOLUTION_WORKFLOW_COMMIT
+correction_review=$resolution_dir/release-authority-resolution-correction-v1.json
+jq -cjn \
+    --argjson generation "$SELECTED_AUTHORITY_GENERATION" \
+    --arg supersedes_resolution_sha256 "$superseded_resolution_sha256" \
+    --arg superseded_resolution_workflow_commit \
+        "$superseded_resolution_workflow_commit" \
+    --arg superseded_recovery_tool_sha256 "$superseded_recovery_tool_sha256" \
+    --arg superseded_manifest_helper_sha256 "$superseded_manifest_helper_sha256" \
+    --arg corrected_recovery_tool_sha256 "$RECOVERY_TOOL_SHA256" \
+    --arg corrected_manifest_helper_sha256 "$MANIFEST_HELPER_SHA256" \
+    --argjson active_generation "$REPLACEMENT_PREDECESSOR_GENERATION" \
+    --arg active_manifest_sha256 "$REPLACEMENT_PREDECESSOR_MANIFEST_SHA256" \
+    --arg active_product_state_sha256 "$SETTLED_PRODUCT_STATE_SHA256" \
+    --arg selected_manifest_sha256 "$SELECTED_AUTHORITY_MANIFEST_SHA256" \
+    '{schema:1,generation:$generation,resolution_revision:2,
+      resolution_tag:("authority-resolution-v1-g" + ($generation | tostring) + "-r2"),
+      supersedes_resolution_tag:("authority-resolution-v1-g" + ($generation | tostring)),
+      supersedes_resolution_sha256:$supersedes_resolution_sha256,
+      superseded_resolution_workflow_commit:$superseded_resolution_workflow_commit,
+      superseded_recovery_tool_sha256:$superseded_recovery_tool_sha256,
+      superseded_manifest_helper_sha256:$superseded_manifest_helper_sha256,
+      corrected_recovery_tool_sha256:$corrected_recovery_tool_sha256,
+      corrected_manifest_helper_sha256:$corrected_manifest_helper_sha256,
+      active_generation:$active_generation,
+      active_manifest_sha256:$active_manifest_sha256,
+      active_product_state_sha256:$active_product_state_sha256,
+      selected_manifest_sha256:$selected_manifest_sha256,
+      correction_reason:"recovery_tool_execution_failure",
+      failure_class:"bash_dynamic_scope_unbound_operation",
+      failure_stage:"sealed_input_revalidation",
+      authority_mutated:false,product_state_mutated:false,
+      install_journal_present:false,rollback_journal_present:false,
+      install_receipt_present:false}' >"$correction_review"
+"$helper" validate-resolution-correction-review "$correction_review"
+RESOLUTION_REVISION=2
+SUPERSEDES_RESOLUTION_TAG=authority-resolution-v1-g701
+SUPERSEDES_RESOLUTION_SHA256=$superseded_resolution_sha256
+SUPERSEDED_RECOVERY_TOOL_SHA256=$superseded_recovery_tool_sha256
+CORRECTION_REVIEW_SHA256=$(sha256sum "$correction_review" | awk '{print $1}')
+export RESOLUTION_REVISION SUPERSEDES_RESOLUTION_TAG SUPERSEDES_RESOLUTION_SHA256
+export SUPERSEDED_RECOVERY_TOOL_SHA256 CORRECTION_REVIEW_SHA256
+"$helper" render-replacement-resolution \
+    "$resolution_dir/release-authority-replacement-v1.json"
+"$helper" validate-replacement-resolution-assets "$resolution_dir"
+RESOLUTION_SHA256=$(sha256sum \
+    "$resolution_dir/release-authority-replacement-v1.json" | awk '{print $1}')
+export RESOLUTION_SHA256
+correction_authorization=$tmp_root/release-authority-resolution-authorization-v1.json
+"$helper" render-resolution-correction-authorization "$correction_authorization"
+"$helper" validate-resolution-correction-authorization "$correction_authorization"
+jq -cj '.resolution_tag += "-r2"' "$correction_authorization" \
+    >"$tmp_root/replacement-resolution-wrong-authorization.json"
+expect_failure "$helper" validate-resolution-correction-authorization \
+    "$tmp_root/replacement-resolution-wrong-authorization.json"
+jq -cj '.supersedes_resolution_tag =
+    ("authority-resolution-v1-g" + (.selected_generation | tostring) + "-r2")' \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    >"$tmp_root/replacement-resolution-wrong-supersession.json"
+expect_failure "$helper" validate-replacement-resolution \
+    "$tmp_root/replacement-resolution-wrong-supersession.json"
+jq -cj '.authority_mutated = true' "$correction_review" \
+    >"$tmp_root/replacement-resolution-mutated-correction.json"
+expect_failure "$helper" validate-resolution-correction-review \
+    "$tmp_root/replacement-resolution-mutated-correction.json"
+rm "$correction_review"
+unset RESOLUTION_REVISION SUPERSEDES_RESOLUTION_TAG SUPERSEDES_RESOLUTION_SHA256
+unset SUPERSEDED_RECOVERY_TOOL_SHA256 CORRECTION_REVIEW_SHA256 RESOLUTION_SHA256
+install -m 0500 "$tmp_root/superseded-recovery-tool" \
+    "$resolution_dir/recover-release-authority-replacement-v1.sh"
+install -m 0500 "$tmp_root/superseded-manifest-helper" \
+    "$resolution_dir/release-authority-manifest.sh"
+RECOVERY_TOOL_SHA256=$(sha256sum \
+    "$resolution_dir/recover-release-authority-replacement-v1.sh" | awk '{print $1}')
+MANIFEST_HELPER_SHA256=$(sha256sum \
+    "$resolution_dir/release-authority-manifest.sh" | awk '{print $1}')
+RESOLUTION_WORKFLOW_COMMIT=$superseded_resolution_workflow_commit
+export RECOVERY_TOOL_SHA256 MANIFEST_HELPER_SHA256 RESOLUTION_WORKFLOW_COMMIT
+"$helper" render-replacement-resolution \
+    "$resolution_dir/release-authority-replacement-v1.json"
+"$helper" validate-replacement-resolution-assets "$resolution_dir"
+
 : >"$tmp_root/empty-special-tags"
 "$helper" validate-special-tag-namespace \
     authority-replacement-v1-g 0 "$tmp_root/empty-special-tags"
@@ -399,10 +511,20 @@ printf '%s\n' authority-replacement-v1-g1 authority-replacement-v1-g60 \
     >"$tmp_root/bounded-replacement-tags"
 "$helper" validate-special-tag-namespace \
     authority-replacement-v1-g 60 "$tmp_root/bounded-replacement-tags"
-printf '%s\n' authority-resolution-v1-g60 \
+printf '%s\n' authority-resolution-v1-g60 authority-resolution-v1-g60-r2 \
+    authority-resolution-v1-g60-r3 \
     >"$tmp_root/bounded-resolution-tags"
 "$helper" validate-special-tag-namespace \
     authority-resolution-v1-g 60 "$tmp_root/bounded-resolution-tags"
+{
+    printf '%s\n' authority-resolution-v1-g59
+    for revision in {2..10}; do
+        printf 'authority-resolution-v1-g59-r%s\n' "$revision"
+    done
+} >"$tmp_root/two-digit-contiguous-resolution-tags"
+"$helper" validate-special-tag-namespace \
+    authority-resolution-v1-g 60 \
+    "$tmp_root/two-digit-contiguous-resolution-tags"
 printf '%s\n' authority-replacement-v1-g61 >"$tmp_root/one-ahead-tags"
 expect_failure "$helper" validate-special-tag-namespace \
     authority-replacement-v1-g 60 "$tmp_root/one-ahead-tags"
@@ -416,6 +538,20 @@ printf '%s\n' authority-resolution-v1-g99999999999999999 \
     >"$tmp_root/oversized-special-tags"
 expect_failure "$helper" validate-special-tag-namespace \
     authority-resolution-v1-g 60 "$tmp_root/oversized-special-tags"
+printf '%s\n' authority-resolution-v1-g60-r1 >"$tmp_root/malformed-resolution-revision"
+expect_failure "$helper" validate-special-tag-namespace \
+    authority-resolution-v1-g 60 "$tmp_root/malformed-resolution-revision"
+printf '%s\n' authority-resolution-v1-g60-r02 >"$tmp_root/leading-zero-resolution-revision"
+expect_failure "$helper" validate-special-tag-namespace \
+    authority-resolution-v1-g 60 "$tmp_root/leading-zero-resolution-revision"
+printf '%s\n' authority-resolution-v1-g60 authority-resolution-v1-g60-r3 \
+    >"$tmp_root/gapped-resolution-revisions"
+expect_failure "$helper" validate-special-tag-namespace \
+    authority-resolution-v1-g 60 "$tmp_root/gapped-resolution-revisions"
+printf '%s\n' authority-resolution-v1-g60-r2 \
+    >"$tmp_root/missing-base-resolution-revision"
+expect_failure "$helper" validate-special-tag-namespace \
+    authority-resolution-v1-g 60 "$tmp_root/missing-base-resolution-revision"
 printf '%s\n' authority-resolution-v1-g60 authority-resolution-v1-g60 \
     >"$tmp_root/duplicate-special-tags"
 expect_failure "$helper" validate-special-tag-namespace \
@@ -766,7 +902,13 @@ expect_failure verify_g1 \
 
 workflow="$repo_root/.github/workflows/release-authority.yml"
 recovery_tool="$repo_root/scripts/recover-release-authority-replacement-v1.sh"
-[[ $(yq -r '.on.workflow_dispatch.inputs | length' "$workflow") == 1 ]]
+checked_in_correction="$repo_root/.github/authority-resolution-corrections/g60-r2.json"
+[[ $(yq -r '.on.workflow_dispatch.inputs | length' "$workflow") == 2 ]]
+"$helper" validate-resolution-correction-review "$checked_in_correction"
+[[ $(jq -er '.corrected_recovery_tool_sha256' "$checked_in_correction") \
+    == "$(sha256sum "$recovery_tool" | awk '{print $1}')" ]]
+[[ $(jq -er '.corrected_manifest_helper_sha256' "$checked_in_correction") \
+    == "$(sha256sum "$helper" | awk '{print $1}')" ]]
 grep -Fq 'approval_record:' "$workflow"
 for required in \
     verification_policy_revision \
@@ -792,7 +934,7 @@ grep -Fq 'release-authority-source' "$workflow"
 grep -Fq 'SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY' "$workflow"
 grep -Fq 'sudo chown -R 65534:65534 source' "$workflow"
 grep -Fq 'encrypted-authority-source-run-' "$workflow"
-[[ $(grep -Fc -- '--repo "$GITHUB_REPOSITORY"' "$workflow") -eq 25 ]]
+[[ $(grep -Fc -- '--repo "$GITHUB_REPOSITORY"' "$workflow") -eq 28 ]]
 grep -Fq 'mkdir -m 0700 "$age_root/bin"' "$workflow"
 grep -Fq '"$age_root/bin/"' "$workflow"
 grep -Fq '"$age_root/bin/age-keygen" -y -' "$workflow"
@@ -805,6 +947,9 @@ if grep -Fq 'Sign exact replacement resolution' "$workflow"; then
 fi
 grep -Fq 'authority-replacement-v1-g${generation}' "$workflow"
 grep -Fq 'authority-resolution-v1-g${GENERATION}' "$workflow"
+grep -Fq 'resolution_revision' "$workflow"
+grep -Fq 'validate-resolution-correction-review' "$workflow"
+grep -Fq 'release-authority-resolution-correction-v1.json' "$workflow"
 grep -Fq 'validate-replacement-resolution-assets' "$workflow"
 grep -Fq 'validate-product-source-proofs' "$workflow"
 grep -Fq 'settled_dist_commit=$(jq -er' "$workflow"
@@ -828,6 +973,7 @@ grep -Fq 'assert-replacement' "$recovery_tool"
 grep -Fq 'SEALED_RUNTIME_ROOT=/etc/syntaur/release-authority-replacement-v1.runtime' \
     "$recovery_tool"
 grep -Fq 'seal_install_inputs' "$recovery_tool"
+grep -Fq 'verify_inputs "$operation"' "$recovery_tool"
 grep -Fq -- '--expected-recovery-tool-sha256' "$recovery_tool"
 grep -Fq 'discard_incomplete_resolution_stage' "$recovery_tool"
 if grep -Fq 'authority-promote' "$recovery_tool"; then
@@ -872,6 +1018,218 @@ awk '
         -e "s|^readonly INSTALLED_PROVISIONER=.*|readonly INSTALLED_PROVISIONER=$root_fixture/opt/syntaur-build-authority-provision|" \
     >"$root_helpers"
 chmod 0500 "$root_helpers"
+
+shadow_runtime=$tmp_root/dynamic-scope-runtime
+shadow_stage=$shadow_runtime/inputs.staged
+shadow_resolution=$shadow_stage/resolution
+install -d -m 0700 "$shadow_stage/predecessor" "$shadow_stage/rejected" \
+    "$shadow_stage/selected" "$shadow_resolution"
+shadow_tool=$shadow_runtime/recover-release-authority-replacement-v1.sh
+awk '
+    /^\[\[ \$# -ge 1 \]\] \|\| usage$/ { exit }
+    { print }
+' "$recovery_tool" \
+    | sed \
+        -e "s|^readonly SEALED_RUNTIME_ROOT=.*|readonly SEALED_RUNTIME_ROOT=$shadow_runtime|" \
+    >"$shadow_tool"
+chmod 0500 "$shadow_tool"
+install -m 0500 "$shadow_tool" \
+    "$shadow_resolution/recover-release-authority-replacement-v1.sh"
+install -m 0500 "$helper" "$shadow_resolution/release-authority-manifest.sh"
+install -m 0400 \
+    "$resolution_dir/release-authority-selection-review-v1.json" \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    "$resolution_dir/release-authority-replacement-v1.json.cosign.bundle" \
+    "$shadow_resolution/"
+shadow_error=$tmp_root/dynamic-scope-error
+if /usr/bin/env SHADOW_TOOL="$shadow_tool" SHADOW_STAGE="$shadow_stage" \
+    /usr/bin/bash -c '
+        source "$SHADOW_TOOL"
+        predecessor_dir=$SHADOW_STAGE/predecessor
+        rejected_dir=$SHADOW_STAGE/rejected
+        selected_dir=$SHADOW_STAGE/selected
+        resolution_dir=$SHADOW_STAGE/resolution
+        expected_resolution_sha256=$(printf "0%.0s" {1..64})
+        expected_recovery_tool_sha256=$expected_resolution_sha256
+        correction_authorization=
+        mode_shadow_probe() {
+            local mode
+            verify_inputs install
+        }
+        mode_shadow_probe
+    ' 2>"$shadow_error"; then
+    fail 'dynamic-scope regression unexpectedly verified invalid sealed inputs'
+fi
+if ! grep -Fq 'replacement resolution differs from the operator-authorized hash' \
+    "$shadow_error"; then
+    sed 's/^/dynamic-scope regression: /' "$shadow_error" >&2
+    fail 'sealed-input verification did not reach the explicit-operation path'
+fi
+if grep -Fq 'unbound variable' "$shadow_error"; then
+    fail 'sealed-input verification still depends on a dynamically scoped mode variable'
+fi
+
+entry_fixture=$tmp_root/replacement-entry-fixture
+entry_authority_root=$entry_fixture/etc/syntaur/release-authority
+entry_artifact_root=$entry_authority_root/release-authority
+entry_runtime=$entry_fixture/etc/syntaur/release-authority-replacement-v1.runtime
+entry_stage=$entry_runtime/inputs.staged
+entry_operator_state=$entry_fixture/operator-state
+entry_global_lock=$entry_fixture/etc/syntaur/syntaur-ship-mutation.lock
+entry_shipper=$entry_fixture/usr/local/bin/syntaur-ship
+entry_provisioner=$entry_fixture/opt/syntaur-build-authority-provision
+entry_sources=$entry_fixture/sources
+install -d -m 0700 \
+    "$entry_runtime" "$entry_stage" \
+    "$entry_stage/predecessor" "$entry_stage/rejected" \
+    "$entry_stage/selected" "$entry_stage/resolution" "$entry_operator_state" \
+    "$entry_sources/predecessor" "$entry_sources/rejected" \
+    "$entry_sources/selected" "$entry_sources/resolution"
+install -d -m 0755 "$entry_artifact_root" \
+    "$(dirname "$entry_global_lock")" "$(dirname "$entry_shipper")" \
+    "$(dirname "$entry_provisioner")"
+for authority_dir in predecessor rejected selected; do
+    printf '%s manifest\n' "$authority_dir" \
+        >"$entry_sources/$authority_dir/release-authority-v2.json"
+    printf '%s bundle\n' "$authority_dir" \
+        >"$entry_sources/$authority_dir/release-authority-v2.json.cosign.bundle"
+    for executable in syntaur-build-authority-provision \
+        syntaur-ship-linux-x86_64 syntaur-verify-linux-x86_64; do
+        printf '#!/usr/bin/bash\nexit 0\n' \
+            >"$entry_sources/$authority_dir/$executable"
+    done
+    chmod 0400 \
+        "$entry_sources/$authority_dir/release-authority-v2.json" \
+        "$entry_sources/$authority_dir/release-authority-v2.json.cosign.bundle"
+    chmod 0500 \
+        "$entry_sources/$authority_dir/syntaur-build-authority-provision" \
+        "$entry_sources/$authority_dir/syntaur-ship-linux-x86_64" \
+        "$entry_sources/$authority_dir/syntaur-verify-linux-x86_64"
+done
+entry_tool=$entry_runtime/recover-release-authority-replacement-v1.sh
+sed \
+    -e "s|^readonly AUTHORITY_ROOT=.*|readonly AUTHORITY_ROOT=$entry_authority_root|" \
+    -e "s|^readonly INSTALLED_SHIPPER=.*|readonly INSTALLED_SHIPPER=$entry_shipper|" \
+    -e "s|^readonly INSTALLED_PROVISIONER=.*|readonly INSTALLED_PROVISIONER=$entry_provisioner|" \
+    -e "s|^readonly GLOBAL_MUTATION_LOCK=.*|readonly GLOBAL_MUTATION_LOCK=$entry_global_lock|" \
+    -e "s|^readonly SEALED_RUNTIME_ROOT=.*|readonly SEALED_RUNTIME_ROOT=$entry_runtime|" \
+    -e "s|^    operator_state=.*|    operator_state=$entry_operator_state|" \
+    "$recovery_tool" >"$entry_tool"
+chmod 0500 "$entry_tool"
+install -m 0500 "$entry_tool" \
+    "$entry_sources/resolution/recover-release-authority-replacement-v1.sh"
+install -m 0500 "$helper" "$entry_sources/resolution/release-authority-manifest.sh"
+install -m 0400 \
+    "$resolution_dir/release-authority-selection-review-v1.json" \
+    "$resolution_dir/release-authority-replacement-v1.json.cosign.bundle" \
+    "$entry_sources/resolution/"
+jq -cj \
+    --arg supersedes_resolution_sha256 "$(digest_text entry-superseded-resolution)" \
+    --arg superseded_recovery_tool_sha256 "$(digest_text entry-superseded-tool)" \
+    --arg correction_review_sha256 "$(digest_text entry-correction-review)" \
+    '.schema = 2 |
+     .resolution_revision = 2 |
+     .supersedes_resolution_tag =
+       ("authority-resolution-v1-g" + (.selected_generation | tostring)) |
+     .supersedes_resolution_sha256 = $supersedes_resolution_sha256 |
+     .superseded_recovery_tool_sha256 = $superseded_recovery_tool_sha256 |
+     .correction_reason = "recovery_tool_execution_failure" |
+     .correction_review_sha256 = $correction_review_sha256' \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    >"$entry_sources/resolution/release-authority-replacement-v1.json"
+printf 'entry correction review\n' \
+    >"$entry_sources/resolution/release-authority-resolution-correction-v1.json"
+chmod 0400 \
+    "$entry_sources/resolution/release-authority-selection-review-v1.json" \
+    "$entry_sources/resolution/release-authority-replacement-v1.json" \
+    "$entry_sources/resolution/release-authority-replacement-v1.json.cosign.bundle" \
+    "$entry_sources/resolution/release-authority-resolution-correction-v1.json"
+
+for authority_dir in predecessor rejected selected; do
+    install -m 0400 \
+        "$entry_sources/$authority_dir/release-authority-v2.json" \
+        "$entry_sources/$authority_dir/release-authority-v2.json.cosign.bundle" \
+        "$entry_stage/$authority_dir/"
+    install -m 0500 \
+        "$entry_sources/$authority_dir/syntaur-build-authority-provision" \
+        "$entry_sources/$authority_dir/syntaur-ship-linux-x86_64" \
+        "$entry_sources/$authority_dir/syntaur-verify-linux-x86_64" \
+        "$entry_stage/$authority_dir/"
+done
+install -m 0500 "$entry_tool" \
+    "$entry_stage/resolution/recover-release-authority-replacement-v1.sh"
+install -m 0500 "$helper" "$entry_stage/resolution/release-authority-manifest.sh"
+install -m 0400 \
+    "$resolution_dir/release-authority-selection-review-v1.json" \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    "$resolution_dir/release-authority-replacement-v1.json.cosign.bundle" \
+    "$entry_stage/resolution/"
+printf '#!/usr/bin/bash\nexit 0\n' >"$entry_shipper"
+printf '#!/usr/bin/bash\nexit 0\n' >"$entry_provisioner"
+chmod 0555 "$entry_shipper" "$entry_provisioner"
+printf 'active predecessor manifest\n' >"$entry_authority_root/release-authority-v2.json"
+chmod 0444 "$entry_authority_root/release-authority-v2.json"
+: >"$entry_global_lock"
+printf '\n' >"$entry_operator_state/deploy.lock"
+sudo -n chown -R 0:0 "$entry_fixture/etc" "$entry_fixture/usr" "$entry_fixture/opt"
+sudo -n chown "$(id -u):$(id -g)" "$entry_operator_state" \
+    "$entry_operator_state/deploy.lock"
+sudo -n chown "0:$(id -g)" "$entry_global_lock"
+sudo -n chmod 0440 "$entry_global_lock"
+sudo -n chmod 0600 "$entry_operator_state/deploy.lock"
+entry_active_before=$(sha256sum "$entry_authority_root/release-authority-v2.json" \
+    | awk '{print $1}')
+entry_tool_sha256=$(sudo -n sha256sum "$entry_tool" | awk '{print $1}')
+entry_error=$tmp_root/replacement-entry-error
+if sudo -n env \
+    ENTRY_TOOL="$entry_tool" ENTRY_SOURCES="$entry_sources" \
+    ENTRY_TOOL_SHA256="$entry_tool_sha256" \
+    ENTRY_ERROR="$entry_error" \
+    /usr/bin/unshare --uts --fork /usr/bin/bash -c '
+        /usr/bin/hostname claudevm
+        /usr/bin/env -i \
+          SUDO_UID=1000 SUDO_GID=1000 SUDO_USER=sean \
+          PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+          "$ENTRY_TOOL" install \
+            --predecessor-dir "$ENTRY_SOURCES/predecessor" \
+            --rejected-dir "$ENTRY_SOURCES/rejected" \
+            --selected-dir "$ENTRY_SOURCES/selected" \
+            --resolution-dir "$ENTRY_SOURCES/resolution" \
+            --expected-resolution-sha256 \
+              0000000000000000000000000000000000000000000000000000000000000000 \
+            --expected-recovery-tool-sha256 "$ENTRY_TOOL_SHA256" \
+            --expected-predecessor-manifest-sha256 \
+              1111111111111111111111111111111111111111111111111111111111111111 \
+            --expected-rejected-manifest-sha256 \
+              2222222222222222222222222222222222222222222222222222222222222222 \
+            --expected-selected-manifest-sha256 \
+              3333333333333333333333333333333333333333333333333333333333333333 \
+            --authorize-reason authority_target_mismatch
+    ' 2>"$entry_error"; then
+    fail 'real replacement entry fixture unexpectedly accepted a wrong resolution hash'
+fi
+if ! grep -Fq 'replacement resolution differs from the operator-authorized hash' \
+    "$entry_error"; then
+    sed 's/^/real-entry regression: /' "$entry_error" >&2
+    fail 'real replacement entry did not reach sealed-input revalidation'
+fi
+if grep -Fq 'unbound variable' "$entry_error"; then
+    fail 'real replacement entry still has a dynamic-scope unbound variable'
+fi
+[[ $(sha256sum "$entry_authority_root/release-authority-v2.json" | awk '{print $1}') \
+    == "$entry_active_before" ]] \
+    || fail 'real replacement entry changed the active authority before validation'
+sudo -n test -f \
+    "$entry_stage/resolution/release-authority-resolution-correction-v1.json" \
+    || fail 'real replacement entry did not reseal the corrected inventory over stale r1 inputs'
+for path in \
+    "$entry_authority_root/authority-replacement-v1-install.json" \
+    "$entry_authority_root/authority-replacement-v1-rollback.json" \
+    "$entry_fixture/etc/syntaur/release-authority-replacement-v1.receipt.json"; do
+    [[ ! -e $path && ! -L $path ]] \
+        || fail 'real replacement entry created transaction state before validation'
+done
+
 digest_vector=$(/usr/bin/env RECOVERY_HELPERS="$root_helpers" /usr/bin/bash -c '
     source "$RECOVERY_HELPERS"
     product_state_digest_values \
