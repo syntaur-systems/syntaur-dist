@@ -1797,12 +1797,15 @@ jobs:
             -mindepth 1 -maxdepth 1 -type d \
             -name "encrypted-authority-source-run-${GITHUB_RUN_ID}-attempt-*" \
             -printf '%f\n' | sort -V | sed -n '$p')
-          test -n "$selected"
-          test -z "$(find encrypted-source-artifacts \
-            -mindepth 1 -maxdepth 1 ! -type d -print -quit)"
-          test -z "$(find encrypted-source-artifacts \
-            -mindepth 1 -maxdepth 1 -type d ! -name "$selected" -print -quit)"
-          mv "encrypted-source-artifacts/$selected" encrypted-source
+          if [[ -n $selected ]]; then
+            test -z "$(find encrypted-source-artifacts \
+              -mindepth 1 -maxdepth 1 ! -type d -print -quit)"
+            mv "encrypted-source-artifacts/$selected" encrypted-source
+          else
+            test -z "$(find encrypted-source-artifacts \
+              -mindepth 1 -maxdepth 1 -type d -print -quit)"
+            mv encrypted-source-artifacts encrypted-source
+          fi
 
       - name: Decrypt exact proof-helper source with step-scoped identity
         shell: bash

@@ -922,6 +922,75 @@ workflow="$repo_root/.github/workflows/release-authority.yml"
 recovery_tool="$repo_root/scripts/recover-release-authority-replacement-v1.sh"
 checked_in_r2_correction="$repo_root/.github/authority-resolution-corrections/g60-r2.json"
 checked_in_r3_correction="$repo_root/.github/authority-resolution-corrections/g60-r3.json"
+proof_helper_artifact_selector=$(yq -r '
+    .jobs.replacement_proof_helper.steps[] |
+    select(.name == "Select exact encrypted proof-helper source export") |
+    .run
+' "$workflow")
+isolated_build_artifact_selector=$(yq -r '
+    .jobs.isolated_build.steps[] |
+    select(.name == "Select newest immutable source export from this run") |
+    .run
+' "$workflow")
+[[ -n $proof_helper_artifact_selector \
+    && $proof_helper_artifact_selector != null ]]
+[[ $proof_helper_artifact_selector == "$isolated_build_artifact_selector" ]]
+
+run_proof_helper_artifact_selector() {
+    local fixture=$1
+    (
+        cd "$fixture"
+        GITHUB_RUN_ID=424242 bash --noprofile --norc \
+            -e -o pipefail -c "$proof_helper_artifact_selector"
+    )
+}
+
+flat_artifact_fixture="$tmp_root/proof-helper-artifact-flat"
+mkdir -p "$flat_artifact_fixture/encrypted-source-artifacts"
+printf '%s' metadata \
+    >"$flat_artifact_fixture/encrypted-source-artifacts/source-export.json"
+printf '%s' ciphertext \
+    >"$flat_artifact_fixture/encrypted-source-artifacts/source.tar.age"
+run_proof_helper_artifact_selector "$flat_artifact_fixture"
+[[ ! -e $flat_artifact_fixture/encrypted-source-artifacts ]]
+[[ -f $flat_artifact_fixture/encrypted-source/source-export.json ]]
+[[ -f $flat_artifact_fixture/encrypted-source/source.tar.age ]]
+
+nested_artifact_fixture="$tmp_root/proof-helper-artifact-nested"
+nested_artifact_name=encrypted-authority-source-run-424242-attempt-1
+mkdir -p \
+    "$nested_artifact_fixture/encrypted-source-artifacts/$nested_artifact_name"
+printf '%s' metadata \
+    >"$nested_artifact_fixture/encrypted-source-artifacts/$nested_artifact_name/source-export.json"
+printf '%s' ciphertext \
+    >"$nested_artifact_fixture/encrypted-source-artifacts/$nested_artifact_name/source.tar.age"
+run_proof_helper_artifact_selector "$nested_artifact_fixture"
+[[ -d $nested_artifact_fixture/encrypted-source ]]
+[[ -f $nested_artifact_fixture/encrypted-source/source-export.json ]]
+[[ -f $nested_artifact_fixture/encrypted-source/source.tar.age ]]
+
+rerun_artifact_fixture="$tmp_root/proof-helper-artifact-rerun"
+older_artifact_name=encrypted-authority-source-run-424242-attempt-1
+newest_artifact_name=encrypted-authority-source-run-424242-attempt-2
+mkdir -p \
+    "$rerun_artifact_fixture/encrypted-source-artifacts/$older_artifact_name" \
+    "$rerun_artifact_fixture/encrypted-source-artifacts/$newest_artifact_name"
+printf '%s' older \
+    >"$rerun_artifact_fixture/encrypted-source-artifacts/$older_artifact_name/source-export.json"
+printf '%s' newest \
+    >"$rerun_artifact_fixture/encrypted-source-artifacts/$newest_artifact_name/source-export.json"
+run_proof_helper_artifact_selector "$rerun_artifact_fixture"
+[[ $(<"$rerun_artifact_fixture/encrypted-source/source-export.json") == newest ]]
+[[ -d $rerun_artifact_fixture/encrypted-source-artifacts/$older_artifact_name ]]
+
+mixed_artifact_fixture="$tmp_root/proof-helper-artifact-mixed"
+mkdir -p \
+    "$mixed_artifact_fixture/encrypted-source-artifacts/$nested_artifact_name"
+printf '%s' unexpected \
+    >"$mixed_artifact_fixture/encrypted-source-artifacts/unexpected-file"
+expect_failure run_proof_helper_artifact_selector "$mixed_artifact_fixture"
+[[ ! -e $mixed_artifact_fixture/encrypted-source ]]
+
 [[ $(yq -r '.on.workflow_dispatch.inputs | length' "$workflow") == 2 ]]
 "$helper" validate-resolution-correction-review "$checked_in_r2_correction"
 "$helper" validate-resolution-correction-review "$checked_in_r3_correction"
@@ -978,7 +1047,7 @@ grep -Fq 'mkdir -m 0700 "$age_root/bin"' "$workflow"
 grep -Fq '"$age_root/bin/"' "$workflow"
 grep -Fq '"$age_root/bin/age-keygen" -y -' "$workflow"
 grep -Fq '"$age_root/bin/age"' "$workflow"
-grep -Fq 'mv encrypted-source-artifacts encrypted-source' "$workflow"
+[[ $(grep -Fc 'mv encrypted-source-artifacts encrypted-source' "$workflow") -eq 2 ]]
 grep -Fq 'mv reviewed-candidate-artifacts candidate' "$workflow"
 grep -Fq 'mv signed-authority-artifacts signed-authority' "$workflow"
 if grep -Fq 'Sign exact replacement resolution' "$workflow"; then
