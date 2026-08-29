@@ -919,9 +919,38 @@ expect_failure verify_g1 \
     "$g1_parent" "$g1_parent_tree" 0.7.114
 
 workflow="$repo_root/.github/workflows/release-authority.yml"
+release_workflow="$repo_root/.github/workflows/release-sign.yml"
 recovery_tool="$repo_root/scripts/recover-release-authority-replacement-v1.sh"
 checked_in_r2_correction="$repo_root/.github/authority-resolution-corrections/g60-r2.json"
 checked_in_r3_correction="$repo_root/.github/authority-resolution-corrections/g60-r3.json"
+expected_authority_download_consumers=$(printf '%s\n' \
+    $'compare_builds\tDownload both isolated builds' \
+    $'isolated_build\tDownload encrypted source export' \
+    $'publish\tDownload signed authority' \
+    $'recover_publish_resolution\tDownload recovered replacement resolution' \
+    $'recover_sign_resolution\tDownload exact replacement proof helper' \
+    $'replacement_proof_helper\tDownload encrypted proof-helper source export' \
+    $'sign\tDownload approved candidate')
+authority_download_consumers=$(yq -r '
+    .jobs | to_entries[] |
+    .key as $job |
+    .value.steps[] |
+    [$job, .name, (.uses // "")] | @tsv
+' "$workflow" |
+    awk -F '\t' '$3 ~ /^actions\/download-artifact@/ {print $1 "\t" $2}' |
+    LC_ALL=C sort)
+[[ $authority_download_consumers == "$expected_authority_download_consumers" ]]
+release_download_consumers=$(yq -r '
+    .jobs | to_entries[] |
+    .key as $job |
+    .value.steps[] |
+    [$job, .name, (.uses // ""),
+      ((.with."merge-multiple" // false) | tostring)] | @tsv
+' "$release_workflow" |
+    awk -F '\t' '$3 ~ /^actions\/download-artifact@/ {print $1 "\t" $2 "\t" $4}' |
+    LC_ALL=C sort)
+[[ $release_download_consumers \
+    == $'sign-and-release\tDownload all built binaries\ttrue' ]]
 proof_helper_artifact_selector=$(yq -r '
     .jobs.replacement_proof_helper.steps[] |
     select(.name == "Select exact encrypted proof-helper source export") |
@@ -932,64 +961,116 @@ isolated_build_artifact_selector=$(yq -r '
     select(.name == "Select newest immutable source export from this run") |
     .run
 ' "$workflow")
-[[ -n $proof_helper_artifact_selector \
-    && $proof_helper_artifact_selector != null ]]
+reviewed_candidate_artifact_selector=$(yq -r '
+    .jobs.sign.steps[] |
+    select(.name == "Select newest immutable reviewed candidate from this run") |
+    .run
+' "$workflow")
+replacement_helper_artifact_selector=$(yq -r '
+    .jobs.recover_sign_resolution.steps[] |
+    select(.name == "Select exact replacement proof helper") |
+    .run
+' "$workflow")
+recovered_resolution_artifact_selector=$(yq -r '
+    .jobs.recover_publish_resolution.steps[] |
+    select(.name == "Select recovered replacement resolution") |
+    .run
+' "$workflow")
+signed_authority_artifact_selector=$(yq -r '
+    .jobs.publish.steps[] |
+    select(.name == "Select newest immutable signed package from this run") |
+    .run
+' "$workflow")
+for selector in \
+    "$proof_helper_artifact_selector" \
+    "$isolated_build_artifact_selector" \
+    "$reviewed_candidate_artifact_selector" \
+    "$replacement_helper_artifact_selector" \
+    "$recovered_resolution_artifact_selector" \
+    "$signed_authority_artifact_selector"; do
+    [[ -n $selector && $selector != null ]]
+done
 [[ $proof_helper_artifact_selector == "$isolated_build_artifact_selector" ]]
 
-run_proof_helper_artifact_selector() {
-    local fixture=$1
+run_single_artifact_selector() {
+    local selector=$1
+    local fixture=$2
     (
         cd "$fixture"
         GITHUB_RUN_ID=424242 bash --noprofile --norc \
-            -e -o pipefail -c "$proof_helper_artifact_selector"
+            -e -o pipefail -c "$selector"
     )
 }
 
-flat_artifact_fixture="$tmp_root/proof-helper-artifact-flat"
-mkdir -p "$flat_artifact_fixture/encrypted-source-artifacts"
-printf '%s' metadata \
-    >"$flat_artifact_fixture/encrypted-source-artifacts/source-export.json"
-printf '%s' ciphertext \
-    >"$flat_artifact_fixture/encrypted-source-artifacts/source.tar.age"
-run_proof_helper_artifact_selector "$flat_artifact_fixture"
-[[ ! -e $flat_artifact_fixture/encrypted-source-artifacts ]]
-[[ -f $flat_artifact_fixture/encrypted-source/source-export.json ]]
-[[ -f $flat_artifact_fixture/encrypted-source/source.tar.age ]]
+exercise_single_artifact_selector() {
+    local label=$1
+    local selector=$2
+    local source_dir=$3
+    local target_dir=$4
+    local artifact_prefix=$5
+    local fixture nested_name older_name newest_name
 
-nested_artifact_fixture="$tmp_root/proof-helper-artifact-nested"
-nested_artifact_name=encrypted-authority-source-run-424242-attempt-1
-mkdir -p \
-    "$nested_artifact_fixture/encrypted-source-artifacts/$nested_artifact_name"
-printf '%s' metadata \
-    >"$nested_artifact_fixture/encrypted-source-artifacts/$nested_artifact_name/source-export.json"
-printf '%s' ciphertext \
-    >"$nested_artifact_fixture/encrypted-source-artifacts/$nested_artifact_name/source.tar.age"
-run_proof_helper_artifact_selector "$nested_artifact_fixture"
-[[ -d $nested_artifact_fixture/encrypted-source ]]
-[[ -f $nested_artifact_fixture/encrypted-source/source-export.json ]]
-[[ -f $nested_artifact_fixture/encrypted-source/source.tar.age ]]
+    fixture="$tmp_root/${label}-flat"
+    mkdir -p "$fixture/$source_dir"
+    printf '%s' flat >"$fixture/$source_dir/payload.bin"
+    printf '%s' metadata >"$fixture/$source_dir/metadata.json"
+    run_single_artifact_selector "$selector" "$fixture"
+    [[ ! -e $fixture/$source_dir ]]
+    [[ $(<"$fixture/$target_dir/payload.bin") == flat ]]
+    [[ -f $fixture/$target_dir/metadata.json ]]
 
-rerun_artifact_fixture="$tmp_root/proof-helper-artifact-rerun"
-older_artifact_name=encrypted-authority-source-run-424242-attempt-1
-newest_artifact_name=encrypted-authority-source-run-424242-attempt-2
-mkdir -p \
-    "$rerun_artifact_fixture/encrypted-source-artifacts/$older_artifact_name" \
-    "$rerun_artifact_fixture/encrypted-source-artifacts/$newest_artifact_name"
-printf '%s' older \
-    >"$rerun_artifact_fixture/encrypted-source-artifacts/$older_artifact_name/source-export.json"
-printf '%s' newest \
-    >"$rerun_artifact_fixture/encrypted-source-artifacts/$newest_artifact_name/source-export.json"
-run_proof_helper_artifact_selector "$rerun_artifact_fixture"
-[[ $(<"$rerun_artifact_fixture/encrypted-source/source-export.json") == newest ]]
-[[ -d $rerun_artifact_fixture/encrypted-source-artifacts/$older_artifact_name ]]
+    fixture="$tmp_root/${label}-nested"
+    nested_name="${artifact_prefix}-424242-attempt-1"
+    mkdir -p "$fixture/$source_dir/$nested_name"
+    printf '%s' nested >"$fixture/$source_dir/$nested_name/payload.bin"
+    run_single_artifact_selector "$selector" "$fixture"
+    [[ $(<"$fixture/$target_dir/payload.bin") == nested ]]
 
-mixed_artifact_fixture="$tmp_root/proof-helper-artifact-mixed"
-mkdir -p \
-    "$mixed_artifact_fixture/encrypted-source-artifacts/$nested_artifact_name"
-printf '%s' unexpected \
-    >"$mixed_artifact_fixture/encrypted-source-artifacts/unexpected-file"
-expect_failure run_proof_helper_artifact_selector "$mixed_artifact_fixture"
-[[ ! -e $mixed_artifact_fixture/encrypted-source ]]
+    fixture="$tmp_root/${label}-rerun"
+    older_name="${artifact_prefix}-424242-attempt-1"
+    newest_name="${artifact_prefix}-424242-attempt-2"
+    mkdir -p \
+        "$fixture/$source_dir/$older_name" \
+        "$fixture/$source_dir/$newest_name"
+    printf '%s' older >"$fixture/$source_dir/$older_name/payload.bin"
+    printf '%s' newest >"$fixture/$source_dir/$newest_name/payload.bin"
+    run_single_artifact_selector "$selector" "$fixture"
+    [[ $(<"$fixture/$target_dir/payload.bin") == newest ]]
+    [[ -d $fixture/$source_dir/$older_name ]]
+
+    fixture="$tmp_root/${label}-nested-contamination"
+    mkdir -p "$fixture/$source_dir/$nested_name"
+    printf '%s' unexpected >"$fixture/$source_dir/unexpected-file"
+    expect_failure run_single_artifact_selector "$selector" "$fixture"
+    [[ ! -e $fixture/$target_dir ]]
+
+    fixture="$tmp_root/${label}-direct-contamination"
+    mkdir -p "$fixture/$source_dir/unexpected-directory"
+    printf '%s' direct >"$fixture/$source_dir/payload.bin"
+    expect_failure run_single_artifact_selector "$selector" "$fixture"
+    [[ ! -e $fixture/$target_dir ]]
+}
+
+exercise_single_artifact_selector \
+    isolated-source "$isolated_build_artifact_selector" \
+    encrypted-source-artifacts encrypted-source encrypted-authority-source-run
+exercise_single_artifact_selector \
+    replacement-source "$proof_helper_artifact_selector" \
+    encrypted-source-artifacts encrypted-source encrypted-authority-source-run
+exercise_single_artifact_selector \
+    reviewed-candidate "$reviewed_candidate_artifact_selector" \
+    reviewed-candidate-artifacts candidate reviewed-authority-candidate-run
+exercise_single_artifact_selector \
+    replacement-helper "$replacement_helper_artifact_selector" \
+    replacement-proof-helper-artifacts replacement-proof-helper \
+    replacement-proof-helper-run
+exercise_single_artifact_selector \
+    recovered-resolution "$recovered_resolution_artifact_selector" \
+    recovered-resolution-artifacts signed-resolution \
+    recovered-release-authority-resolution-run
+exercise_single_artifact_selector \
+    signed-authority "$signed_authority_artifact_selector" \
+    signed-authority-artifacts signed-authority signed-release-authority-run
 
 [[ $(yq -r '.on.workflow_dispatch.inputs | length' "$workflow") == 2 ]]
 "$helper" validate-resolution-correction-review "$checked_in_r2_correction"

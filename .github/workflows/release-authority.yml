@@ -2192,10 +2192,15 @@ jobs:
             -mindepth 1 -maxdepth 1 -type d \
             -name "replacement-proof-helper-run-${GITHUB_RUN_ID}-attempt-*" \
             -printf '%f\n' | sort -V | sed -n '$p')
-          test -n "$selected"
-          test -z "$(find replacement-proof-helper-artifacts \
-            -mindepth 1 -maxdepth 1 -type d ! -name "$selected" -print -quit)"
-          mv "replacement-proof-helper-artifacts/$selected" replacement-proof-helper
+          if [[ -n $selected ]]; then
+            test -z "$(find replacement-proof-helper-artifacts \
+              -mindepth 1 -maxdepth 1 ! -type d -print -quit)"
+            mv "replacement-proof-helper-artifacts/$selected" replacement-proof-helper
+          else
+            test -z "$(find replacement-proof-helper-artifacts \
+              -mindepth 1 -maxdepth 1 -type d -print -quit)"
+            mv replacement-proof-helper-artifacts replacement-proof-helper
+          fi
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
@@ -2689,8 +2694,12 @@ jobs:
             -name "recovered-release-authority-resolution-run-${GITHUB_RUN_ID}-attempt-*" \
             -printf '%f\n' | sort -V | sed -n '$p')
           if [[ -n $selected ]]; then
+            test -z "$(find recovered-resolution-artifacts \
+              -mindepth 1 -maxdepth 1 ! -type d -print -quit)"
             mv "recovered-resolution-artifacts/$selected" signed-resolution
           else
+            test -z "$(find recovered-resolution-artifacts \
+              -mindepth 1 -maxdepth 1 -type d -print -quit)"
             mv recovered-resolution-artifacts signed-resolution
           fi
 
