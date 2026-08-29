@@ -484,10 +484,9 @@ install_resolution_receipt() {
     local generation revision final stage name expected actual
     generation=$(resolution_value "$resolution_dir/$RESOLUTION" selected_generation)
     revision=$(resolution_revision "$resolution_dir/$RESOLUTION")
-    final=$RESOLUTION_PARENT/generation-$generation
+    final=$(resolution_receipt_directory)
     stage=$AUTHORITY_ROOT/.replacement-resolution-v1-g${generation}.staged
     if [[ $revision != 1 ]]; then
-        final=$RESOLUTION_PARENT/generation-${generation}-r${revision}
         stage=$AUTHORITY_ROOT/.replacement-resolution-v1-g${generation}-r${revision}.staged
     fi
     expected=$(resolution_data_names "$resolution_dir/$RESOLUTION" | LC_ALL=C /usr/bin/sort)
@@ -536,6 +535,18 @@ install_resolution_receipt() {
     sync_path "$stage"
     /usr/bin/mv -T "$stage" "$final"
     sync_path "$RESOLUTION_PARENT"
+}
+
+resolution_receipt_directory() {
+    local generation revision
+    generation=$(resolution_value "$resolution_dir/$RESOLUTION" selected_generation)
+    revision=$(resolution_revision "$resolution_dir/$RESOLUTION")
+    if [[ $revision == 1 ]]; then
+        /usr/bin/printf '%s/generation-%s\n' "$RESOLUTION_PARENT" "$generation"
+    else
+        /usr/bin/printf '%s/generation-%s-r%s\n' \
+            "$RESOLUTION_PARENT" "$generation" "$revision"
+    fi
 }
 
 require_root_directory() {
@@ -761,29 +772,144 @@ seal_install_inputs() {
     verify_inputs "$operation"
 }
 
-verify_resolution_correction_prestate() {
-    local record=$resolution_dir/$RESOLUTION schema correction active_generation
-    schema=$(resolution_value "$record" schema)
-    [[ $schema == 2 ]] || return 0
-    correction=$resolution_dir/$CORRECTION_REVIEW
-    [[ $(sha256_file "$AUTHORITY_ROOT/$MANIFEST") == \
+verify_resolution_correction_initial_prestate() {
+    local active_manifest_sha256=$1 product_digest=$2 resolution_receipt=$3
+    local correction=$resolution_dir/$CORRECTION_REVIEW active_generation path
+    [[ $active_manifest_sha256 == \
         "$(resolution_value "$correction" active_manifest_sha256)" ]] \
         || die 'corrected resolution active authority differs from the reviewed prestate'
     active_generation=$(manifest_value "$AUTHORITY_ROOT/$MANIFEST" generation)
     [[ $active_generation == "$(resolution_value "$correction" active_generation)" ]] \
         || die 'corrected resolution active generation differs from the reviewed prestate'
-    [[ $(product_state_digest) == \
+    [[ $product_digest == \
         "$(resolution_value "$correction" active_product_state_sha256)" ]] \
         || die 'corrected resolution product state differs from the reviewed prestate'
-    local path
     for path in \
         "$NORMAL_PROMOTION_JOURNAL" "$NORMAL_PROMOTION_JOURNAL_TEMP" \
         "$INSTALL_JOURNAL" "$INSTALL_JOURNAL_TEMP" \
         "$ROLLBACK_JOURNAL" "$ROLLBACK_JOURNAL_TEMP" \
-        "$INSTALL_RECEIPT" "$ROLLBACK_RECEIPT"; do
+        "$INSTALL_RECEIPT" "$ROLLBACK_RECEIPT" "$resolution_receipt"; do
         [[ ! -e $path && ! -L $path ]] \
-            || die 'corrected resolution prestate contains a journal or receipt'
+            || die 'corrected resolution initial prestate contains mutation state'
     done
+}
+
+verify_resolution_correction_state() {
+    local operation=$1 active_manifest_sha256=$2
+    local record=$resolution_dir/$RESOLUTION schema correction product_digest
+    local resolution_receipt normal_journal install_journal rollback_journal
+    local install_receipt rollback_receipt path
+    schema=$(resolution_value "$record" schema)
+    [[ $schema == 2 ]] || return 0
+    correction=$resolution_dir/$CORRECTION_REVIEW
+    product_digest=$(product_state_digest)
+    [[ $product_digest == \
+        "$(resolution_value "$correction" active_product_state_sha256)" ]] \
+        || die 'corrected resolution product state moved from its reviewed prestate'
+    resolution_receipt=$(resolution_receipt_directory)
+    normal_journal=false
+    install_journal=false
+    rollback_journal=false
+    install_receipt=false
+    rollback_receipt=false
+    [[ -e $NORMAL_PROMOTION_JOURNAL || -L $NORMAL_PROMOTION_JOURNAL ]] \
+        && normal_journal=true
+    [[ -e $INSTALL_JOURNAL || -L $INSTALL_JOURNAL ]] && install_journal=true
+    [[ -e $ROLLBACK_JOURNAL || -L $ROLLBACK_JOURNAL ]] && rollback_journal=true
+    [[ -e $INSTALL_RECEIPT || -L $INSTALL_RECEIPT ]] && install_receipt=true
+    [[ -e $ROLLBACK_RECEIPT || -L $ROLLBACK_RECEIPT ]] && rollback_receipt=true
+
+    if [[ $operation == install ]]; then
+        [[ $rollback_journal == false && $rollback_receipt == false ]] \
+            || die 'corrected install conflicts with rollback state'
+        if [[ $active_manifest_sha256 == "$expected_predecessor_sha256" ]]; then
+            [[ $install_receipt == false ]] \
+                || die 'corrected install receipt conflicts with active predecessor'
+            if [[ $normal_journal == false && $install_journal == false ]]; then
+                if [[ -e $resolution_receipt || -L $resolution_receipt ]]; then
+                    install_resolution_receipt
+                    for path in \
+                        "$NORMAL_PROMOTION_JOURNAL_TEMP" "$INSTALL_JOURNAL_TEMP" \
+                        "$ROLLBACK_JOURNAL_TEMP"; do
+                        [[ ! -e $path && ! -L $path ]] \
+                            || die 'corrected receipt-only continuation has unexplained temporary state'
+                    done
+                else
+                    verify_resolution_correction_initial_prestate \
+                        "$active_manifest_sha256" "$product_digest" \
+                        "$resolution_receipt"
+                fi
+                return
+            fi
+            [[ -e $resolution_receipt && ! -L $resolution_receipt ]] \
+                || die 'corrected install continuation lacks its exact resolution receipt'
+            install_resolution_receipt
+            [[ $normal_journal == true ]] \
+                || die 'corrected install journal exists without its mutation fence'
+            validate_mutation_fence "$product_digest"
+            if [[ $install_journal == true ]]; then
+                validate_current_install_state "$product_digest"
+            else
+                validate_predecessor_active
+            fi
+            return
+        fi
+        [[ $active_manifest_sha256 == "$expected_selected_sha256" ]] \
+            || die 'corrected install active authority is outside its signed transaction'
+        [[ -e $resolution_receipt && ! -L $resolution_receipt ]] \
+            || die 'corrected selected authority lacks its exact resolution receipt'
+        install_resolution_receipt
+        if [[ $install_receipt == true ]]; then
+            validate_install_receipt "$product_digest"
+            if [[ $install_journal == true ]]; then
+                [[ $normal_journal == true ]] \
+                    || die 'corrected terminal install journal lacks its mutation fence'
+                validate_mutation_fence "$product_digest"
+                validate_current_install_state "$product_digest"
+            elif [[ $normal_journal == true ]]; then
+                validate_mutation_fence "$product_digest"
+            fi
+            return
+        fi
+        [[ $normal_journal == true && $install_journal == true ]] \
+            || die 'corrected selected authority lacks a resumable install journal'
+        validate_mutation_fence "$product_digest"
+        validate_current_install_state "$product_digest"
+        return
+    fi
+
+    [[ $install_journal == false && $install_receipt == true ]] \
+        || die 'corrected rollback requires a completed exceptional install'
+    [[ -e $resolution_receipt && ! -L $resolution_receipt ]] \
+        || die 'corrected rollback lacks its exact resolution receipt'
+    install_resolution_receipt
+    validate_install_receipt "$product_digest"
+    if [[ $active_manifest_sha256 == "$expected_selected_sha256" ]]; then
+        [[ $rollback_receipt == false ]] \
+            || die 'corrected rollback receipt conflicts with active selected authority'
+        if [[ $rollback_journal == true ]]; then
+            [[ $normal_journal == true ]] \
+                || die 'corrected rollback journal exists without its mutation fence'
+            validate_mutation_fence "$product_digest"
+            validate_current_rollback_state "$product_digest"
+        elif [[ $normal_journal == true ]]; then
+            validate_mutation_fence "$product_digest"
+            validate_selected_active
+        fi
+        return
+    fi
+    [[ $active_manifest_sha256 == "$expected_predecessor_sha256" \
+        && ( $rollback_journal == true || $rollback_receipt == true ) ]] \
+        || die 'corrected rollback active authority is outside its signed transaction'
+    if [[ $rollback_journal == true ]]; then
+        [[ $normal_journal == true ]] \
+            || die 'corrected rollback journal exists without its mutation fence'
+        validate_mutation_fence "$product_digest"
+        validate_current_rollback_state "$product_digest"
+    fi
+    if [[ $rollback_receipt == true ]]; then
+        validate_rollback_receipt "$product_digest"
+    fi
 }
 
 resolve_operator_home() {
@@ -1663,7 +1789,7 @@ write_rollback_journal() {
 }
 
 validate_rollback_phase_state() {
-    local phase shipper_state provisioner_state trust_state bundle_state manifest_state vector
+    local phase=$1 shipper_state provisioner_state trust_state bundle_state manifest_state vector
     local predecessor_workflow selected_workflow predecessor_trust_sha selected_trust_sha
     shipper_state=$(component_generation "$INSTALLED_SHIPPER" 1755 \
         "$(manifest_value "$predecessor_dir/$MANIFEST" shipper_sha256)" \
@@ -1995,9 +2121,9 @@ require_root_file "$REPLACEMENT_LOCK" 600 'authority replacement lock'
 /usr/bin/flock -n 7 || die 'another authority replacement recovery holds the lock'
 resolve_operator_home
 seal_install_inputs "$operation"
-verify_resolution_correction_prestate
-install_resolution_receipt
 active_manifest_sha256=$(sha256_file "$AUTHORITY_ROOT/$MANIFEST")
+verify_resolution_correction_state "$operation" "$active_manifest_sha256"
+install_resolution_receipt
 if [[ $operation == rollback ]]; then
     transaction_product_digest=$(resolution_value \
         "$resolution_dir/$RESOLUTION" settled_product_state_sha256)

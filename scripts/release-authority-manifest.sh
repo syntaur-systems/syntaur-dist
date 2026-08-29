@@ -614,9 +614,20 @@ resolution_correction_review_from_file() {
         --arg failure_stage "$(manifest_value "$record" failure_stage)" \
         --argjson authority_mutated "$(jq -r '.authority_mutated' "$record")" \
         --argjson product_state_mutated "$(jq -r '.product_state_mutated' "$record")" \
+        --argjson normal_promotion_journal_present \
+            "$(jq -r '.normal_promotion_journal_present' "$record")" \
+        --argjson normal_promotion_journal_temp_present \
+            "$(jq -r '.normal_promotion_journal_temp_present' "$record")" \
         --argjson install_journal_present "$(jq -r '.install_journal_present' "$record")" \
+        --argjson install_journal_temp_present \
+            "$(jq -r '.install_journal_temp_present' "$record")" \
         --argjson rollback_journal_present "$(jq -r '.rollback_journal_present' "$record")" \
+        --argjson rollback_journal_temp_present \
+            "$(jq -r '.rollback_journal_temp_present' "$record")" \
         --argjson install_receipt_present "$(jq -r '.install_receipt_present' "$record")" \
+        --argjson rollback_receipt_present "$(jq -r '.rollback_receipt_present' "$record")" \
+        --argjson resolution_receipt_present \
+            "$(jq -r '.resolution_receipt_present' "$record")" \
         '{
           schema:$schema,
           generation:$generation,
@@ -638,9 +649,15 @@ resolution_correction_review_from_file() {
           failure_stage:$failure_stage,
           authority_mutated:$authority_mutated,
           product_state_mutated:$product_state_mutated,
+          normal_promotion_journal_present:$normal_promotion_journal_present,
+          normal_promotion_journal_temp_present:$normal_promotion_journal_temp_present,
           install_journal_present:$install_journal_present,
+          install_journal_temp_present:$install_journal_temp_present,
           rollback_journal_present:$rollback_journal_present,
-          install_receipt_present:$install_receipt_present
+          rollback_journal_temp_present:$rollback_journal_temp_present,
+          install_receipt_present:$install_receipt_present,
+          rollback_receipt_present:$rollback_receipt_present,
+          resolution_receipt_present:$resolution_receipt_present
         }'
 }
 
@@ -679,15 +696,25 @@ validate_resolution_correction_review() {
         (.failure_stage == "sealed_input_revalidation") and
         (.authority_mutated == false) and
         (.product_state_mutated == false) and
+        (.normal_promotion_journal_present == false) and
+        (.normal_promotion_journal_temp_present == false) and
         (.install_journal_present == false) and
+        (.install_journal_temp_present == false) and
         (.rollback_journal_present == false) and
+        (.rollback_journal_temp_present == false) and
         (.install_receipt_present == false) and
+        (.rollback_receipt_present == false) and
+        (.resolution_receipt_present == false) and
         (keys | sort) == ([
           "active_generation", "active_manifest_sha256", "active_product_state_sha256",
           "authority_mutated", "corrected_manifest_helper_sha256",
           "corrected_recovery_tool_sha256", "correction_reason", "failure_class",
           "failure_stage", "generation", "install_journal_present",
-          "install_receipt_present", "product_state_mutated", "rollback_journal_present",
+          "install_journal_temp_present", "install_receipt_present",
+          "normal_promotion_journal_present", "normal_promotion_journal_temp_present",
+          "product_state_mutated", "resolution_receipt_present",
+          "rollback_journal_present", "rollback_journal_temp_present",
+          "rollback_receipt_present",
           "resolution_revision", "resolution_tag", "schema",
           "selected_manifest_sha256", "superseded_manifest_helper_sha256",
           "superseded_recovery_tool_sha256", "superseded_resolution_workflow_commit",
@@ -981,6 +1008,20 @@ validate_replacement_resolution() {
     canonical=$(replacement_resolution_from_file "$record")
     [[ $(wc -c <"$record") -eq ${#canonical} && $(<"$record") == "$canonical" ]] \
         || die 'authority replacement resolution is not exact canonical JSON'
+}
+
+validate_replacement_resolution_tag() {
+    local tag=$1 record=$2 generation schema revision expected
+    validate_replacement_resolution "$record"
+    generation=$(manifest_value "$record" selected_generation)
+    schema=$(manifest_value "$record" schema)
+    expected=authority-resolution-v1-g${generation}
+    if [[ $schema == 2 ]]; then
+        revision=$(manifest_value "$record" resolution_revision)
+        expected=${expected}-r${revision}
+    fi
+    [[ $tag == "$expected" ]] \
+        || die 'authority replacement resolution tag differs from its signed revision'
 }
 
 render_replacement_resolution() {
@@ -1908,6 +1949,11 @@ case ${1:-} in
         [[ $# -eq 2 ]] || die 'usage: validate-replacement-resolution RECORD'
         validate_replacement_resolution "$2"
         ;;
+    validate-replacement-resolution-tag)
+        [[ $# -eq 3 ]] \
+            || die 'usage: validate-replacement-resolution-tag TAG RECORD'
+        validate_replacement_resolution_tag "$2" "$3"
+        ;;
     validate-replacement-resolution-assets)
         [[ $# -eq 2 ]] || die 'usage: validate-replacement-resolution-assets DIRECTORY'
         validate_replacement_resolution_assets "$2"
@@ -1984,6 +2030,6 @@ case ${1:-} in
         validate_stage_v2 "$2"
         ;;
     *)
-        die 'usage: release-authority-manifest.sh render-approval-record|validate-approval-record|render-selection-review|validate-selection-review|validate-resolution-correction-review|render-resolution-correction-authorization|validate-resolution-correction-authorization|render-replacement-resolution|validate-replacement-resolution|validate-replacement-resolution-assets|assert-replacement|validate-special-tag-namespace|validate-product-source-proofs|asset-schema|validate|render-v2|assert-genesis|assert-successor|protocol-from-manifest|validate-protocol|shipper-self-test-from-manifest|validate-shipper-self-test|verifier-self-test-from-manifest|validate-verifier-self-test|source-tree-sha256|stage-v2|validate-stage-v2 ...'
+        die 'usage: release-authority-manifest.sh render-approval-record|validate-approval-record|render-selection-review|validate-selection-review|validate-resolution-correction-review|render-resolution-correction-authorization|validate-resolution-correction-authorization|render-replacement-resolution|validate-replacement-resolution|validate-replacement-resolution-tag|validate-replacement-resolution-assets|assert-replacement|validate-special-tag-namespace|validate-product-source-proofs|asset-schema|validate|render-v2|assert-genesis|assert-successor|protocol-from-manifest|validate-protocol|shipper-self-test-from-manifest|validate-shipper-self-test|verifier-self-test-from-manifest|validate-verifier-self-test|source-tree-sha256|stage-v2|validate-stage-v2 ...'
         ;;
 esac

@@ -323,6 +323,9 @@ jobs:
               bash public-workflow/scripts/release-authority-manifest.sh \
                 validate-replacement-resolution-assets "$resolution_dir"
               resolution_record="$resolution_dir/release-authority-replacement-v1.json"
+              bash public-workflow/scripts/release-authority-manifest.sh \
+                validate-replacement-resolution-tag \
+                "$resolution_tag" "$resolution_record"
               test "$(jq -er '.selected_generation' "$resolution_record")" = "$previous"
               test "$(jq -er '.selected_manifest_sha256' "$resolution_record")" \
                 = "$EXPECTED_PREVIOUS_MANIFEST_SHA256"
@@ -1823,6 +1826,9 @@ jobs:
             bash public-workflow/scripts/release-authority-manifest.sh \
               validate-replacement-resolution-assets "$superseded"
             superseded_record="$superseded/release-authority-replacement-v1.json"
+            bash public-workflow/scripts/release-authority-manifest.sh \
+              validate-replacement-resolution-tag \
+              "$supersedes_resolution_tag" "$superseded_record"
             test "$(sha256sum "$superseded_record" | awk '{print $1}')" \
               = "$supersedes_resolution_sha256"
             test "$(sha256sum "$superseded/recover-release-authority-replacement-v1.sh" \
@@ -1882,6 +1888,8 @@ jobs:
             if bash public-workflow/scripts/release-authority-manifest.sh \
               validate-replacement-resolution-assets "$resolution"; then
               record="$resolution/release-authority-replacement-v1.json"
+              bash public-workflow/scripts/release-authority-manifest.sh \
+                validate-replacement-resolution-tag "$resolution_tag" "$record"
               resolution_workflow_commit=$(jq -er '.resolution_workflow_commit' "$record")
               if [[ $(jq -r '.draft' <<<"$existing_release") == true ]]; then
                 test "$(jq -r '.target_commitish' <<<"$existing_release")" \
@@ -1981,6 +1989,8 @@ jobs:
           cmp "$review" "$resolution/release-authority-selection-review-v1.json"
           test "$(jq -er '.resolution_revision // 1' "$record")" \
             = "$RESOLUTION_REVISION"
+          bash public-workflow/scripts/release-authority-manifest.sh \
+            validate-replacement-resolution-tag "$resolution_tag" "$record"
           if [[ $RESOLUTION_REVISION != 1 ]]; then
             test "$(jq -er '.supersedes_resolution_tag' "$record")" \
               = "$supersedes_resolution_tag"
@@ -2110,6 +2120,8 @@ jobs:
           workflow_commit=$(jq -er '.resolution_workflow_commit' "$record")
           bash public-workflow/scripts/release-authority-manifest.sh \
             validate-replacement-resolution-assets signed-resolution
+          bash public-workflow/scripts/release-authority-manifest.sh \
+            validate-replacement-resolution-tag "$resolution_tag" "$record"
           cosign verify-blob \
             --bundle signed-resolution/release-authority-replacement-v1.json.cosign.bundle \
             --certificate-identity \

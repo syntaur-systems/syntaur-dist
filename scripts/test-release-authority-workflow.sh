@@ -7,10 +7,12 @@ helper="$repo_root/scripts/release-authority-manifest.sh"
 tmp_root=$(mktemp -d "$repo_root/.test-release-authority-workflow.XXXXXX")
 cleanup() {
     local root_owned_fixture
-    for root_owned_fixture in "${root_fixture:-}" "${entry_fixture:-}"; do
+    for root_owned_fixture in "${root_fixture:-}" "${entry_fixture:-}" \
+        "${state_fixture:-}"; do
         if [[ -n $root_owned_fixture \
             && ( $root_owned_fixture == "$tmp_root/root-fixture" \
-                || $root_owned_fixture == "$tmp_root/replacement-entry-fixture" ) \
+                || $root_owned_fixture == "$tmp_root/replacement-entry-fixture" \
+                || $root_owned_fixture == "$tmp_root/replacement-state-machine-fixture" ) \
             && ( -e $root_owned_fixture || -L $root_owned_fixture ) ]]; then
             sudo -n rm -rf -- "$root_owned_fixture" 2>/dev/null || true
         fi
@@ -65,7 +67,7 @@ VERIFIER_CARGO_SHA256=$(digest_text cargo)
 VERIFIER_RUSTC_SHA256=$(digest_text rustc)
 VERIFIER_RUSTDOC_SHA256=$(digest_text rustdoc)
 BASELINE_PROFILE=mac-isolated-v1
-BASELINE_GENERATION=generation-1
+BASELINE_GENERATION='generation-1'
 BASELINE_TREE_SHA256=$(digest_text baseline)
 BROWSER_BUNDLE_SHA256=$(digest_text browser)
 BROWSER_VERSION='Google Chrome for Testing 131.0.6778.264'
@@ -307,6 +309,12 @@ printf '{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}\n' \
     >"$resolution_dir/release-authority-replacement-v1.json.cosign.bundle"
 "$helper" validate-replacement-resolution \
     "$resolution_dir/release-authority-replacement-v1.json"
+"$helper" validate-replacement-resolution-tag \
+    authority-resolution-v1-g701 \
+    "$resolution_dir/release-authority-replacement-v1.json"
+expect_failure "$helper" validate-replacement-resolution-tag \
+    authority-resolution-v1-g701-r2 \
+    "$resolution_dir/release-authority-replacement-v1.json"
 "$helper" validate-replacement-resolution-assets "$resolution_dir"
 "$helper" assert-replacement \
     "$tmp_root/release-authority-v1.json" \
@@ -454,8 +462,12 @@ jq -cjn \
       failure_class:"bash_dynamic_scope_unbound_operation",
       failure_stage:"sealed_input_revalidation",
       authority_mutated:false,product_state_mutated:false,
-      install_journal_present:false,rollback_journal_present:false,
-      install_receipt_present:false}' >"$correction_review"
+      normal_promotion_journal_present:false,
+      normal_promotion_journal_temp_present:false,
+      install_journal_present:false,install_journal_temp_present:false,
+      rollback_journal_present:false,rollback_journal_temp_present:false,
+      install_receipt_present:false,rollback_receipt_present:false,
+      resolution_receipt_present:false}' >"$correction_review"
 "$helper" validate-resolution-correction-review "$correction_review"
 RESOLUTION_REVISION=2
 SUPERSEDES_RESOLUTION_TAG=authority-resolution-v1-g701
@@ -467,6 +479,12 @@ export SUPERSEDED_RECOVERY_TOOL_SHA256 CORRECTION_REVIEW_SHA256
 "$helper" render-replacement-resolution \
     "$resolution_dir/release-authority-replacement-v1.json"
 "$helper" validate-replacement-resolution-assets "$resolution_dir"
+"$helper" validate-replacement-resolution-tag \
+    authority-resolution-v1-g701-r2 \
+    "$resolution_dir/release-authority-replacement-v1.json"
+expect_failure "$helper" validate-replacement-resolution-tag \
+    authority-resolution-v1-g701-r3 \
+    "$resolution_dir/release-authority-replacement-v1.json"
 RESOLUTION_SHA256=$(sha256sum \
     "$resolution_dir/release-authority-replacement-v1.json" | awk '{print $1}')
 export RESOLUTION_SHA256
@@ -1052,11 +1070,11 @@ if /usr/bin/env SHADOW_TOOL="$shadow_tool" SHADOW_STAGE="$shadow_stage" \
         expected_resolution_sha256=$(printf "0%.0s" {1..64})
         expected_recovery_tool_sha256=$expected_resolution_sha256
         correction_authorization=
-        mode_shadow_probe() {
-            local mode
+        dynamic_scope_shadow_probe() {
+            local mode operation
             verify_inputs install
         }
-        mode_shadow_probe
+        dynamic_scope_shadow_probe
     ' 2>"$shadow_error"; then
     fail 'dynamic-scope regression unexpectedly verified invalid sealed inputs'
 fi
@@ -1068,6 +1086,110 @@ fi
 if grep -Fq 'unbound variable' "$shadow_error"; then
     fail 'sealed-input verification still depends on a dynamically scoped mode variable'
 fi
+
+phase_root=$tmp_root/correction-phase-matrix
+phase_helpers=$phase_root/recovery-phase-functions.sh
+phase_authority_root=$phase_root/etc/syntaur/release-authority
+mkdir -p "$phase_authority_root" "$phase_root/resolution"
+awk '
+    /^\[\[ \$# -ge 1 \]\] \|\| usage$/ { exit }
+    { print }
+' "$recovery_tool" \
+    | sed \
+        -e "s|^readonly AUTHORITY_ROOT=.*|readonly AUTHORITY_ROOT=$phase_authority_root|" \
+        -e "s|^readonly INSTALL_RECEIPT=.*|readonly INSTALL_RECEIPT=$phase_root/etc/syntaur/install-receipt.json|" \
+        -e "s|^readonly ROLLBACK_RECEIPT=.*|readonly ROLLBACK_RECEIPT=$phase_root/etc/syntaur/rollback-receipt.json|" \
+    >"$phase_helpers"
+PHASE_HELPERS=$phase_helpers PHASE_ROOT=$phase_root \
+PHASE_PRODUCT=$(digest_text correction-phase-product) \
+PHASE_PREDECESSOR=$(digest_text correction-phase-predecessor) \
+PHASE_SELECTED=$(digest_text correction-phase-selected) \
+/usr/bin/bash -c '
+    set -euo pipefail
+    source "$PHASE_HELPERS"
+    resolution_dir=$PHASE_ROOT/resolution
+    expected_predecessor_sha256=$PHASE_PREDECESSOR
+    expected_selected_sha256=$PHASE_SELECTED
+    : >"$resolution_dir/$RESOLUTION"
+    : >"$resolution_dir/$CORRECTION_REVIEW"
+
+    resolution_value() {
+        case $2 in
+            schema) printf "2\n" ;;
+            selected_generation) printf "60\n" ;;
+            active_manifest_sha256) printf "%s\n" "$PHASE_PREDECESSOR" ;;
+            active_generation) printf "59\n" ;;
+            active_product_state_sha256) printf "%s\n" "$PHASE_PRODUCT" ;;
+            *) printf "phase matrix requested unexpected resolution field: %s\n" "$2" >&2; return 1 ;;
+        esac
+    }
+    resolution_revision() { printf "2\n"; }
+    resolution_receipt_directory() { printf "%s/resolution-receipt\n" "$PHASE_ROOT"; }
+    manifest_value() {
+        [[ $2 == generation ]] || return 1
+        printf "59\n"
+    }
+    product_state_digest() { printf "%s\n" "$PHASE_PRODUCT"; }
+    install_resolution_receipt() { resolution_receipt_validations=$((resolution_receipt_validations + 1)); }
+    validate_mutation_fence() { fence_validations=$((fence_validations + 1)); }
+    validate_current_install_state() { install_validations=$((install_validations + 1)); }
+    validate_current_rollback_state() { rollback_validations=$((rollback_validations + 1)); }
+    validate_predecessor_active() { predecessor_validations=$((predecessor_validations + 1)); }
+    validate_selected_active() { selected_validations=$((selected_validations + 1)); }
+    validate_install_receipt() { install_receipt_validations=$((install_receipt_validations + 1)); }
+    validate_rollback_receipt() { rollback_receipt_validations=$((rollback_receipt_validations + 1)); }
+
+    resolution_receipt_validations=0
+    fence_validations=0
+    install_validations=0
+    rollback_validations=0
+    predecessor_validations=0
+    selected_validations=0
+    install_receipt_validations=0
+    rollback_receipt_validations=0
+
+    verify_resolution_correction_state install "$PHASE_PREDECESSOR"
+    mkdir "$PHASE_ROOT/resolution-receipt"
+    verify_resolution_correction_state install "$PHASE_PREDECESSOR"
+    : >"$NORMAL_PROMOTION_JOURNAL"
+    verify_resolution_correction_state install "$PHASE_PREDECESSOR"
+    : >"$INSTALL_JOURNAL"
+    verify_resolution_correction_state install "$PHASE_PREDECESSOR"
+    rm "$INSTALL_JOURNAL" "$NORMAL_PROMOTION_JOURNAL"
+    : >"$INSTALL_RECEIPT"
+    verify_resolution_correction_state install "$PHASE_SELECTED"
+    verify_resolution_correction_state rollback "$PHASE_SELECTED"
+    : >"$NORMAL_PROMOTION_JOURNAL"
+    : >"$ROLLBACK_JOURNAL"
+    verify_resolution_correction_state rollback "$PHASE_SELECTED"
+    rm "$NORMAL_PROMOTION_JOURNAL" "$ROLLBACK_JOURNAL"
+    : >"$ROLLBACK_RECEIPT"
+    verify_resolution_correction_state rollback "$PHASE_PREDECESSOR"
+
+    rm "$INSTALL_RECEIPT" "$ROLLBACK_RECEIPT"
+    : >"$INSTALL_JOURNAL"
+    if ( verify_resolution_correction_state install "$PHASE_PREDECESSOR" ) \
+        2>"$PHASE_ROOT/install-without-fence.error"; then
+        printf "phase gate accepted install journal without fence\n" >&2
+        exit 1
+    fi
+    rm "$INSTALL_JOURNAL"
+    : >"$INSTALL_RECEIPT"
+    : >"$ROLLBACK_RECEIPT"
+    if ( verify_resolution_correction_state rollback "$PHASE_SELECTED" ) \
+        2>"$PHASE_ROOT/selected-with-rollback-receipt.error"; then
+        printf "phase gate accepted rollback receipt with selected authority\n" >&2
+        exit 1
+    fi
+    [[ $resolution_receipt_validations -eq 7 ]]
+    [[ $fence_validations -eq 3 ]]
+    [[ $install_validations -eq 1 ]]
+    [[ $rollback_validations -eq 1 ]]
+    [[ $predecessor_validations -eq 1 ]]
+    [[ $selected_validations -eq 0 ]]
+    [[ $install_receipt_validations -eq 4 ]]
+    [[ $rollback_receipt_validations -eq 1 ]]
+'
 
 entry_fixture=$tmp_root/replacement-entry-fixture
 entry_authority_root=$entry_fixture/etc/syntaur/release-authority
@@ -1247,6 +1369,439 @@ for path in \
     [[ ! -e $path && ! -L $path ]] \
         || fail 'real replacement entry created transaction state before validation'
 done
+
+state_fixture=$tmp_root/replacement-state-machine-fixture
+state_authority_root=$state_fixture/etc/syntaur/release-authority
+state_artifact_root=$state_authority_root/release-authority
+state_runtime=$state_fixture/etc/syntaur/release-authority-replacement-v1.runtime
+state_sources=$state_fixture/sources
+state_operator_home=$state_fixture/home/operator
+state_operator_state=$state_operator_home/.syntaur/ship
+state_global_lock=$state_fixture/etc/syntaur/syntaur-ship-mutation.lock
+state_shipper=$state_fixture/usr/local/bin/syntaur-ship
+state_provisioner=$state_fixture/opt/syntaur-build-authority-provision
+state_install_receipt=$state_fixture/etc/syntaur/release-authority-replacement-v1.receipt.json
+state_rollback_receipt=$state_fixture/etc/syntaur/release-authority-replacement-v1.rollback-receipt.json
+state_cosign=$state_fixture/bin/cosign
+state_payload=$state_fixture/payload
+install -d -m 0700 \
+    "$state_sources/predecessor" "$state_sources/rejected" \
+    "$state_sources/selected" "$state_sources/resolution" \
+    "$state_operator_home" "$state_operator_home/.syntaur" \
+    "$state_operator_state" "$state_operator_state/deploy-stamp.generations" \
+    "$state_payload" "$(dirname "$state_cosign")"
+install -d -m 0755 "$state_artifact_root" \
+    "$(dirname "$state_global_lock")" "$(dirname "$state_shipper")" \
+    "$(dirname "$state_provisioner")"
+install -m 0555 /usr/bin/true \
+    "$state_payload/syntaur-ship-linux-x86_64"
+install -m 0555 /usr/bin/true \
+    "$state_payload/syntaur-verify-linux-x86_64"
+printf '#!/usr/bin/bash\nexit 0\n' \
+    >"$state_payload/syntaur-build-authority-provision"
+chmod 0555 "$state_payload/syntaur-build-authority-provision"
+printf '#!/usr/bin/bash\nexit 0\n' >"$state_cosign"
+chmod 0555 "$state_cosign"
+
+state_pred_workflow=$(printf '1%.0s' {1..40})
+state_selected_workflow=$(printf '2%.0s' {1..40})
+state_rejected_workflow=$(printf '3%.0s' {1..40})
+state_resolution_workflow=$(printf '4%.0s' {1..40})
+state_pred_commit=$(printf '5%.0s' {1..40})
+state_selected_commit=$(printf '6%.0s' {1..40})
+state_rejected_commit=$(printf '7%.0s' {1..40})
+state_rejected_product_commit=$(printf '8%.0s' {1..40})
+state_gateway_commit=$(printf '9%.0s' {1..40})
+state_engine_commit=$(printf 'a%.0s' {1..40})
+state_selected_engine_commit=$(printf 'b%.0s' {1..40})
+state_gateway_sha=$(digest_text state-gateway)
+state_browser_sha=$(digest_text state-browser)
+state_production_id=$(digest_text state-production)
+state_deploy_generation="g-b-$(digest_text state-source)-$(digest_text state-engine)"
+state_product_digest=$({
+    printf '%s\0' syntaur-exact-terminal-production-state-v1
+    printf '%s\0' 0.7.116 "$state_gateway_commit" "$state_engine_commit" \
+        "$state_deploy_generation" "$state_gateway_sha" \
+        "$state_browser_sha" "$state_production_id"
+} | sha256sum | awk '{print $1}')
+state_policy_digest=$(digest_text state-promotion-policy)
+
+SHIPPER_SHA256=$(sha256sum "$state_payload/syntaur-ship-linux-x86_64" \
+    | awk '{print $1}')
+VERIFIER_SHA256=$(sha256sum "$state_payload/syntaur-verify-linux-x86_64" \
+    | awk '{print $1}')
+PROVISIONER_SHA256=$(sha256sum \
+    "$state_payload/syntaur-build-authority-provision" | awk '{print $1}')
+VERIFICATION_POLICY_REVISION=$(printf 'c%.0s' {1..40})
+AUTHORITY_TREE_SHA256=$(digest_text state-authority-tree)
+VERIFIER_TOOLCHAIN_ID=rust-1.94.1-x86_64-unknown-linux-gnu
+VERIFIER_CARGO_SHA256=$(digest_text state-cargo)
+VERIFIER_RUSTC_SHA256=$(digest_text state-rustc)
+VERIFIER_RUSTDOC_SHA256=$(digest_text state-rustdoc)
+BASELINE_PROFILE=mac-isolated-v1
+BASELINE_GENERATION='generation-state'
+BASELINE_TREE_SHA256=$(digest_text state-baseline)
+BROWSER_BUNDLE_SHA256=$(digest_text state-browser-bundle)
+BROWSER_VERSION='Google Chrome for Testing 131.0.6778.264'
+BROWSER_LAUNCH_PROFILE_SHA256=$(digest_text state-browser-launch)
+VERIFIER_SCHEMA=5
+PRODUCTION_CONTRACT_SHA256=$(digest_text state-production-contract)
+PRODUCTION_MEMBER_COUNT=12
+RECEIPT_SCHEMA=6
+BUILD_AUTHORITY_SCHEMA=4
+PROMOTION_RECOVERY_SCHEMA=1
+PROMOTION_RECOVERY_SHA256=$(digest_text state-promotion-recovery)
+export SHIPPER_SHA256 VERIFIER_SHA256 PROVISIONER_SHA256
+export VERIFICATION_POLICY_REVISION AUTHORITY_TREE_SHA256
+export VERIFIER_TOOLCHAIN_ID VERIFIER_CARGO_SHA256 VERIFIER_RUSTC_SHA256
+export VERIFIER_RUSTDOC_SHA256 BASELINE_PROFILE BASELINE_GENERATION
+export BASELINE_TREE_SHA256 BROWSER_BUNDLE_SHA256 BROWSER_VERSION
+export BROWSER_LAUNCH_PROFILE_SHA256 VERIFIER_SCHEMA
+export PRODUCTION_CONTRACT_SHA256 PRODUCTION_MEMBER_COUNT RECEIPT_SCHEMA
+export BUILD_AUTHORITY_SCHEMA PROMOTION_RECOVERY_SCHEMA PROMOTION_RECOVERY_SHA256
+
+render_state_authority() {
+    local directory=$1 generation=$2 previous_generation=$3 previous_sha=$4
+    local workflow=$5 version=$6 authority_commit=$7
+    AUTHORITY_GENERATION=$generation
+    PREVIOUS_AUTHORITY_GENERATION=$previous_generation
+    PREVIOUS_AUTHORITY_MANIFEST_SHA256=$previous_sha
+    GITHUB_SHA=$workflow
+    AUTHORITY_VERSION=$version
+    AUTHORITY_COMMIT=$authority_commit
+    export AUTHORITY_GENERATION PREVIOUS_AUTHORITY_GENERATION
+    export PREVIOUS_AUTHORITY_MANIFEST_SHA256 GITHUB_SHA
+    export AUTHORITY_VERSION AUTHORITY_COMMIT
+    "$helper" render-v2 "$directory/release-authority-v2.json"
+    install -m 0555 \
+        "$state_payload/syntaur-build-authority-provision" \
+        "$state_payload/syntaur-ship-linux-x86_64" \
+        "$state_payload/syntaur-verify-linux-x86_64" "$directory/"
+    printf '{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","workflow":"%s"}\n' \
+        "$workflow" >"$directory/release-authority-v2.json.cosign.bundle"
+    chmod 0444 "$directory/release-authority-v2.json" \
+        "$directory/release-authority-v2.json.cosign.bundle"
+    "$helper" validate "$directory/release-authority-v2.json" 2 \
+        "$generation" "$workflow" "$directory"
+}
+
+state_previous_sha=$(digest_text state-generation-58)
+render_state_authority "$state_sources/predecessor" 59 58 \
+    "$state_previous_sha" "$state_pred_workflow" 0.7.116 "$state_pred_commit"
+state_pred_sha=$(sha256sum "$state_sources/predecessor/release-authority-v2.json" \
+    | awk '{print $1}')
+render_state_authority "$state_sources/rejected" 60 59 \
+    "$state_pred_sha" "$state_rejected_workflow" 0.7.115 "$state_rejected_commit"
+render_state_authority "$state_sources/selected" 60 59 \
+    "$state_pred_sha" "$state_selected_workflow" 0.7.116 "$state_selected_commit"
+state_rejected_sha=$(sha256sum "$state_sources/rejected/release-authority-v2.json" \
+    | awk '{print $1}')
+state_selected_sha=$(sha256sum "$state_sources/selected/release-authority-v2.json" \
+    | awk '{print $1}')
+
+state_tool=$state_runtime/recover-release-authority-replacement-v1.sh
+state_helper=$state_sources/resolution/release-authority-manifest.sh
+install -d -m 0700 "$state_runtime"
+sed \
+    -e "s|^readonly COSIGN=.*|readonly COSIGN=$state_cosign|" \
+    -e "s|^readonly COSIGN_SHA256=.*|readonly COSIGN_SHA256=$(sha256sum "$state_cosign" | awk '{print $1}')|" \
+    -e "s|^readonly AUTHORITY_ROOT=.*|readonly AUTHORITY_ROOT=$state_authority_root|" \
+    -e "s|^readonly INSTALLED_SHIPPER=.*|readonly INSTALLED_SHIPPER=$state_shipper|" \
+    -e "s|^readonly INSTALLED_PROVISIONER=.*|readonly INSTALLED_PROVISIONER=$state_provisioner|" \
+    -e "s|^readonly GLOBAL_MUTATION_LOCK=.*|readonly GLOBAL_MUTATION_LOCK=$state_global_lock|" \
+    -e "s|^readonly INSTALL_RECEIPT=.*|readonly INSTALL_RECEIPT=$state_install_receipt|" \
+    -e "s|^readonly ROLLBACK_RECEIPT=.*|readonly ROLLBACK_RECEIPT=$state_rollback_receipt|" \
+    -e "s|^readonly SEALED_RUNTIME_ROOT=.*|readonly SEALED_RUNTIME_ROOT=$state_runtime|" \
+    -e "s|^    sync_path /etc/syntaur$|    sync_path $state_fixture/etc/syntaur|" \
+    -e "s|^    operator_state=.*|    operator_state=$state_operator_state|" \
+    "$recovery_tool" \
+    | awk -v operator_home="$state_operator_home" '
+        /^    operator_home=\$\(\/usr\/bin\/getent passwd/ {
+            print "    operator_home=" operator_home
+            replacing_lookup=1
+            next
+        }
+        replacing_lookup {
+            if (/sudo operator account lookup failed/) replacing_lookup=0
+            next
+        }
+        /^run_operator_product_state_proof\(\) \{/ {
+            print
+            print "    :"
+            replacing_proof=1
+            next
+        }
+        replacing_proof {
+            if (/^}/) {
+                print
+                replacing_proof=0
+            }
+            next
+        }
+        { print }
+    ' >"$state_tool"
+chmod 0500 "$state_tool"
+install -m 0500 "$state_tool" \
+    "$state_sources/resolution/recover-release-authority-replacement-v1.sh"
+install -m 0500 "$helper" "$state_helper"
+
+REPLACEMENT_PREDECESSOR_GENERATION=59
+REPLACEMENT_PREDECESSOR_MANIFEST_SHA256=$state_pred_sha
+REJECTED_AUTHORITY_GENERATION=60
+REJECTED_AUTHORITY_MANIFEST_SHA256=$state_rejected_sha
+REJECTED_AUTHORITY_WORKFLOW_COMMIT=$state_rejected_workflow
+REJECTED_AUTHORITY_VERSION=0.7.115
+REJECTED_AUTHORITY_COMMIT=$state_rejected_commit
+REJECTED_PRODUCT_RELEASE_COMMIT=$state_rejected_product_commit
+SELECTED_AUTHORITY_GENERATION=60
+SELECTED_AUTHORITY_MANIFEST_SHA256=$state_selected_sha
+SELECTED_AUTHORITY_WORKFLOW_COMMIT=$state_selected_workflow
+SELECTED_AUTHORITY_VERSION=0.7.116
+SELECTED_AUTHORITY_COMMIT=$state_selected_commit
+SETTLED_PRODUCT_VERSION=0.7.116
+SETTLED_PRODUCT_GATEWAY_COMMIT=$state_gateway_commit
+SETTLED_PRODUCT_ENGINE_COMMIT=$state_engine_commit
+SETTLED_PRODUCT_STATE_SHA256=$state_product_digest
+SETTLED_PROMOTION_POLICY_SHA256=$state_policy_digest
+SELECTED_ENGINE_COMMIT=$state_selected_engine_commit
+PLANNED_PRODUCT_VERSION=0.7.117
+PLANNED_PRODUCT_BASE_COMMIT=$state_selected_commit
+RECOVERY_TOOL_SHA256=$(sha256sum "$state_tool" | awk '{print $1}')
+MANIFEST_HELPER_SHA256=$(sha256sum "$state_helper" | awk '{print $1}')
+RESOLUTION_WORKFLOW_COMMIT=$state_resolution_workflow
+export REPLACEMENT_PREDECESSOR_GENERATION
+export REPLACEMENT_PREDECESSOR_MANIFEST_SHA256
+export REJECTED_AUTHORITY_GENERATION REJECTED_AUTHORITY_MANIFEST_SHA256
+export REJECTED_AUTHORITY_WORKFLOW_COMMIT REJECTED_AUTHORITY_VERSION
+export REJECTED_AUTHORITY_COMMIT REJECTED_PRODUCT_RELEASE_COMMIT
+export SELECTED_AUTHORITY_GENERATION SELECTED_AUTHORITY_MANIFEST_SHA256
+export SELECTED_AUTHORITY_WORKFLOW_COMMIT SELECTED_AUTHORITY_VERSION
+export SELECTED_AUTHORITY_COMMIT SETTLED_PRODUCT_VERSION
+export SETTLED_PRODUCT_GATEWAY_COMMIT SETTLED_PRODUCT_ENGINE_COMMIT
+export SETTLED_PRODUCT_STATE_SHA256 SETTLED_PROMOTION_POLICY_SHA256
+export SELECTED_ENGINE_COMMIT PLANNED_PRODUCT_VERSION PLANNED_PRODUCT_BASE_COMMIT
+export RECOVERY_TOOL_SHA256 MANIFEST_HELPER_SHA256 RESOLUTION_WORKFLOW_COMMIT
+"$helper" render-selection-review \
+    "$state_sources/resolution/release-authority-selection-review-v1.json"
+SELECTION_REVIEW_SHA256=$(sha256sum \
+    "$state_sources/resolution/release-authority-selection-review-v1.json" \
+    | awk '{print $1}')
+export SELECTION_REVIEW_SHA256
+state_correction=$state_sources/resolution/release-authority-resolution-correction-v1.json
+jq -cjn \
+    --arg pred_sha "$state_pred_sha" \
+    --arg selected_sha "$state_selected_sha" \
+    --arg product_sha "$state_product_digest" \
+    --arg tool_sha "$RECOVERY_TOOL_SHA256" \
+    --arg helper_sha "$MANIFEST_HELPER_SHA256" \
+    --arg superseded_resolution_sha "$(digest_text state-superseded-resolution)" \
+    --arg superseded_tool_sha "$(digest_text state-superseded-tool)" \
+    --arg superseded_helper_sha "$(digest_text state-superseded-helper)" \
+    '{schema:1,generation:60,resolution_revision:2,
+      resolution_tag:"authority-resolution-v1-g60-r2",
+      supersedes_resolution_tag:"authority-resolution-v1-g60",
+      supersedes_resolution_sha256:$superseded_resolution_sha,
+      superseded_resolution_workflow_commit:"1111111111111111111111111111111111111111",
+      superseded_recovery_tool_sha256:$superseded_tool_sha,
+      superseded_manifest_helper_sha256:$superseded_helper_sha,
+      corrected_recovery_tool_sha256:$tool_sha,
+      corrected_manifest_helper_sha256:$helper_sha,
+      active_generation:59,active_manifest_sha256:$pred_sha,
+      active_product_state_sha256:$product_sha,
+      selected_manifest_sha256:$selected_sha,
+      correction_reason:"recovery_tool_execution_failure",
+      failure_class:"bash_dynamic_scope_unbound_operation",
+      failure_stage:"sealed_input_revalidation",
+      authority_mutated:false,product_state_mutated:false,
+      normal_promotion_journal_present:false,
+      normal_promotion_journal_temp_present:false,
+      install_journal_present:false,install_journal_temp_present:false,
+      rollback_journal_present:false,rollback_journal_temp_present:false,
+      install_receipt_present:false,rollback_receipt_present:false,
+      resolution_receipt_present:false}' >"$state_correction"
+"$helper" validate-resolution-correction-review "$state_correction"
+RESOLUTION_REVISION=2
+SUPERSEDES_RESOLUTION_TAG=authority-resolution-v1-g60
+SUPERSEDES_RESOLUTION_SHA256=$(jq -er '.supersedes_resolution_sha256' \
+    "$state_correction")
+SUPERSEDED_RECOVERY_TOOL_SHA256=$(jq -er '.superseded_recovery_tool_sha256' \
+    "$state_correction")
+CORRECTION_REVIEW_SHA256=$(sha256sum "$state_correction" | awk '{print $1}')
+export RESOLUTION_REVISION SUPERSEDES_RESOLUTION_TAG
+export SUPERSEDES_RESOLUTION_SHA256 SUPERSEDED_RECOVERY_TOOL_SHA256
+export CORRECTION_REVIEW_SHA256
+"$helper" render-replacement-resolution \
+    "$state_sources/resolution/release-authority-replacement-v1.json"
+printf '{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}\n' \
+    >"$state_sources/resolution/release-authority-replacement-v1.json.cosign.bundle"
+chmod 0400 "$state_sources/resolution/"*.json \
+    "$state_sources/resolution/"*.bundle
+"$helper" validate-replacement-resolution-assets "$state_sources/resolution"
+state_resolution_sha=$(sha256sum \
+    "$state_sources/resolution/release-authority-replacement-v1.json" \
+    | awk '{print $1}')
+RESOLUTION_SHA256=$state_resolution_sha
+export RESOLUTION_SHA256
+state_authorization=$state_runtime/release-authority-resolution-authorization-v1.json
+"$helper" render-resolution-correction-authorization "$state_authorization"
+chmod 0400 "$state_authorization"
+
+state_stamp_root=$state_operator_state/deploy-stamp.generations/$state_deploy_generation
+install -d -m 0700 "$state_stamp_root"
+printf 'authorized\n' >"$state_stamp_root/AUTHORIZED.json"
+jq -cjn \
+    --arg version 0.7.116 --arg git_head "$state_gateway_commit" \
+    --arg browser_git_head "$state_engine_commit" \
+    --arg gateway_sha256 "$state_gateway_sha" \
+    --arg browser_sha256 "$state_browser_sha" \
+    --arg production_generation_id "$state_production_id" \
+    '{version:$version,git_head:$git_head,browser_git_head:$browser_git_head,
+      gateway_sha256:$gateway_sha256,browser_sha256:$browser_sha256,
+      production_generation:{production_generation_id:$production_generation_id}}' \
+    >"$state_stamp_root/deploy-stamp.json"
+printf 'bundle\n' >"$state_stamp_root/deploy-stamp.json.cosign.bundle"
+chmod 0400 "$state_stamp_root/"*
+ln -s "deploy-stamp.generations/$state_deploy_generation" \
+    "$state_operator_state/deploy-stamp.current"
+ln -s deploy-stamp.current/deploy-stamp.json \
+    "$state_operator_state/deploy-stamp.json"
+ln -s deploy-stamp.current/deploy-stamp.json.cosign.bundle \
+    "$state_operator_state/deploy-stamp.json.cosign.bundle"
+printf '\n' >"$state_operator_state/deploy.lock"
+chmod 0600 "$state_operator_state/deploy.lock"
+
+sudo -n install -o 0 -g 0 -m 0444 \
+    "$state_sources/predecessor/release-authority-v2.json" \
+    "$state_authority_root/release-authority-v2.json"
+sudo -n install -o 0 -g 0 -m 0444 \
+    "$state_sources/predecessor/release-authority-v2.json.cosign.bundle" \
+    "$state_authority_root/release-authority-v2.json.cosign.bundle"
+sudo -n install -o 0 -g 0 -m 1755 \
+    "$state_sources/predecessor/syntaur-ship-linux-x86_64" "$state_shipper"
+sudo -n install -o 0 -g 0 -m 0755 \
+    "$state_sources/predecessor/syntaur-build-authority-provision" \
+    "$state_provisioner"
+printf '%s\n' "$state_pred_workflow" >"$state_fixture/trusted-workflow-commit"
+sudo -n install -o 0 -g 0 -m 0444 "$state_fixture/trusted-workflow-commit" \
+    "$state_authority_root/trusted-workflow-commit"
+: >"$state_global_lock"
+sudo -n chown -R 0:0 "$state_fixture/etc" "$state_fixture/usr" \
+    "$state_fixture/opt"
+sudo -n chown "0:$(id -g)" "$state_global_lock"
+sudo -n chmod 0440 "$state_global_lock"
+sudo -n chown -R "$(id -u):$(id -g)" "$state_operator_home"
+sudo -n chmod 0700 "$state_operator_home" "$state_operator_home/.syntaur" \
+    "$state_operator_state" "$state_operator_state/deploy-stamp.generations" \
+    "$state_stamp_root"
+sudo -n chmod 0400 "$state_stamp_root/"*
+sudo -n chmod 0600 "$state_operator_state/deploy.lock"
+
+state_helpers=$state_fixture/recovery-state-functions.sh
+sudo -n awk '
+    /^\[\[ \$# -ge 1 \]\] \|\| usage$/ { exit }
+    { print }
+' "$state_tool" | sudo -n tee "$state_helpers" >/dev/null
+sudo -n chmod 0500 "$state_helpers"
+sudo -n env \
+    STATE_HELPERS="$state_helpers" STATE_SOURCES="$state_sources" \
+    STATE_PRED_SHA="$state_pred_sha" STATE_REJECTED_SHA="$state_rejected_sha" \
+    STATE_SELECTED_SHA="$state_selected_sha" \
+    STATE_RESOLUTION_SHA="$state_resolution_sha" \
+    STATE_TOOL_SHA="$(sudo -n sha256sum "$state_tool" | awk '{print $1}')" \
+    STATE_PRODUCT_SHA="$state_product_digest" \
+    STATE_OPERATOR_HOME="$state_operator_home" \
+    STATE_OPERATOR_STATE="$state_operator_state" \
+    STATE_UID="$(id -u)" STATE_GID="$(id -g)" STATE_USER="$(id -un)" \
+    /usr/bin/bash -c '
+        set -euo pipefail
+        source "$STATE_HELPERS"
+        predecessor_dir=$STATE_SOURCES/predecessor
+        rejected_dir=$STATE_SOURCES/rejected
+        selected_dir=$STATE_SOURCES/selected
+        resolution_dir=$STATE_SOURCES/resolution
+        expected_resolution_sha256=$STATE_RESOLUTION_SHA
+        expected_recovery_tool_sha256=$STATE_TOOL_SHA
+        expected_predecessor_sha256=$STATE_PRED_SHA
+        expected_rejected_sha256=$STATE_REJECTED_SHA
+        expected_selected_sha256=$STATE_SELECTED_SHA
+        SUDO_UID=$STATE_UID
+        SUDO_GID=$STATE_GID
+        SUDO_USER=$STATE_USER
+        operator_home=$STATE_OPERATOR_HOME
+        operator_state=$STATE_OPERATOR_STATE
+        verify_resolution_correction_state install "$STATE_PRED_SHA"
+        install_resolution_receipt
+        stage_generation "$predecessor_dir" \
+            "$(manifest_value "$predecessor_dir/$MANIFEST" workflow_commit)" 59
+        publish_mutation_fence "$STATE_PRODUCT_SHA"
+        write_install_journal prepared "$STATE_PRODUCT_SHA"
+    '
+
+run_state_recovery() {
+    local operation=$1
+    sudo -n env \
+        STATE_TOOL="$state_tool" STATE_SOURCES="$state_sources" \
+        STATE_TOOL_SHA="$(sudo -n sha256sum "$state_tool" | awk '{print $1}')" \
+        STATE_RESOLUTION_SHA="$state_resolution_sha" \
+        STATE_PRED_SHA="$state_pred_sha" STATE_REJECTED_SHA="$state_rejected_sha" \
+        STATE_SELECTED_SHA="$state_selected_sha" \
+        STATE_AUTHORIZATION="$state_authorization" \
+        STATE_OPERATION="$operation" \
+        STATE_UID="$(id -u)" STATE_GID="$(id -g)" STATE_USER="$(id -un)" \
+        /usr/bin/unshare --uts --fork /usr/bin/bash -c '
+            /usr/bin/hostname claudevm
+            /usr/bin/env -i \
+              SUDO_UID="$STATE_UID" SUDO_GID="$STATE_GID" SUDO_USER="$STATE_USER" \
+              PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+              "$STATE_TOOL" "$STATE_OPERATION" \
+                --predecessor-dir "$STATE_SOURCES/predecessor" \
+                --rejected-dir "$STATE_SOURCES/rejected" \
+                --selected-dir "$STATE_SOURCES/selected" \
+                --resolution-dir "$STATE_SOURCES/resolution" \
+                --expected-resolution-sha256 "$STATE_RESOLUTION_SHA" \
+                --expected-recovery-tool-sha256 "$STATE_TOOL_SHA" \
+                --expected-predecessor-manifest-sha256 "$STATE_PRED_SHA" \
+                --expected-rejected-manifest-sha256 "$STATE_REJECTED_SHA" \
+                --expected-selected-manifest-sha256 "$STATE_SELECTED_SHA" \
+                --correction-authorization "$STATE_AUTHORIZATION" \
+                --authorize-reason authority_target_mismatch
+        '
+}
+
+run_state_recovery install
+[[ $(sudo -n sha256sum "$state_authority_root/release-authority-v2.json" \
+    | awk '{print $1}') == "$state_selected_sha" ]] \
+    || fail 'schema-2 resumed install did not activate the selected authority'
+sudo -n test -f "$state_install_receipt" \
+    || fail 'schema-2 resumed install did not publish its receipt'
+sudo -n test ! -e "$state_authority_root/authority-replacement-v1-install.json" \
+    || fail 'schema-2 resumed install retained its journal'
+sudo -n env \
+    STATE_HELPERS="$state_helpers" STATE_SOURCES="$state_sources" \
+    STATE_PRED_SHA="$state_pred_sha" STATE_SELECTED_SHA="$state_selected_sha" \
+    /usr/bin/bash -c '
+        set -euo pipefail
+        source "$STATE_HELPERS"
+        predecessor_dir=$STATE_SOURCES/predecessor
+        rejected_dir=$STATE_SOURCES/rejected
+        selected_dir=$STATE_SOURCES/selected
+        resolution_dir=$STATE_SOURCES/resolution
+        expected_predecessor_sha256=$STATE_PRED_SHA
+        expected_selected_sha256=$STATE_SELECTED_SHA
+        phase_shadow_probe() {
+            local phase
+            validate_rollback_phase_state prepared
+        }
+        phase_shadow_probe
+    '
+run_state_recovery install
+run_state_recovery rollback
+[[ $(sudo -n sha256sum "$state_authority_root/release-authority-v2.json" \
+    | awk '{print $1}') == "$state_pred_sha" ]] \
+    || fail 'schema-2 rollback did not restore the predecessor authority'
+sudo -n test -f "$state_rollback_receipt" \
+    || fail 'schema-2 rollback did not publish its receipt'
+run_state_recovery rollback
 
 digest_vector=$(/usr/bin/env RECOVERY_HELPERS="$root_helpers" /usr/bin/bash -c '
     source "$RECOVERY_HELPERS"
