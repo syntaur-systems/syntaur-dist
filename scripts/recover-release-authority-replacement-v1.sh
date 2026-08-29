@@ -25,7 +25,13 @@ readonly INSTALL_RECEIPT=/etc/syntaur/release-authority-replacement-v1.receipt.j
 readonly ROLLBACK_RECEIPT=/etc/syntaur/release-authority-replacement-v1.rollback-receipt.json
 readonly PRODUCT_STATE_PROOF_TEMP=$AUTHORITY_ROOT/.authority-replacement-product-state-v1.tmp
 readonly RESOLUTION_PARENT=$AUTHORITY_ROOT/replacement-resolution-v1
-readonly SEALED_RUNTIME_ROOT=/etc/syntaur/release-authority-replacement-v1.runtime
+readonly SEALED_RUNTIME_ROOT=/etc/syntaur/release-authority-replacement-v1-r3.runtime
+readonly SUPERSEDED_SEALED_RUNTIME_ROOT=/etc/syntaur/release-authority-replacement-v1.runtime
+readonly PROOF_HELPER_PARENT=/usr/local/libexec
+readonly PROOF_HELPER_ROOT=$PROOF_HELPER_PARENT/syntaur-authority-replacement-proof-v1
+readonly PROOF_HELPER_STAGE=$PROOF_HELPER_PARENT/.syntaur-authority-replacement-proof-v1.staged
+readonly PROOF_HELPER_NAME=syntaur-ship
+readonly PROOF_HELPER_ASSET=syntaur-authority-replacement-proof-linux-x86_64
 readonly CORRECTION_AUTHORIZATION_NAME=release-authority-resolution-authorization-v1.json
 readonly SEALED_CORRECTION_AUTHORIZATION=$SEALED_RUNTIME_ROOT/$CORRECTION_AUTHORIZATION_NAME
 readonly SEALED_INPUTS=$SEALED_RUNTIME_ROOT/inputs
@@ -187,6 +193,9 @@ resolution_data_names() {
     /usr/bin/printf '%s\n' "$SELECTION_REVIEW" "$RESOLUTION" "$RESOLUTION_BUNDLE"
     if [[ $schema == 2 ]]; then
         /usr/bin/printf '%s\n' "$CORRECTION_REVIEW"
+        if [[ $(resolution_revision "$record") == 3 ]]; then
+            /usr/bin/printf '%s\n' "$PROOF_HELPER_ASSET"
+        fi
     fi
 }
 
@@ -232,7 +241,11 @@ validate_resolution_inline() {
         (.planned_product_base_commit | commit) and
         (.settled_product_version == .selected_authority_version) and
         (.settled_product_gateway_commit != .selected_authority_commit) and
-        (.planned_product_base_commit == .selected_authority_commit) and
+        (if .schema == 2 and .resolution_revision == 3 then
+           .planned_product_base_commit == .proof_helper_source_commit
+         else
+           .planned_product_base_commit == .selected_authority_commit
+         end) and
         ((.selected_authority_version | split(".") | map(tonumber)) as $selected |
          (.planned_product_version | split(".") | map(tonumber)) as $planned |
          ($planned[0] == $selected[0]) and
@@ -247,15 +260,42 @@ validate_resolution_inline() {
              has("superseded_recovery_tool_sha256") or
              has("correction_reason") or has("correction_review_sha256")) | not)
          else
-           (.resolution_revision | type == "number" and . >= 2 and floor == .) and
+           (.resolution_revision | type == "number" and . >= 2 and . <= 3 and floor == .) and
            (.supersedes_resolution_tag ==
              ("authority-resolution-v1-g" + (.selected_generation | tostring) +
               (if .resolution_revision == 2 then ""
                else "-r" + ((.resolution_revision - 1) | tostring) end))) and
            (.supersedes_resolution_sha256 | digest) and
            (.superseded_recovery_tool_sha256 | digest) and
-           (.correction_reason == "recovery_tool_execution_failure") and
-           (.correction_review_sha256 | digest)
+           (.correction_review_sha256 | digest) and
+           (if .resolution_revision == 2 then
+              (.correction_reason == "recovery_tool_execution_failure") and
+              ((has("proof_helper_source_commit") or
+                has("proof_helper_source_tree_sha256") or
+                has("proof_helper_sha256") or
+                has("proof_helper_control_plane_sha256") or
+                has("proof_helper_toolchain_sha256") or
+                has("proof_helper_rustflags_sha256") or
+                has("proof_helper_build_target") or
+                has("proof_helper_build_profile") or
+                has("proof_helper_build_clean") or
+                has("proof_helper_execution_path") or
+                has("proof_helper_protocol_sha256")) | not)
+            else
+              (.correction_reason == "product_state_proof_execution_failure") and
+              (.proof_helper_source_commit | commit) and
+              (.proof_helper_source_tree_sha256 | digest) and
+              (.proof_helper_sha256 | digest) and
+              (.proof_helper_control_plane_sha256 | digest) and
+              (.proof_helper_toolchain_sha256 | digest) and
+              (.proof_helper_rustflags_sha256 | digest) and
+              (.proof_helper_build_target == "x86_64-unknown-linux-gnu") and
+              (.proof_helper_build_profile == "release") and
+              (.proof_helper_build_clean == "clean") and
+              (.proof_helper_execution_path ==
+                "/usr/local/libexec/syntaur-authority-replacement-proof-v1/syntaur-ship") and
+              (.proof_helper_protocol_sha256 | digest)
+            end)
          end)
     ' "$record" >/dev/null || die 'signed replacement resolution is malformed'
 }
@@ -291,12 +331,15 @@ verify_correction_authorization() {
     fi
     "$resolution_dir/$MANIFEST_HELPER" validate-resolution-correction-authorization \
         "$correction_authorization"
-    local revision resolution_tag correction_sha
+    local revision resolution_tag correction_sha authorization_schema
     revision=$(resolution_revision "$record")
     resolution_tag=authority-resolution-v1-g$(resolution_value \
         "$record" selected_generation)-r${revision}
     correction_sha=$(sha256_file "$resolution_dir/$CORRECTION_REVIEW")
+    authorization_schema=1
+    [[ $revision == 3 ]] && authorization_schema=2
     /usr/bin/jq -e \
+        --argjson schema "$authorization_schema" \
         --argjson revision "$revision" \
         --arg resolution_tag "$resolution_tag" \
         --arg resolution_sha256 "$expected_resolution_sha256" \
@@ -307,7 +350,38 @@ verify_correction_authorization() {
         --arg supersedes_resolution_sha256 \
             "$(resolution_value "$record" supersedes_resolution_sha256)" \
         --arg selected_manifest_sha256 "$expected_selected_sha256" \
-        '.resolution_revision == $revision and
+        --arg active_install_journal_sha256 \
+            "$(resolution_value "$resolution_dir/$CORRECTION_REVIEW" active_install_journal_sha256 2>/dev/null || true)" \
+        --arg active_product_proof_temp_sha256 \
+            "$(resolution_value "$resolution_dir/$CORRECTION_REVIEW" active_product_proof_temp_sha256 2>/dev/null || true)" \
+        --arg sealed_inputs_resolution_sha256 \
+            "$(resolution_value "$resolution_dir/$CORRECTION_REVIEW" sealed_inputs_resolution_sha256 2>/dev/null || true)" \
+        --arg planned_product_base_commit \
+            "$(resolution_value "$record" planned_product_base_commit)" \
+        --arg proof_helper_source_commit \
+            "$(resolution_value "$record" proof_helper_source_commit 2>/dev/null || true)" \
+        --arg proof_helper_source_tree_sha256 \
+            "$(resolution_value "$record" proof_helper_source_tree_sha256 2>/dev/null || true)" \
+        --arg proof_helper_sha256 \
+            "$(resolution_value "$record" proof_helper_sha256 2>/dev/null || true)" \
+        --arg proof_helper_control_plane_sha256 \
+            "$(resolution_value "$record" proof_helper_control_plane_sha256 2>/dev/null || true)" \
+        --arg proof_helper_toolchain_sha256 \
+            "$(resolution_value "$record" proof_helper_toolchain_sha256 2>/dev/null || true)" \
+        --arg proof_helper_rustflags_sha256 \
+            "$(resolution_value "$record" proof_helper_rustflags_sha256 2>/dev/null || true)" \
+        --arg proof_helper_build_target \
+            "$(resolution_value "$record" proof_helper_build_target 2>/dev/null || true)" \
+        --arg proof_helper_build_profile \
+            "$(resolution_value "$record" proof_helper_build_profile 2>/dev/null || true)" \
+        --arg proof_helper_build_clean \
+            "$(resolution_value "$record" proof_helper_build_clean 2>/dev/null || true)" \
+        --arg proof_helper_execution_path \
+            "$(resolution_value "$record" proof_helper_execution_path 2>/dev/null || true)" \
+        --arg proof_helper_protocol_sha256 \
+            "$(resolution_value "$record" proof_helper_protocol_sha256 2>/dev/null || true)" \
+        '.schema == $schema and
+         .resolution_revision == $revision and
          .resolution_tag == $resolution_tag and
          .resolution_sha256 == $resolution_sha256 and
          .resolution_workflow_commit == $workflow_commit and
@@ -316,7 +390,26 @@ verify_correction_authorization() {
          .correction_review_sha256 == $correction_review_sha256 and
          .supersedes_resolution_sha256 == $supersedes_resolution_sha256 and
          .selected_manifest_sha256 == $selected_manifest_sha256 and
-         .authorize_reason == "recovery_tool_execution_failure"' \
+         (if $revision == 2 then
+            .authorize_reason == "recovery_tool_execution_failure"
+          else
+            .authorize_reason == "product_state_proof_execution_failure" and
+            .active_install_journal_sha256 == $active_install_journal_sha256 and
+            .active_product_proof_temp_sha256 == $active_product_proof_temp_sha256 and
+            .sealed_inputs_resolution_sha256 == $sealed_inputs_resolution_sha256 and
+            .planned_product_base_commit == $planned_product_base_commit and
+            .proof_helper_source_commit == $proof_helper_source_commit and
+            .proof_helper_source_tree_sha256 == $proof_helper_source_tree_sha256 and
+            .proof_helper_sha256 == $proof_helper_sha256 and
+            .proof_helper_control_plane_sha256 == $proof_helper_control_plane_sha256 and
+            .proof_helper_toolchain_sha256 == $proof_helper_toolchain_sha256 and
+            .proof_helper_rustflags_sha256 == $proof_helper_rustflags_sha256 and
+            .proof_helper_build_target == $proof_helper_build_target and
+            .proof_helper_build_profile == $proof_helper_build_profile and
+            .proof_helper_build_clean == $proof_helper_build_clean and
+            .proof_helper_execution_path == $proof_helper_execution_path and
+            .proof_helper_protocol_sha256 == $proof_helper_protocol_sha256
+          end)' \
         "$correction_authorization" >/dev/null \
         || die 'correction authorization does not bind the exact corrected resolution'
 }
@@ -460,7 +553,7 @@ discard_incomplete_resolution_stage() {
         [[ -z $name ]] && continue
         case $name in
             "$SELECTION_REVIEW"|"$CORRECTION_REVIEW"|\
-            "$RESOLUTION"|"$RESOLUTION_BUNDLE") ;;
+            "$RESOLUTION"|"$RESOLUTION_BUNDLE"|"$PROOF_HELPER_ASSET") ;;
             *) die 'incomplete replacement receipt stage contains an unexpected entry' ;;
         esac
         [[ -f $stage/$name && ! -L $stage/$name ]] \
@@ -639,7 +732,8 @@ prepare_stage_leaf() {
             'sealed resolution':release-authority-selection-review-v1.json|\
             'sealed resolution':release-authority-resolution-correction-v1.json|\
             'sealed resolution':release-authority-replacement-v1.json|\
-            'sealed resolution':release-authority-replacement-v1.json.cosign.bundle) ;;
+            'sealed resolution':release-authority-replacement-v1.json.cosign.bundle|\
+            'sealed resolution':syntaur-authority-replacement-proof-linux-x86_64) ;;
             *) die "$label contains an unexpected staged entry" ;;
         esac
         [[ -f $directory/$name && ! -L $directory/$name ]] \
@@ -794,6 +888,108 @@ verify_resolution_correction_initial_prestate() {
     done
 }
 
+verify_resolution_correction_r3_state() {
+    local operation=$1 active_manifest_sha256=$2 product_digest=$3 correction=$4
+    local record=$resolution_dir/$RESOLUTION generation origin_root origin_record
+    local origin_receipt r3_receipt actual expected name
+    [[ $operation == install ]] \
+        || die 'r3 product-proof correction authorizes forward completion only'
+    [[ $active_manifest_sha256 == "$expected_selected_sha256" \
+        && $active_manifest_sha256 == \
+            "$(resolution_value "$correction" active_manifest_sha256)" ]] \
+        || die 'r3 correction active authority differs from the reviewed G60 state'
+    [[ $(manifest_value "$AUTHORITY_ROOT/$MANIFEST" generation) == \
+        "$(resolution_value "$correction" active_generation)" ]] \
+        || die 'r3 correction active generation differs from the reviewed G60 state'
+    [[ $product_digest == \
+        "$(resolution_value "$correction" active_product_state_sha256)" ]] \
+        || die 'r3 correction product state moved from its reviewed prestate'
+    [[ $(sha256_file "$INSTALL_JOURNAL") == \
+        "$(resolution_value "$correction" active_install_journal_sha256)" ]] \
+        || die 'r3 correction install journal differs from the reviewed failure'
+    [[ $(/usr/bin/jq -er '.phase' "$INSTALL_JOURNAL") == \
+        "$(resolution_value "$correction" active_install_journal_phase)" ]] \
+        || die 'r3 correction install phase differs from the reviewed failure'
+    [[ -e $NORMAL_PROMOTION_JOURNAL && ! -L $NORMAL_PROMOTION_JOURNAL \
+        && -e $INSTALL_JOURNAL && ! -L $INSTALL_JOURNAL ]] \
+        || die 'r3 correction lacks the reviewed mutation fence and install journal'
+    for name in "$NORMAL_PROMOTION_JOURNAL_TEMP" "$INSTALL_JOURNAL_TEMP" \
+        "$ROLLBACK_JOURNAL" "$ROLLBACK_JOURNAL_TEMP" \
+        "$ROLLBACK_RECEIPT"; do
+        [[ ! -e $name && ! -L $name ]] \
+            || die 'r3 correction encountered unreviewed mutation state'
+    done
+
+    generation=$(resolution_value "$record" selected_generation)
+    origin_root=$SUPERSEDED_SEALED_RUNTIME_ROOT/inputs/resolution
+    origin_record=$origin_root/$RESOLUTION
+    require_root_directory "$SUPERSEDED_SEALED_RUNTIME_ROOT" \
+        'superseded sealed replacement runtime'
+    [[ $(/usr/bin/stat -c '%a' "$SUPERSEDED_SEALED_RUNTIME_ROOT") == 700 ]] \
+        || die 'superseded sealed replacement runtime mode differs'
+    require_root_directory "$SUPERSEDED_SEALED_RUNTIME_ROOT/inputs" \
+        'superseded sealed replacement inputs'
+    require_root_directory "$origin_root" 'superseded sealed resolution'
+    require_root_file "$origin_record" 400 'superseded sealed signed resolution'
+    require_root_file "$origin_root/$RESOLUTION_BUNDLE" 400 \
+        'superseded sealed signed resolution bundle'
+    [[ $(sha256_file "$origin_record") == \
+            "$(resolution_value "$correction" sealed_inputs_resolution_sha256)" \
+        && $(sha256_file "$origin_record") == \
+            "$(resolution_value "$record" supersedes_resolution_sha256)" ]] \
+        || die 'r3 correction superseded sealed resolution differs'
+    validate_resolution_inline "$origin_record"
+    [[ $(resolution_revision "$origin_record") == 2 \
+        && $(resolution_value "$origin_record" selected_generation) == "$generation" \
+        && $(resolution_value "$origin_record" selected_manifest_sha256) == \
+            "$expected_selected_sha256" ]] \
+        || die 'r3 correction superseded resolution is not exact G60 r2'
+    verify_cosign "$origin_record" "$origin_root/$RESOLUTION_BUNDLE" \
+        "$(resolution_value "$origin_record" resolution_workflow_commit)" \
+        'superseded sealed G60 r2 resolution'
+
+    origin_receipt=$RESOLUTION_PARENT/generation-$generation-r2
+    require_root_directory "$origin_receipt" 'G60 r2 resolution receipt'
+    [[ $(/usr/bin/stat -c '%a' "$origin_receipt") == 700 ]] \
+        || die 'G60 r2 resolution receipt mode differs'
+    actual=$(/usr/bin/find "$origin_receipt" -mindepth 1 -maxdepth 1 \
+        -printf '%f\n' | LC_ALL=C /usr/bin/sort)
+    expected=$(resolution_data_names "$origin_record" | LC_ALL=C /usr/bin/sort)
+    [[ $actual == "$expected" ]] || die 'G60 r2 resolution receipt is inexact'
+    while IFS= read -r name; do
+        require_root_file "$origin_receipt/$name" 444 "G60 r2 receipt $name"
+        /usr/bin/cmp -s "$origin_receipt/$name" "$origin_root/$name" \
+            || die "G60 r2 receipt $name differs from sealed signed input"
+    done < <(resolution_data_names "$origin_record")
+
+    r3_receipt=$RESOLUTION_PARENT/generation-$generation-r3
+    if [[ -e $r3_receipt || -L $r3_receipt ]]; then
+        install_resolution_receipt
+        if [[ -e $INSTALL_RECEIPT || -L $INSTALL_RECEIPT ]]; then
+            validate_install_receipt "$product_digest"
+        fi
+        if [[ -e $PRODUCT_STATE_PROOF_TEMP || -L $PRODUCT_STATE_PROOF_TEMP ]]; then
+            require_root_file "$PRODUCT_STATE_PROOF_TEMP" 600 \
+                'resumed r3 product-state proof temporary'
+            [[ $(/usr/bin/stat -c '%s' "$PRODUCT_STATE_PROOF_TEMP") -le 16384 ]] \
+                || die 'resumed r3 product-state proof temporary is oversized'
+        fi
+    else
+        [[ ! -e $INSTALL_RECEIPT && ! -L $INSTALL_RECEIPT ]] \
+            || die 'r3 install receipt exists before its signed resolution receipt'
+        require_root_file "$PRODUCT_STATE_PROOF_TEMP" 600 \
+            'reviewed failed product-state proof temporary'
+        [[ $(sha256_file "$PRODUCT_STATE_PROOF_TEMP") == \
+                "$(resolution_value "$correction" active_product_proof_temp_sha256)" \
+            && $(/usr/bin/stat -c '%s' "$PRODUCT_STATE_PROOF_TEMP") == \
+                "$(resolution_value "$correction" active_product_proof_temp_size)" ]] \
+            || die 'r3 correction product-state proof failure evidence differs'
+    fi
+    validate_mutation_fence "$product_digest"
+    validate_current_install_state "$product_digest"
+    validate_selected_active
+}
+
 verify_resolution_correction_state() {
     local operation=$1 active_manifest_sha256=$2
     local record=$resolution_dir/$RESOLUTION schema correction product_digest
@@ -806,6 +1002,11 @@ verify_resolution_correction_state() {
     [[ $product_digest == \
         "$(resolution_value "$correction" active_product_state_sha256)" ]] \
         || die 'corrected resolution product state moved from its reviewed prestate'
+    if [[ $(resolution_revision "$record") == 3 ]]; then
+        verify_resolution_correction_r3_state \
+            "$operation" "$active_manifest_sha256" "$product_digest" "$correction"
+        return
+    fi
     resolution_receipt=$(resolution_receipt_directory)
     normal_journal=false
     install_journal=false
@@ -1053,37 +1254,162 @@ product_state_digest() {
         "$deploy_stamp_generation" "$gateway_sha" "$browser_sha" "$production_id"
 }
 
+require_proof_helper_parent() {
+    local path metadata mode
+    for path in /usr /usr/local "$PROOF_HELPER_PARENT"; do
+        [[ -d $path && ! -L $path ]] \
+            || die 'proof-helper parent chain is not a real directory'
+        metadata=$(/usr/bin/stat -c '%u:%g' "$path")
+        [[ $metadata == 0:0 ]] || die 'proof-helper parent chain is not root owned'
+        mode=$(/usr/bin/stat -c '%a' "$path")
+        (( (8#$mode & 8#022) == 0 )) \
+            || die 'proof-helper parent chain is group/world writable'
+    done
+}
+
+validate_installed_proof_helper() {
+    local actual expected record=$resolution_dir/$RESOLUTION
+    require_proof_helper_parent
+    require_root_directory "$PROOF_HELPER_ROOT" 'installed replacement proof helper root'
+    [[ $(/usr/bin/stat -c '%a' "$PROOF_HELPER_ROOT") == 755 ]] \
+        || die 'installed replacement proof helper root mode differs'
+    actual=$(/usr/bin/find "$PROOF_HELPER_ROOT" -mindepth 1 -maxdepth 1 \
+        -printf '%f\n' | LC_ALL=C /usr/bin/sort)
+    expected=$(/usr/bin/printf '%s\n' \
+        "$PROOF_HELPER_NAME" "$RESOLUTION" "$RESOLUTION_BUNDLE" \
+        | LC_ALL=C /usr/bin/sort)
+    [[ $actual == "$expected" ]] || die 'installed replacement proof helper is inexact'
+    require_root_file "$PROOF_HELPER_ROOT/$PROOF_HELPER_NAME" 555 \
+        'installed replacement proof helper'
+    require_root_file "$PROOF_HELPER_ROOT/$RESOLUTION" 444 \
+        'installed replacement proof resolution'
+    require_root_file "$PROOF_HELPER_ROOT/$RESOLUTION_BUNDLE" 444 \
+        'installed replacement proof resolution bundle'
+    [[ $(sha256_file "$PROOF_HELPER_ROOT/$PROOF_HELPER_NAME") == \
+            "$(resolution_value "$record" proof_helper_sha256)" \
+        && $(sha256_file "$PROOF_HELPER_ROOT/$RESOLUTION") == \
+            "$expected_resolution_sha256" ]] \
+        || die 'installed replacement proof helper differs from the signed r3 resolution'
+    /usr/bin/cmp -s "$PROOF_HELPER_ROOT/$RESOLUTION" \
+        "$resolution_dir/$RESOLUTION" \
+        || die 'installed replacement proof resolution bytes differ'
+    /usr/bin/cmp -s "$PROOF_HELPER_ROOT/$RESOLUTION_BUNDLE" \
+        "$resolution_dir/$RESOLUTION_BUNDLE" \
+        || die 'installed replacement proof resolution bundle differs'
+}
+
+discard_proof_helper_stage() {
+    local actual name mode
+    [[ -e $PROOF_HELPER_STAGE || -L $PROOF_HELPER_STAGE ]] || return 0
+    require_root_directory "$PROOF_HELPER_STAGE" 'replacement proof helper stage'
+    mode=$(/usr/bin/stat -c '%a' "$PROOF_HELPER_STAGE")
+    [[ $mode == 700 || $mode == 755 ]] \
+        || die 'replacement proof helper stage mode differs'
+    /usr/bin/chmod 0700 "$PROOF_HELPER_STAGE"
+    actual=$(/usr/bin/find "$PROOF_HELPER_STAGE" -mindepth 1 -maxdepth 1 \
+        -printf '%f\n' | LC_ALL=C /usr/bin/sort)
+    while IFS= read -r name; do
+        [[ -z $name ]] && continue
+        case $name in
+            "$PROOF_HELPER_NAME"|"$RESOLUTION"|"$RESOLUTION_BUNDLE") ;;
+            *) die 'replacement proof helper stage contains an unexpected entry' ;;
+        esac
+        [[ -f $PROOF_HELPER_STAGE/$name && ! -L $PROOF_HELPER_STAGE/$name \
+            && $(/usr/bin/stat -c '%u:%g:%h' "$PROOF_HELPER_STAGE/$name") == 0:0:1 ]] \
+            || die 'replacement proof helper stage entry is unsafe'
+        /usr/bin/rm -f -- "$PROOF_HELPER_STAGE/$name"
+    done <<<"$actual"
+    /usr/bin/rmdir -- "$PROOF_HELPER_STAGE"
+    sync_path "$PROOF_HELPER_PARENT"
+}
+
+install_proof_helper() {
+    local record=$resolution_dir/$RESOLUTION
+    [[ $(resolution_revision "$record") == 3 ]] \
+        || die 'proof helper installation requires an r3 signed resolution'
+    require_proof_helper_parent
+    if [[ -e $PROOF_HELPER_ROOT || -L $PROOF_HELPER_ROOT ]]; then
+        [[ ! -e $PROOF_HELPER_STAGE && ! -L $PROOF_HELPER_STAGE ]] \
+            || die 'proof-helper final and stage both exist'
+        validate_installed_proof_helper
+        return
+    fi
+    discard_proof_helper_stage
+    /usr/bin/install -d -o 0 -g 0 -m 0700 "$PROOF_HELPER_STAGE"
+    copy_to_stage "$resolution_dir/$PROOF_HELPER_ASSET" \
+        "$PROOF_HELPER_STAGE/$PROOF_HELPER_NAME" 555 268435456 \
+        'replacement proof helper'
+    copy_to_stage "$resolution_dir/$RESOLUTION" \
+        "$PROOF_HELPER_STAGE/$RESOLUTION" 444 32768 \
+        'replacement proof resolution'
+    copy_to_stage "$resolution_dir/$RESOLUTION_BUNDLE" \
+        "$PROOF_HELPER_STAGE/$RESOLUTION_BUNDLE" 444 4194304 \
+        'replacement proof resolution bundle'
+    /usr/bin/chmod 0755 "$PROOF_HELPER_STAGE"
+    sync_path "$PROOF_HELPER_STAGE"
+    /usr/bin/mv -T "$PROOF_HELPER_STAGE" "$PROOF_HELPER_ROOT"
+    sync_path "$PROOF_HELPER_PARENT"
+    validate_installed_proof_helper
+}
+
+retire_proof_helper() {
+    validate_installed_proof_helper
+    [[ ! -e $PROOF_HELPER_STAGE && ! -L $PROOF_HELPER_STAGE ]] \
+        || die 'proof-helper retirement stage already exists'
+    /usr/bin/mv -T "$PROOF_HELPER_ROOT" "$PROOF_HELPER_STAGE"
+    sync_path "$PROOF_HELPER_PARENT"
+    discard_proof_helper_stage
+}
+
 run_operator_product_state_proof() {
-    local signed_digest=$1 record output_size canonical
+    local signed_digest=$1 record output_size canonical revision
     local installed_generation installed_manifest installed_commit
     local version source_commit engine_commit deploy_generation
     local gateway_sha browser_sha production_id product_digest policy_digest
     record=$resolution_dir/$RESOLUTION
+    revision=$(resolution_revision "$record")
+    if [[ $revision == 3 ]]; then
+        install_proof_helper
+    fi
     discard_safe_root_temporary "$PRODUCT_STATE_PROOF_TEMP" 16384 \
         'authority replacement product-state proof temporary'
     (
         ulimit -f 32
-        /usr/bin/setpriv \
-            --reuid "$SUDO_UID" \
-            --regid "$SUDO_GID" \
-            --clear-groups \
-            /usr/bin/env -i \
-                HOME="$operator_home" USER="$SUDO_USER" LOGNAME="$SUDO_USER" \
-                PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-                LANG=C.UTF-8 LC_ALL=C.UTF-8 \
-                /usr/bin/timeout 300 \
-                "$INSTALLED_SHIPPER" authority-replacement-product-state \
-                --expected-installed-generation \
+        if [[ $revision == 3 ]]; then
+            /usr/bin/setpriv \
+                --reuid "$SUDO_UID" \
+                --regid "$SUDO_GID" \
+                --clear-groups \
+                /usr/bin/env -i \
+                    HOME="$operator_home" USER="$SUDO_USER" LOGNAME="$SUDO_USER" \
+                    PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+                    LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+                    /usr/bin/timeout 300 \
+                    "$PROOF_HELPER_ROOT/$PROOF_HELPER_NAME" \
+                    authority-replacement-product-state-helper
+        else
+            /usr/bin/setpriv \
+                --reuid "$SUDO_UID" \
+                --regid "$SUDO_GID" \
+                --clear-groups \
+                /usr/bin/env -i \
+                    HOME="$operator_home" USER="$SUDO_USER" LOGNAME="$SUDO_USER" \
+                    PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+                    LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+                    /usr/bin/timeout 300 \
+                    "$INSTALLED_SHIPPER" authority-replacement-product-state \
+                    --expected-installed-generation \
                     "$(resolution_value "$record" selected_generation)" \
-                --expected-installed-manifest-sha256 "$expected_selected_sha256" \
-                --expected-product-version \
+                    --expected-installed-manifest-sha256 "$expected_selected_sha256" \
+                    --expected-product-version \
                     "$(resolution_value "$record" settled_product_version)" \
-                --expected-product-source-commit \
+                    --expected-product-source-commit \
                     "$(resolution_value "$record" settled_product_gateway_commit)" \
-                --expected-product-engine-commit \
-                    "$(resolution_value "$record" settled_product_engine_commit)" \
-                >"$PRODUCT_STATE_PROOF_TEMP"
-    ) || die 'installed selected authority did not prove the exact settled product state'
+                    --expected-product-engine-commit \
+                    "$(resolution_value "$record" settled_product_engine_commit)"
+        fi
+    ) >"$PRODUCT_STATE_PROOF_TEMP" \
+        || die 'installed selected authority did not prove the exact settled product state'
     require_root_file "$PRODUCT_STATE_PROOF_TEMP" 600 \
         'authority replacement product-state proof temporary'
     output_size=$(/usr/bin/stat -c '%s' "$PRODUCT_STATE_PROOF_TEMP")
@@ -1190,6 +1516,9 @@ run_operator_product_state_proof() {
         || die 'authority replacement product-state proof is not canonical JSON'
     /usr/bin/rm -f -- "$PRODUCT_STATE_PROOF_TEMP"
     sync_path "$AUTHORITY_ROOT"
+    if [[ $revision == 3 ]]; then
+        retire_proof_helper
+    fi
 }
 
 require_no_product_mutation_journals() {
@@ -1347,15 +1676,26 @@ publish_active_file() {
     [[ $(sha256_file "$target") == "$selected_sha" ]] || die "$label publication failed"
 }
 
+journal_resolution_record() {
+    local record=$resolution_dir/$RESOLUTION
+    if [[ $(resolution_revision "$record") == 3 ]]; then
+        /usr/bin/printf '%s\n' \
+            "$SUPERSEDED_SEALED_RUNTIME_ROOT/inputs/resolution/$RESOLUTION"
+    else
+        /usr/bin/printf '%s\n' "$record"
+    fi
+}
+
 install_record_json() {
     local schema=$1 phase=$2 product_digest=$3
-    local record=$resolution_dir/$RESOLUTION
+    local record=$resolution_dir/$RESOLUTION journal_record
+    journal_record=$(journal_resolution_record)
     /usr/bin/jq -cjn \
         --arg schema "$schema" \
         --arg phase "$phase" \
-        --arg resolution_sha256 "$expected_resolution_sha256" \
+        --arg resolution_sha256 "$(sha256_file "$journal_record")" \
         --arg selection_review_sha256 \
-            "$(resolution_value "$record" selection_review_sha256)" \
+            "$(resolution_value "$journal_record" selection_review_sha256)" \
         --argjson previous_generation \
             "$(resolution_value "$record" predecessor_generation)" \
         --arg previous_manifest_sha256 "$expected_predecessor_sha256" \
@@ -1488,9 +1828,38 @@ publish_mutation_fence() {
 }
 
 install_receipt_json() {
-    local product_digest=$1
-    install_record_json syntaur.authority-replacement-receipt.v1 \
-        complete "$product_digest"
+    local product_digest=$1 record=$resolution_dir/$RESOLUTION base
+    if [[ $(resolution_revision "$record") != 3 ]]; then
+        install_record_json syntaur.authority-replacement-receipt.v1 \
+            complete "$product_digest"
+        return
+    fi
+    base=$(install_record_json syntaur.authority-replacement-receipt.v2 \
+        complete "$product_digest")
+    /usr/bin/jq -c \
+        --arg origin_resolution_sha256 \
+            "$(sha256_file "$(journal_resolution_record)")" \
+        --arg recovery_resolution_sha256 "$expected_resolution_sha256" \
+        --argjson recovery_resolution_revision 3 \
+        --arg recovery_tool_sha256 "$expected_recovery_tool_sha256" \
+        --arg correction_review_sha256 \
+            "$(sha256_file "$resolution_dir/$CORRECTION_REVIEW")" \
+        --arg proof_helper_source_commit \
+            "$(resolution_value "$record" proof_helper_source_commit)" \
+        --arg proof_helper_sha256 \
+            "$(resolution_value "$record" proof_helper_sha256)" \
+        --arg proof_helper_protocol_sha256 \
+            "$(resolution_value "$record" proof_helper_protocol_sha256)" \
+        '. + {
+          origin_resolution_sha256:$origin_resolution_sha256,
+          recovery_resolution_sha256:$recovery_resolution_sha256,
+          recovery_resolution_revision:$recovery_resolution_revision,
+          recovery_tool_sha256:$recovery_tool_sha256,
+          correction_review_sha256:$correction_review_sha256,
+          proof_helper_source_commit:$proof_helper_source_commit,
+          proof_helper_sha256:$proof_helper_sha256,
+          proof_helper_protocol_sha256:$proof_helper_protocol_sha256
+        }' <<<"$base"
 }
 
 validate_install_receipt() {

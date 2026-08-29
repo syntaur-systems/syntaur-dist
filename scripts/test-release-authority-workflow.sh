@@ -920,13 +920,31 @@ expect_failure verify_g1 \
 
 workflow="$repo_root/.github/workflows/release-authority.yml"
 recovery_tool="$repo_root/scripts/recover-release-authority-replacement-v1.sh"
-checked_in_correction="$repo_root/.github/authority-resolution-corrections/g60-r2.json"
+checked_in_r2_correction="$repo_root/.github/authority-resolution-corrections/g60-r2.json"
+checked_in_r3_correction="$repo_root/.github/authority-resolution-corrections/g60-r3.json"
 [[ $(yq -r '.on.workflow_dispatch.inputs | length' "$workflow") == 2 ]]
-"$helper" validate-resolution-correction-review "$checked_in_correction"
-[[ $(jq -er '.corrected_recovery_tool_sha256' "$checked_in_correction") \
+"$helper" validate-resolution-correction-review "$checked_in_r2_correction"
+"$helper" validate-resolution-correction-review "$checked_in_r3_correction"
+[[ $(jq -er '.corrected_recovery_tool_sha256' "$checked_in_r2_correction") \
+    == 2c08e0522c2589198142d1dbeeff59361b204a615ae7038e03dc39cd50de8708 ]]
+[[ $(jq -er '.corrected_manifest_helper_sha256' "$checked_in_r2_correction") \
+    == 985843d676767bb715c12fb45f8a0ae32cc2aa824efd7123818a12494d677b80 ]]
+[[ $(jq -er '.supersedes_resolution_sha256' "$checked_in_r3_correction") \
+    == 3f42c2844a4b72b9eef3f5f52f9db6cc7bbed3ba8a4cb7907f854d32d54f9293 ]]
+[[ $(jq -er '.superseded_recovery_tool_sha256' "$checked_in_r3_correction") \
+    == "$(jq -er '.corrected_recovery_tool_sha256' \
+        "$checked_in_r2_correction")" ]]
+[[ $(jq -er '.superseded_manifest_helper_sha256' "$checked_in_r3_correction") \
+    == "$(jq -er '.corrected_manifest_helper_sha256' \
+        "$checked_in_r2_correction")" ]]
+[[ $(jq -er '.corrected_recovery_tool_sha256' "$checked_in_r3_correction") \
     == "$(sha256sum "$recovery_tool" | awk '{print $1}')" ]]
-[[ $(jq -er '.corrected_manifest_helper_sha256' "$checked_in_correction") \
+[[ $(jq -er '.corrected_manifest_helper_sha256' "$checked_in_r3_correction") \
     == "$(sha256sum "$helper" | awk '{print $1}')" ]]
+[[ $(jq -er '.proof_helper_source_commit' "$checked_in_r3_correction") \
+    == 5ac27c9c1ad06b32b6e1ba5858b6964383c70da0 ]]
+[[ $(jq -er '.proof_helper_sha256' "$checked_in_r3_correction") \
+    == c4e3e85d35216a06173f5a68d6574db917d099f89458241d4ee969a4abac96de ]]
 grep -Fq 'approval_record:' "$workflow"
 for required in \
     verification_policy_revision \
@@ -939,7 +957,7 @@ for required in \
     promotion_recovery_sha256; do
     grep -Fq "$required" "$workflow"
 done
-grep -Fq 'git -C source rev-parse "${AUTHORITY_COMMIT}^"' "$workflow"
+grep -Fq 'git -C source rev-parse "${SOURCE_COMMIT}^"' "$workflow"
 grep -Fq 'authority-protocol-inputs' "$workflow"
 grep -Fq -- '--authority-protocol-self-test' "$workflow"
 grep -Fq 'shipper-self-test.json' "$workflow"
@@ -949,8 +967,11 @@ grep -Fq \
     "$workflow"
 grep -Fq -- '--network none' "$workflow"
 grep -Fq 'release-authority-source' "$workflow"
-grep -Fq 'SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY' "$workflow"
-grep -Fq 'sudo chown -R 65534:65534 source' "$workflow"
+[[ $(grep -Fc 'secrets.SYNTAUR_SOURCE_DEPLOY_KEY' "$workflow") -eq 1 ]]
+[[ $(grep -Fc 'secrets.SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY' "$workflow") -eq 2 ]]
+[[ $(grep -Fc 'sudo chown -R 65534:65534 source' "$workflow") -eq 2 ]]
+grep -Fq 'proof_helper_source_commit' "$workflow"
+grep -Fq 'unset SOURCE_ARCHIVE_AGE_IDENTITY' "$workflow"
 grep -Fq 'encrypted-authority-source-run-' "$workflow"
 [[ $(grep -Fc -- '--repo "$GITHUB_REPOSITORY"' "$workflow") -eq 28 ]]
 grep -Fq 'mkdir -m 0700 "$age_root/bin"' "$workflow"
@@ -1034,6 +1055,10 @@ awk '
         -e "s|^readonly AUTHORITY_ROOT=.*|readonly AUTHORITY_ROOT=$root_fixture/etc/syntaur/release-authority|" \
         -e "s|^readonly INSTALLED_SHIPPER=.*|readonly INSTALLED_SHIPPER=$root_fixture/usr/local/bin/syntaur-ship|" \
         -e "s|^readonly INSTALLED_PROVISIONER=.*|readonly INSTALLED_PROVISIONER=$root_fixture/opt/syntaur-build-authority-provision|" \
+        -e "s|^readonly INSTALL_RECEIPT=.*|readonly INSTALL_RECEIPT=$root_fixture/etc/syntaur/release-authority-replacement-v1.receipt.json|" \
+        -e "s|^readonly ROLLBACK_RECEIPT=.*|readonly ROLLBACK_RECEIPT=$root_fixture/etc/syntaur/release-authority-replacement-v1.rollback-receipt.json|" \
+        -e "s|^readonly SUPERSEDED_SEALED_RUNTIME_ROOT=.*|readonly SUPERSEDED_SEALED_RUNTIME_ROOT=$root_fixture/etc/syntaur/release-authority-replacement-v1.runtime|" \
+        -e "s|^readonly PROOF_HELPER_PARENT=.*|readonly PROOF_HELPER_PARENT=$root_fixture/usr/local/libexec|" \
     >"$root_helpers"
 chmod 0500 "$root_helpers"
 
@@ -1960,7 +1985,7 @@ mkdir -p "$root_fixture/resolution"
 jq -cjn \
     --arg selected_authority_commit "$selected_commit_fixture" \
     --arg settled_promotion_policy_sha256 "$policy_fixture" \
-    '{selected_generation:60,
+    '{schema:2,resolution_revision:2,selected_generation:60,
       selected_authority_commit:$selected_authority_commit,
       settled_product_version:"0.7.163",
       settled_product_gateway_commit:"cd7a62f518eab678e1cf14a454a6ddc20fe2117d",
@@ -2001,6 +2026,253 @@ expect_failure sudo -n env \
         operator_home=$OPERATOR_HOME
         run_operator_product_state_proof \
             83e8b033104254fceb46a9c70c14d7cc258d9e035986eff99215d7259023df17
+    '
+
+mock_helper_source=$tmp_root/mock-authority-replacement-proof-helper
+mock_proof_valid=$tmp_root/mock-product-state-proof-valid.json
+proof_helper_root=$root_fixture/usr/local/libexec/syntaur-authority-replacement-proof-v1
+proof_helper_stage=$root_fixture/usr/local/libexec/.syntaur-authority-replacement-proof-v1.staged
+cp "$mock_proof" "$mock_proof_valid"
+{
+    printf '%s\n' '#!/usr/bin/bash' 'set -euo pipefail'
+    printf '%s\n' '[[ $# -eq 1 ]]'
+    printf '%s\n' '[[ $1 == authority-replacement-product-state-helper ]]'
+    printf '/usr/bin/cat %q\n' "$mock_proof"
+} >"$mock_helper_source"
+chmod 0555 "$mock_helper_source"
+mock_helper_sha256=$(sha256sum "$mock_helper_source" | awk '{print $1}')
+jq -cjn \
+    --arg selected_authority_commit "$selected_commit_fixture" \
+    --arg settled_promotion_policy_sha256 "$policy_fixture" \
+    --arg proof_helper_sha256 "$mock_helper_sha256" \
+    '{schema:2,resolution_revision:3,selected_generation:60,
+      selected_authority_commit:$selected_authority_commit,
+      settled_product_version:"0.7.163",
+      settled_product_gateway_commit:"cd7a62f518eab678e1cf14a454a6ddc20fe2117d",
+      settled_product_engine_commit:"e10a0b11534254e9e38420ae06e368a9a7000f2a",
+      settled_promotion_policy_sha256:$settled_promotion_policy_sha256,
+      proof_helper_sha256:$proof_helper_sha256}' >"$mock_resolution"
+printf 'r3 mock resolution bundle\n' \
+    >"$root_fixture/resolution/release-authority-replacement-v1.json.cosign.bundle"
+install -m 0555 "$mock_helper_source" \
+    "$root_fixture/resolution/syntaur-authority-replacement-proof-linux-x86_64"
+chmod 0444 "$mock_resolution" \
+    "$root_fixture/resolution/release-authority-replacement-v1.json.cosign.bundle"
+mock_resolution_sha256=$(sha256sum "$mock_resolution" | awk '{print $1}')
+sudo -n install -d -o 0 -g 0 -m 0755 "$root_fixture/usr/local/libexec"
+
+jq -c '.settled_promotion_policy_sha256 = ("0" * 64)' "$mock_proof_valid" \
+    >"$mock_proof"
+expect_failure sudo -n env \
+    RECOVERY_HELPERS="$root_helpers" \
+    RESOLUTION_FIXTURE="$root_fixture/resolution" \
+    EXPECTED_RESOLUTION="$mock_resolution_sha256" \
+    EXPECTED_SELECTED="$selected_manifest_fixture" \
+    OPERATOR_HOME="$fixture_operator_home" \
+    FIXTURE_UID="$(id -u)" FIXTURE_GID="$(id -g)" FIXTURE_USER="$(id -un)" \
+    /usr/bin/bash -c '
+        source "$RECOVERY_HELPERS"
+        resolution_dir=$RESOLUTION_FIXTURE
+        expected_resolution_sha256=$EXPECTED_RESOLUTION
+        expected_selected_sha256=$EXPECTED_SELECTED
+        operator_home=$OPERATOR_HOME
+        SUDO_UID=$FIXTURE_UID
+        SUDO_GID=$FIXTURE_GID
+        SUDO_USER=$FIXTURE_USER
+        run_operator_product_state_proof \
+            83e8b033104254fceb46a9c70c14d7cc258d9e035986eff99215d7259023df17
+    '
+if ! sudo -n test -f "$proof_helper_root/syntaur-ship"; then
+    sed 's/^/r3 proof-helper regression: /' "$tmp_root/rejected.stderr" >&2
+    fail 'r3 proof-helper failure did not preserve the installed helper for retry'
+fi
+[[ $(sudo -n stat -c '%u:%g:%a:%h' "$proof_helper_root/syntaur-ship") == \
+    0:0:555:1 ]] || fail 'r3 installed proof helper identity differs after failure'
+sudo -n test -f \
+    "$root_fixture/etc/syntaur/release-authority/.authority-replacement-product-state-v1.tmp" \
+    || fail 'r3 failed product proof did not preserve bounded failure evidence'
+
+sudo -n install -d -o 0 -g 0 -m 0700 "$proof_helper_stage"
+expect_failure sudo -n env \
+    RECOVERY_HELPERS="$root_helpers" \
+    RESOLUTION_FIXTURE="$root_fixture/resolution" \
+    EXPECTED_RESOLUTION="$mock_resolution_sha256" \
+    EXPECTED_SELECTED="$selected_manifest_fixture" \
+    OPERATOR_HOME="$fixture_operator_home" \
+    FIXTURE_UID="$(id -u)" FIXTURE_GID="$(id -g)" FIXTURE_USER="$(id -un)" \
+    /usr/bin/bash -c '
+        source "$RECOVERY_HELPERS"
+        resolution_dir=$RESOLUTION_FIXTURE
+        expected_resolution_sha256=$EXPECTED_RESOLUTION
+        expected_selected_sha256=$EXPECTED_SELECTED
+        operator_home=$OPERATOR_HOME
+        SUDO_UID=$FIXTURE_UID
+        SUDO_GID=$FIXTURE_GID
+        SUDO_USER=$FIXTURE_USER
+        run_operator_product_state_proof \
+            83e8b033104254fceb46a9c70c14d7cc258d9e035986eff99215d7259023df17
+    '
+sudo -n rmdir -- "$proof_helper_stage"
+
+cp "$mock_proof_valid" "$mock_proof"
+sudo -n env \
+    RECOVERY_HELPERS="$root_helpers" \
+    RESOLUTION_FIXTURE="$root_fixture/resolution" \
+    EXPECTED_RESOLUTION="$mock_resolution_sha256" \
+    EXPECTED_SELECTED="$selected_manifest_fixture" \
+    OPERATOR_HOME="$fixture_operator_home" \
+    FIXTURE_UID="$(id -u)" FIXTURE_GID="$(id -g)" FIXTURE_USER="$(id -un)" \
+    /usr/bin/bash -c '
+        source "$RECOVERY_HELPERS"
+        resolution_dir=$RESOLUTION_FIXTURE
+        expected_resolution_sha256=$EXPECTED_RESOLUTION
+        expected_selected_sha256=$EXPECTED_SELECTED
+        operator_home=$OPERATOR_HOME
+        SUDO_UID=$FIXTURE_UID
+        SUDO_GID=$FIXTURE_GID
+        SUDO_USER=$FIXTURE_USER
+        run_operator_product_state_proof \
+            83e8b033104254fceb46a9c70c14d7cc258d9e035986eff99215d7259023df17
+    '
+[[ ! -e $proof_helper_root && ! -L $proof_helper_root \
+    && ! -e $proof_helper_stage && ! -L $proof_helper_stage ]] \
+    || fail 'r3 proof helper was not retired after a successful retry'
+[[ ! -e $root_fixture/etc/syntaur/release-authority/.authority-replacement-product-state-v1.tmp ]] \
+    || fail 'r3 successful product proof did not retire prior failure evidence'
+
+sudo -n install -d -o 0 -g 0 -m 0700 "$proof_helper_stage"
+sudo -n install -o 0 -g 0 -m 0555 "$mock_helper_source" \
+    "$proof_helper_stage/syntaur-ship"
+sudo -n env \
+    RECOVERY_HELPERS="$root_helpers" \
+    RESOLUTION_FIXTURE="$root_fixture/resolution" \
+    EXPECTED_RESOLUTION="$mock_resolution_sha256" \
+    /usr/bin/bash -c '
+        source "$RECOVERY_HELPERS"
+        resolution_dir=$RESOLUTION_FIXTURE
+        expected_resolution_sha256=$EXPECTED_RESOLUTION
+        install_proof_helper
+        retire_proof_helper
+    '
+[[ ! -e $proof_helper_root && ! -L $proof_helper_root \
+    && ! -e $proof_helper_stage && ! -L $proof_helper_stage ]] \
+    || fail 'r3 proof-helper retirement did not recover its partial quarantine'
+
+r3_gate_resolution=$root_fixture/r3-gate-resolution
+r3_gate_superseded=$root_fixture/etc/syntaur/release-authority-replacement-v1.runtime
+r3_gate_origin=$r3_gate_superseded/inputs/resolution
+r3_gate_receipt=$root_fixture/etc/syntaur/release-authority/replacement-resolution-v1/generation-60-r2
+r3_gate_selected=$(digest_text r3-gate-selected)
+r3_gate_product=$(digest_text r3-gate-product)
+r3_gate_source=$tmp_root/r3-gate-source
+install -d -m 0700 "$r3_gate_resolution" "$r3_gate_source"
+printf '{"generation":60}\n' >"$r3_gate_source/release-authority-v2.json"
+printf '{"phase":"manifest_published"}\n' \
+    >"$r3_gate_source/authority-replacement-v1-install.json"
+printf 'r3 gate promotion fence\n' \
+    >"$r3_gate_source/authority-promotion-v1.json"
+jq -cjn \
+    --arg selected_manifest_sha256 "$r3_gate_selected" \
+    '{schema:2,resolution_revision:2,selected_generation:60,
+      selected_manifest_sha256:$selected_manifest_sha256,
+      resolution_workflow_commit:"1111111111111111111111111111111111111111"}' \
+    >"$r3_gate_source/release-authority-replacement-v1.json"
+printf 'r3 gate origin bundle\n' \
+    >"$r3_gate_source/release-authority-replacement-v1.json.cosign.bundle"
+printf 'r3 gate selection\n' \
+    >"$r3_gate_source/release-authority-selection-review-v1.json"
+printf 'r3 gate r2 correction\n' \
+    >"$r3_gate_source/release-authority-resolution-correction-v1.json"
+r3_gate_origin_sha=$(sha256sum \
+    "$r3_gate_source/release-authority-replacement-v1.json" | awk '{print $1}')
+r3_gate_journal_sha=$(sha256sum \
+    "$r3_gate_source/authority-replacement-v1-install.json" | awk '{print $1}')
+jq -cjn \
+    --arg supersedes_resolution_sha256 "$r3_gate_origin_sha" \
+    '{schema:2,resolution_revision:3,selected_generation:60,
+      supersedes_resolution_sha256:$supersedes_resolution_sha256}' \
+    >"$r3_gate_resolution/release-authority-replacement-v1.json"
+jq -cjn \
+    --arg active_manifest_sha256 "$r3_gate_selected" \
+    --arg active_product_state_sha256 "$r3_gate_product" \
+    --arg active_install_journal_sha256 "$r3_gate_journal_sha" \
+    --arg sealed_inputs_resolution_sha256 "$r3_gate_origin_sha" \
+    '{active_generation:60,
+      active_manifest_sha256:$active_manifest_sha256,
+      active_product_state_sha256:$active_product_state_sha256,
+      active_install_journal_sha256:$active_install_journal_sha256,
+      active_install_journal_phase:"manifest_published",
+      active_product_proof_temp_sha256:
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      active_product_proof_temp_size:0,
+      sealed_inputs_resolution_sha256:$sealed_inputs_resolution_sha256}' \
+    >"$r3_gate_resolution/release-authority-resolution-correction-v1.json"
+
+sudo -n install -d -o 0 -g 0 -m 0700 \
+    "$r3_gate_superseded" "$r3_gate_superseded/inputs" \
+    "$r3_gate_origin" "$r3_gate_receipt"
+for name in \
+    release-authority-selection-review-v1.json \
+    release-authority-resolution-correction-v1.json \
+    release-authority-replacement-v1.json \
+    release-authority-replacement-v1.json.cosign.bundle; do
+    sudo -n install -o 0 -g 0 -m 0400 "$r3_gate_source/$name" \
+        "$r3_gate_origin/$name"
+    sudo -n install -o 0 -g 0 -m 0444 "$r3_gate_source/$name" \
+        "$r3_gate_receipt/$name"
+done
+sudo -n install -o 0 -g 0 -m 0444 \
+    "$r3_gate_source/release-authority-v2.json" \
+    "$root_fixture/etc/syntaur/release-authority/release-authority-v2.json"
+sudo -n install -o 0 -g 0 -m 0444 \
+    "$r3_gate_source/authority-promotion-v1.json" \
+    "$root_fixture/etc/syntaur/release-authority/authority-promotion-v1.json"
+sudo -n install -o 0 -g 0 -m 0444 \
+    "$r3_gate_source/authority-replacement-v1-install.json" \
+    "$root_fixture/etc/syntaur/release-authority/authority-replacement-v1-install.json"
+sudo -n install -o 0 -g 0 -m 0600 /dev/null \
+    "$root_fixture/etc/syntaur/release-authority/.authority-replacement-product-state-v1.tmp"
+
+sudo -n env \
+    RECOVERY_HELPERS="$root_helpers" \
+    R3_GATE_RESOLUTION="$r3_gate_resolution" \
+    R3_GATE_SELECTED="$r3_gate_selected" R3_GATE_PRODUCT="$r3_gate_product" \
+    /usr/bin/bash -c '
+        set -euo pipefail
+        source "$RECOVERY_HELPERS"
+        resolution_dir=$R3_GATE_RESOLUTION
+        expected_selected_sha256=$R3_GATE_SELECTED
+        product_state_digest() { printf "%s\n" "$R3_GATE_PRODUCT"; }
+        validate_resolution_inline() { :; }
+        verify_cosign() { :; }
+        validate_mutation_fence() { fence_validations=$((fence_validations + 1)); }
+        validate_current_install_state() { install_validations=$((install_validations + 1)); }
+        validate_selected_active() { selected_validations=$((selected_validations + 1)); }
+        fence_validations=0
+        install_validations=0
+        selected_validations=0
+
+        verify_resolution_correction_state install "$R3_GATE_SELECTED"
+        [[ $fence_validations -eq 1 && $install_validations -eq 1 \
+            && $selected_validations -eq 1 ]]
+
+        rollback_error=$R3_GATE_RESOLUTION/rollback.error
+        if ( verify_resolution_correction_state rollback "$R3_GATE_SELECTED" ) \
+            2>"$rollback_error"; then
+            printf "r3 state gate accepted rollback\n" >&2
+            exit 1
+        fi
+        grep -Fq "forward completion only" "$rollback_error"
+
+        printf "{\"phase\":\"prepared\"}\n" >"$INSTALL_JOURNAL"
+        journal_error=$R3_GATE_RESOLUTION/journal.error
+        if ( verify_resolution_correction_state install "$R3_GATE_SELECTED" ) \
+            2>"$journal_error"; then
+            printf "r3 state gate accepted a changed install journal\n" >&2
+            exit 1
+        fi
+        grep -Fq "install journal differs from the reviewed failure" \
+            "$journal_error"
     '
 sudo -n rm -rf -- "$root_fixture"
 root_fixture=
