@@ -26,11 +26,14 @@ readonly ROLLBACK_RECEIPT=/etc/syntaur/release-authority-replacement-v1.rollback
 readonly PRODUCT_STATE_PROOF_TEMP=$AUTHORITY_ROOT/.authority-replacement-product-state-v1.tmp
 readonly RESOLUTION_PARENT=$AUTHORITY_ROOT/replacement-resolution-v1
 readonly SEALED_RUNTIME_ROOT=/etc/syntaur/release-authority-replacement-v1.runtime
+readonly CORRECTION_AUTHORIZATION_NAME=release-authority-resolution-authorization-v1.json
+readonly SEALED_CORRECTION_AUTHORIZATION=$SEALED_RUNTIME_ROOT/$CORRECTION_AUTHORIZATION_NAME
 readonly SEALED_INPUTS=$SEALED_RUNTIME_ROOT/inputs
 readonly SEALED_INPUTS_STAGE=$SEALED_RUNTIME_ROOT/inputs.staged
 readonly MANIFEST=release-authority-v2.json
 readonly BUNDLE=release-authority-v2.json.cosign.bundle
 readonly SELECTION_REVIEW=release-authority-selection-review-v1.json
+readonly CORRECTION_REVIEW=release-authority-resolution-correction-v1.json
 readonly RESOLUTION=release-authority-replacement-v1.json
 readonly RESOLUTION_BUNDLE=release-authority-replacement-v1.json.cosign.bundle
 readonly RECOVERY_TOOL=recover-release-authority-replacement-v1.sh
@@ -54,6 +57,7 @@ Usage:
     --expected-predecessor-manifest-sha256 HEX \
     --expected-rejected-manifest-sha256 HEX \
     --expected-selected-manifest-sha256 HEX \
+    [--correction-authorization FILE] \
     --authorize-reason authority_target_mismatch
 
   sudo recover-release-authority-replacement-v1.sh install [same exact tuple]
@@ -168,6 +172,30 @@ resolution_value() {
     /usr/bin/jq -er --arg field "$2" '.[$field]' "$1"
 }
 
+resolution_revision() {
+    /usr/bin/jq -er '
+        if .schema == 1 then 1
+        elif .schema == 2 then .resolution_revision
+        else error("unsupported replacement resolution schema")
+        end
+    ' "$1"
+}
+
+resolution_data_names() {
+    local record=$1 schema
+    schema=$(resolution_value "$record" schema)
+    /usr/bin/printf '%s\n' "$SELECTION_REVIEW" "$RESOLUTION" "$RESOLUTION_BUNDLE"
+    if [[ $schema == 2 ]]; then
+        /usr/bin/printf '%s\n' "$CORRECTION_REVIEW"
+    fi
+}
+
+resolution_all_names() {
+    local record=$1
+    resolution_data_names "$record"
+    /usr/bin/printf '%s\n' "$RECOVERY_TOOL" "$MANIFEST_HELPER"
+}
+
 manifest_value() {
     /usr/bin/jq -er --arg field "$2" '.[$field]' "$1"
 }
@@ -177,7 +205,7 @@ validate_resolution_inline() {
     /usr/bin/jq -e '
         def digest: type == "string" and test("^[0-9a-f]{64}$");
         def commit: type == "string" and test("^[0-9a-f]{40}$");
-        (.schema == 1) and
+        (.schema == 1 or .schema == 2) and
         (.reason == "authority_target_mismatch") and
         (.predecessor_generation | type == "number" and . > 0 and floor == .) and
         (.rejected_generation == (.predecessor_generation + 1)) and
@@ -212,34 +240,116 @@ validate_resolution_inline() {
          ($planned[2] == ($selected[2] + 1))) and
         (.selection_review_sha256 | digest) and
         (.recovery_tool_sha256 | digest) and
-        (.manifest_helper_sha256 | digest)
+        (.manifest_helper_sha256 | digest) and
+        (if .schema == 1 then
+           ((has("resolution_revision") or has("supersedes_resolution_tag") or
+             has("supersedes_resolution_sha256") or
+             has("superseded_recovery_tool_sha256") or
+             has("correction_reason") or has("correction_review_sha256")) | not)
+         else
+           (.resolution_revision | type == "number" and . >= 2 and floor == .) and
+           (.supersedes_resolution_tag ==
+             ("authority-resolution-v1-g" + (.selected_generation | tostring) +
+              (if .resolution_revision == 2 then ""
+               else "-r" + ((.resolution_revision - 1) | tostring) end))) and
+           (.supersedes_resolution_sha256 | digest) and
+           (.superseded_recovery_tool_sha256 | digest) and
+           (.correction_reason == "recovery_tool_execution_failure") and
+           (.correction_review_sha256 | digest)
+         end)
     ' "$record" >/dev/null || die 'signed replacement resolution is malformed'
 }
 
+verify_correction_authorization() {
+    local operation=$1 record=$resolution_dir/$RESOLUTION schema
+    schema=$(resolution_value "$record" schema)
+    if [[ $schema == 1 ]]; then
+        [[ -z $correction_authorization ]] \
+            || die 'an original resolution must not use correction authorization'
+        return
+    fi
+    [[ -n $correction_authorization ]] \
+        || die 'corrected resolution requires explicit operator authorization'
+    local authorization_parent
+    authorization_parent=$(canonical_dir \
+        "$(/usr/bin/dirname "$correction_authorization")" \
+        'correction authorization parent')
+    correction_authorization=$authorization_parent/$(/usr/bin/basename \
+        "$correction_authorization")
+    require_safe_ancestors "$authorization_parent" 'correction authorization parent'
+    require_safe_file "$correction_authorization" 32768 false \
+        'correction authorization'
+    if [[ $operation == verify ]]; then
+        [[ $(/usr/bin/stat -c '%u:%g:%a:%h' "$correction_authorization") == \
+            "$(/usr/bin/id -u):$(/usr/bin/id -g):400:1" ]] \
+            || die 'verification correction authorization identity differs'
+    else
+        [[ $correction_authorization == "$SEALED_CORRECTION_AUTHORIZATION" ]] \
+            || die 'installation correction authorization is outside the sealed runtime'
+        require_root_file "$correction_authorization" 400 \
+            'sealed correction authorization'
+    fi
+    "$resolution_dir/$MANIFEST_HELPER" validate-resolution-correction-authorization \
+        "$correction_authorization"
+    local revision resolution_tag correction_sha
+    revision=$(resolution_revision "$record")
+    resolution_tag=authority-resolution-v1-g$(resolution_value \
+        "$record" selected_generation)-r${revision}
+    correction_sha=$(sha256_file "$resolution_dir/$CORRECTION_REVIEW")
+    /usr/bin/jq -e \
+        --argjson revision "$revision" \
+        --arg resolution_tag "$resolution_tag" \
+        --arg resolution_sha256 "$expected_resolution_sha256" \
+        --arg workflow_commit "$(resolution_value "$record" resolution_workflow_commit)" \
+        --arg recovery_tool_sha256 "$expected_recovery_tool_sha256" \
+        --arg manifest_helper_sha256 "$(sha256_file "$resolution_dir/$MANIFEST_HELPER")" \
+        --arg correction_review_sha256 "$correction_sha" \
+        --arg supersedes_resolution_sha256 \
+            "$(resolution_value "$record" supersedes_resolution_sha256)" \
+        --arg selected_manifest_sha256 "$expected_selected_sha256" \
+        '.resolution_revision == $revision and
+         .resolution_tag == $resolution_tag and
+         .resolution_sha256 == $resolution_sha256 and
+         .resolution_workflow_commit == $workflow_commit and
+         .recovery_tool_sha256 == $recovery_tool_sha256 and
+         .manifest_helper_sha256 == $manifest_helper_sha256 and
+         .correction_review_sha256 == $correction_review_sha256 and
+         .supersedes_resolution_sha256 == $supersedes_resolution_sha256 and
+         .selected_manifest_sha256 == $selected_manifest_sha256 and
+         .authorize_reason == "recovery_tool_execution_failure"' \
+        "$correction_authorization" >/dev/null \
+        || die 'correction authorization does not bind the exact corrected resolution'
+}
+
 verify_inputs() {
+    local operation=$1
     predecessor_dir=$(canonical_dir "$predecessor_dir" 'predecessor directory')
     rejected_dir=$(canonical_dir "$rejected_dir" 'rejected directory')
     selected_dir=$(canonical_dir "$selected_dir" 'selected directory')
     resolution_dir=$(canonical_dir "$resolution_dir" 'resolution directory')
     require_safe_ancestors "$resolution_dir" 'resolution directory'
-    local actual_resolution expected_resolution
+    require_safe_file "$resolution_dir/$RESOLUTION" 32768 false 'replacement resolution'
+    validate_resolution_inline "$resolution_dir/$RESOLUTION"
+    local actual_resolution expected_resolution resolution_schema
+    resolution_schema=$(resolution_value "$resolution_dir/$RESOLUTION" schema)
     actual_resolution=$(/usr/bin/find "$resolution_dir" -mindepth 1 -maxdepth 1 \
         -printf '%f\n' | LC_ALL=C /usr/bin/sort)
-    expected_resolution=$(/usr/bin/printf '%s\n' \
-        "$RECOVERY_TOOL" "$MANIFEST_HELPER" "$SELECTION_REVIEW" \
-        "$RESOLUTION" "$RESOLUTION_BUNDLE" \
+    expected_resolution=$(resolution_all_names "$resolution_dir/$RESOLUTION" \
         | LC_ALL=C /usr/bin/sort)
     [[ $actual_resolution == "$expected_resolution" ]] \
         || die 'resolution directory has an inexact file set'
-    require_safe_file "$resolution_dir/$RESOLUTION" 32768 false 'replacement resolution'
     require_safe_file "$resolution_dir/$RESOLUTION_BUNDLE" 4194304 false \
         'replacement resolution signature bundle'
     require_safe_file "$resolution_dir/$SELECTION_REVIEW" 32768 false \
         'replacement selection review'
+    if [[ $resolution_schema == 2 ]]; then
+        require_safe_file "$resolution_dir/$CORRECTION_REVIEW" 32768 false \
+            'replacement resolution correction review'
+    fi
     require_safe_file "$resolution_dir/$RECOVERY_TOOL" 1048576 true 'replacement recovery tool'
     require_safe_file "$resolution_dir/$MANIFEST_HELPER" 1048576 true \
         'replacement manifest helper'
-    if [[ $mode != verify ]]; then
+    if [[ $operation != verify ]]; then
         [[ $(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}") == \
             "$SEALED_RUNTIME_ROOT/$RECOVERY_TOOL" ]] \
             || die 'installation recovery tool is outside the sealed runtime'
@@ -252,7 +362,6 @@ verify_inputs() {
     fi
     [[ $(sha256_file "$resolution_dir/$RESOLUTION") == "$expected_resolution_sha256" ]] \
         || die 'replacement resolution differs from the operator-authorized hash'
-    validate_resolution_inline "$resolution_dir/$RESOLUTION"
     local resolution_workflow
     resolution_workflow=$(resolution_value "$resolution_dir/$RESOLUTION" \
         resolution_workflow_commit)
@@ -318,6 +427,7 @@ verify_inputs() {
     [[ $rejected_generation == "$selected_generation" \
         && "$expected_rejected_sha256" != "$expected_selected_sha256" ]] \
         || die 'replacement is not one distinct manifest for the rejected generation'
+    verify_correction_authorization "$operation"
 }
 
 sync_path() {
@@ -349,7 +459,8 @@ discard_incomplete_resolution_stage() {
     while IFS= read -r name; do
         [[ -z $name ]] && continue
         case $name in
-            "$SELECTION_REVIEW"|"$RESOLUTION"|"$RESOLUTION_BUNDLE") ;;
+            "$SELECTION_REVIEW"|"$CORRECTION_REVIEW"|\
+            "$RESOLUTION"|"$RESOLUTION_BUNDLE") ;;
             *) die 'incomplete replacement receipt stage contains an unexpected entry' ;;
         esac
         [[ -f $stage/$name && ! -L $stage/$name ]] \
@@ -370,10 +481,15 @@ discard_incomplete_resolution_stage() {
 }
 
 install_resolution_receipt() {
-    local generation final stage name
+    local generation revision final stage name expected actual
     generation=$(resolution_value "$resolution_dir/$RESOLUTION" selected_generation)
-    final=$RESOLUTION_PARENT/generation-$generation
+    revision=$(resolution_revision "$resolution_dir/$RESOLUTION")
+    final=$(resolution_receipt_directory)
     stage=$AUTHORITY_ROOT/.replacement-resolution-v1-g${generation}.staged
+    if [[ $revision != 1 ]]; then
+        stage=$AUTHORITY_ROOT/.replacement-resolution-v1-g${generation}-r${revision}.staged
+    fi
+    expected=$(resolution_data_names "$resolution_dir/$RESOLUTION" | LC_ALL=C /usr/bin/sort)
     require_root_directory "$AUTHORITY_ROOT" 'authority root'
     if [[ -e $RESOLUTION_PARENT || -L $RESOLUTION_PARENT ]]; then
         require_root_directory "$RESOLUTION_PARENT" 'replacement receipt parent'
@@ -382,10 +498,9 @@ install_resolution_receipt() {
         sync_path "$AUTHORITY_ROOT"
     fi
     if [[ -d $final && ! -L $final ]]; then
-        [[ $(/usr/bin/find "$final" -mindepth 1 -maxdepth 1 -printf '%f\n' \
-            | LC_ALL=C /usr/bin/sort) == \
-            $(/usr/bin/printf '%s\n' "$SELECTION_REVIEW" "$RESOLUTION" \
-                "$RESOLUTION_BUNDLE" | LC_ALL=C /usr/bin/sort) ]] \
+        actual=$(/usr/bin/find "$final" -mindepth 1 -maxdepth 1 -printf '%f\n' \
+            | LC_ALL=C /usr/bin/sort)
+        [[ $actual == "$expected" ]] \
             || die 'existing replacement receipt directory is inexact'
         require_root_directory "$final" 'existing replacement receipt directory'
         require_root_file "$final/$RESOLUTION" 444 'existing signed replacement receipt'
@@ -393,12 +508,11 @@ install_resolution_receipt() {
             'existing replacement receipt bundle'
         require_root_file "$final/$SELECTION_REVIEW" 444 \
             'existing replacement selection review'
-        /usr/bin/cmp -s "$final/$RESOLUTION" "$resolution_dir/$RESOLUTION" \
-            || die 'existing signed replacement receipt conflicts'
-        /usr/bin/cmp -s "$final/$RESOLUTION_BUNDLE" "$resolution_dir/$RESOLUTION_BUNDLE" \
-            || die 'existing replacement receipt bundle conflicts'
-        /usr/bin/cmp -s "$final/$SELECTION_REVIEW" "$resolution_dir/$SELECTION_REVIEW" \
-            || die 'existing replacement selection review conflicts'
+        while IFS= read -r name; do
+            require_root_file "$final/$name" 444 "existing replacement receipt $name"
+            /usr/bin/cmp -s "$final/$name" "$resolution_dir/$name" \
+                || die "existing replacement receipt $name conflicts"
+        done < <(resolution_data_names "$resolution_dir/$RESOLUTION")
         return
     fi
     [[ ! -e $final && ! -L $final ]] \
@@ -409,7 +523,7 @@ install_resolution_receipt() {
         discard_incomplete_resolution_stage "$stage"
     fi
     /usr/bin/install -d -o 0 -g 0 -m 0700 "$stage"
-    for name in "$SELECTION_REVIEW" "$RESOLUTION" "$RESOLUTION_BUNDLE"; do
+    while IFS= read -r name; do
         /usr/bin/dd if="$resolution_dir/$name" of="$stage/$name" \
             iflag=nofollow,nonblock,fullblock status=none
         /usr/bin/chown 0:0 "$stage/$name"
@@ -417,10 +531,22 @@ install_resolution_receipt() {
         sync_path "$stage/$name"
         /usr/bin/cmp -s "$stage/$name" "$resolution_dir/$name" \
             || die 'staged replacement receipt changed during publication'
-    done
+    done < <(resolution_data_names "$resolution_dir/$RESOLUTION")
     sync_path "$stage"
     /usr/bin/mv -T "$stage" "$final"
     sync_path "$RESOLUTION_PARENT"
+}
+
+resolution_receipt_directory() {
+    local generation revision
+    generation=$(resolution_value "$resolution_dir/$RESOLUTION" selected_generation)
+    revision=$(resolution_revision "$resolution_dir/$RESOLUTION")
+    if [[ $revision == 1 ]]; then
+        /usr/bin/printf '%s/generation-%s\n' "$RESOLUTION_PARENT" "$generation"
+    else
+        /usr/bin/printf '%s/generation-%s-r%s\n' \
+            "$RESOLUTION_PARENT" "$generation" "$revision"
+    fi
 }
 
 require_root_directory() {
@@ -452,11 +578,18 @@ require_sealed_runtime() {
     actual=$(/usr/bin/find "$SEALED_RUNTIME_ROOT" -mindepth 1 -maxdepth 1 \
         -printf '%f\n' | LC_ALL=C /usr/bin/sort)
     expected=$(/usr/bin/printf '%s\n' "$RECOVERY_TOOL" | LC_ALL=C /usr/bin/sort)
+    if [[ -e $SEALED_CORRECTION_AUTHORIZATION \
+        || -L $SEALED_CORRECTION_AUTHORIZATION ]]; then
+        require_root_file "$SEALED_CORRECTION_AUTHORIZATION" 400 \
+            'sealed correction authorization'
+        expected=$(/usr/bin/printf '%s\n' "$expected" \
+            "$CORRECTION_AUTHORIZATION_NAME" | LC_ALL=C /usr/bin/sort)
+    fi
     if [[ -e $SEALED_INPUTS || -L $SEALED_INPUTS ]]; then
-        expected=$(/usr/bin/printf '%s\n' "$RECOVERY_TOOL" inputs \
+        expected=$(/usr/bin/printf '%s\n' "$expected" inputs \
             | LC_ALL=C /usr/bin/sort)
     elif [[ -e $SEALED_INPUTS_STAGE || -L $SEALED_INPUTS_STAGE ]]; then
-        expected=$(/usr/bin/printf '%s\n' "$RECOVERY_TOOL" inputs.staged \
+        expected=$(/usr/bin/printf '%s\n' "$expected" inputs.staged \
             | LC_ALL=C /usr/bin/sort)
     fi
     [[ $actual == "$expected" ]] || die 'sealed replacement runtime is inexact'
@@ -465,15 +598,16 @@ require_sealed_runtime() {
 require_resolution_source() {
     local directory=$1 actual expected name executable
     directory=$(canonical_dir "$directory" 'resolution source directory')
+    require_safe_file "$directory/$RESOLUTION" 32768 false \
+        'resolution source replacement resolution'
+    validate_resolution_inline "$directory/$RESOLUTION"
     actual=$(/usr/bin/find "$directory" -mindepth 1 -maxdepth 1 \
         -printf '%f\n' | LC_ALL=C /usr/bin/sort)
-    expected=$(/usr/bin/printf '%s\n' \
-        "$RECOVERY_TOOL" "$MANIFEST_HELPER" "$SELECTION_REVIEW" \
-        "$RESOLUTION" "$RESOLUTION_BUNDLE" | LC_ALL=C /usr/bin/sort)
+    expected=$(resolution_all_names "$directory/$RESOLUTION" | LC_ALL=C /usr/bin/sort)
     [[ $actual == "$expected" ]] || die 'resolution source has an inexact entry set'
-    for name in "$SELECTION_REVIEW" "$RESOLUTION" "$RESOLUTION_BUNDLE"; do
+    while IFS= read -r name; do
         require_safe_file "$directory/$name" 4194304 false "resolution source $name"
-    done
+    done < <(resolution_data_names "$directory/$RESOLUTION")
     for name in "$RECOVERY_TOOL" "$MANIFEST_HELPER"; do
         executable=true
         require_safe_file "$directory/$name" 1048576 "$executable" \
@@ -503,6 +637,7 @@ prepare_stage_leaf() {
             'sealed resolution':recover-release-authority-replacement-v1.sh|\
             'sealed resolution':release-authority-manifest.sh|\
             'sealed resolution':release-authority-selection-review-v1.json|\
+            'sealed resolution':release-authority-resolution-correction-v1.json|\
             'sealed resolution':release-authority-replacement-v1.json|\
             'sealed resolution':release-authority-replacement-v1.json.cosign.bundle) ;;
             *) die "$label contains an unexpected staged entry" ;;
@@ -554,14 +689,15 @@ require_sealed_input_root() {
 }
 
 seal_install_inputs() {
+    local operation=$1
     local source_predecessor source_rejected source_selected source_resolution
-    local leaf name mode maximum actual expected
+    local leaf name actual source
     if [[ -e $SEALED_INPUTS || -L $SEALED_INPUTS ]]; then
         [[ ! -e $SEALED_INPUTS_STAGE && ! -L $SEALED_INPUTS_STAGE ]] \
             || die 'sealed final and staged inputs both exist'
         require_sealed_input_root "$SEALED_INPUTS" 'sealed replacement inputs'
         set_sealed_input_paths "$SEALED_INPUTS"
-        verify_inputs
+        verify_inputs "$operation"
         return
     fi
 
@@ -617,23 +753,163 @@ seal_install_inputs() {
     copy_to_stage "$source_resolution/$MANIFEST_HELPER" \
         "$SEALED_INPUTS_STAGE/resolution/$MANIFEST_HELPER" 500 1048576 \
         'resolution manifest helper'
-    for name in "$SELECTION_REVIEW" "$RESOLUTION" "$RESOLUTION_BUNDLE"; do
+    while IFS= read -r name; do
         copy_to_stage "$source_resolution/$name" \
             "$SEALED_INPUTS_STAGE/resolution/$name" 400 4194304 \
             "resolution $name"
-    done
+    done < <(resolution_data_names "$source_resolution/$RESOLUTION")
     sync_path "$SEALED_INPUTS_STAGE/resolution"
     sync_path "$SEALED_INPUTS_STAGE"
 
     require_sealed_input_root "$SEALED_INPUTS_STAGE" \
         'sealed replacement input stage'
     set_sealed_input_paths "$SEALED_INPUTS_STAGE"
-    verify_inputs
+    verify_inputs "$operation"
     /usr/bin/mv -T "$SEALED_INPUTS_STAGE" "$SEALED_INPUTS"
     sync_path "$SEALED_RUNTIME_ROOT"
     require_sealed_input_root "$SEALED_INPUTS" 'sealed replacement inputs'
     set_sealed_input_paths "$SEALED_INPUTS"
-    verify_inputs
+    verify_inputs "$operation"
+}
+
+verify_resolution_correction_initial_prestate() {
+    local active_manifest_sha256=$1 product_digest=$2 resolution_receipt=$3
+    local correction=$resolution_dir/$CORRECTION_REVIEW active_generation path
+    [[ $active_manifest_sha256 == \
+        "$(resolution_value "$correction" active_manifest_sha256)" ]] \
+        || die 'corrected resolution active authority differs from the reviewed prestate'
+    active_generation=$(manifest_value "$AUTHORITY_ROOT/$MANIFEST" generation)
+    [[ $active_generation == "$(resolution_value "$correction" active_generation)" ]] \
+        || die 'corrected resolution active generation differs from the reviewed prestate'
+    [[ $product_digest == \
+        "$(resolution_value "$correction" active_product_state_sha256)" ]] \
+        || die 'corrected resolution product state differs from the reviewed prestate'
+    for path in \
+        "$NORMAL_PROMOTION_JOURNAL" "$NORMAL_PROMOTION_JOURNAL_TEMP" \
+        "$INSTALL_JOURNAL" "$INSTALL_JOURNAL_TEMP" \
+        "$ROLLBACK_JOURNAL" "$ROLLBACK_JOURNAL_TEMP" \
+        "$INSTALL_RECEIPT" "$ROLLBACK_RECEIPT" "$resolution_receipt"; do
+        [[ ! -e $path && ! -L $path ]] \
+            || die 'corrected resolution initial prestate contains mutation state'
+    done
+}
+
+verify_resolution_correction_state() {
+    local operation=$1 active_manifest_sha256=$2
+    local record=$resolution_dir/$RESOLUTION schema correction product_digest
+    local resolution_receipt normal_journal install_journal rollback_journal
+    local install_receipt rollback_receipt path
+    schema=$(resolution_value "$record" schema)
+    [[ $schema == 2 ]] || return 0
+    correction=$resolution_dir/$CORRECTION_REVIEW
+    product_digest=$(product_state_digest)
+    [[ $product_digest == \
+        "$(resolution_value "$correction" active_product_state_sha256)" ]] \
+        || die 'corrected resolution product state moved from its reviewed prestate'
+    resolution_receipt=$(resolution_receipt_directory)
+    normal_journal=false
+    install_journal=false
+    rollback_journal=false
+    install_receipt=false
+    rollback_receipt=false
+    [[ -e $NORMAL_PROMOTION_JOURNAL || -L $NORMAL_PROMOTION_JOURNAL ]] \
+        && normal_journal=true
+    [[ -e $INSTALL_JOURNAL || -L $INSTALL_JOURNAL ]] && install_journal=true
+    [[ -e $ROLLBACK_JOURNAL || -L $ROLLBACK_JOURNAL ]] && rollback_journal=true
+    [[ -e $INSTALL_RECEIPT || -L $INSTALL_RECEIPT ]] && install_receipt=true
+    [[ -e $ROLLBACK_RECEIPT || -L $ROLLBACK_RECEIPT ]] && rollback_receipt=true
+
+    if [[ $operation == install ]]; then
+        [[ $rollback_journal == false && $rollback_receipt == false ]] \
+            || die 'corrected install conflicts with rollback state'
+        if [[ $active_manifest_sha256 == "$expected_predecessor_sha256" ]]; then
+            [[ $install_receipt == false ]] \
+                || die 'corrected install receipt conflicts with active predecessor'
+            if [[ $normal_journal == false && $install_journal == false ]]; then
+                if [[ -e $resolution_receipt || -L $resolution_receipt ]]; then
+                    install_resolution_receipt
+                    for path in \
+                        "$NORMAL_PROMOTION_JOURNAL_TEMP" "$INSTALL_JOURNAL_TEMP" \
+                        "$ROLLBACK_JOURNAL_TEMP"; do
+                        [[ ! -e $path && ! -L $path ]] \
+                            || die 'corrected receipt-only continuation has unexplained temporary state'
+                    done
+                else
+                    verify_resolution_correction_initial_prestate \
+                        "$active_manifest_sha256" "$product_digest" \
+                        "$resolution_receipt"
+                fi
+                return
+            fi
+            [[ -e $resolution_receipt && ! -L $resolution_receipt ]] \
+                || die 'corrected install continuation lacks its exact resolution receipt'
+            install_resolution_receipt
+            [[ $normal_journal == true ]] \
+                || die 'corrected install journal exists without its mutation fence'
+            validate_mutation_fence "$product_digest"
+            if [[ $install_journal == true ]]; then
+                validate_current_install_state "$product_digest"
+            else
+                validate_predecessor_active
+            fi
+            return
+        fi
+        [[ $active_manifest_sha256 == "$expected_selected_sha256" ]] \
+            || die 'corrected install active authority is outside its signed transaction'
+        [[ -e $resolution_receipt && ! -L $resolution_receipt ]] \
+            || die 'corrected selected authority lacks its exact resolution receipt'
+        install_resolution_receipt
+        if [[ $install_receipt == true ]]; then
+            validate_install_receipt "$product_digest"
+            if [[ $install_journal == true ]]; then
+                [[ $normal_journal == true ]] \
+                    || die 'corrected terminal install journal lacks its mutation fence'
+                validate_mutation_fence "$product_digest"
+                validate_current_install_state "$product_digest"
+            elif [[ $normal_journal == true ]]; then
+                validate_mutation_fence "$product_digest"
+            fi
+            return
+        fi
+        [[ $normal_journal == true && $install_journal == true ]] \
+            || die 'corrected selected authority lacks a resumable install journal'
+        validate_mutation_fence "$product_digest"
+        validate_current_install_state "$product_digest"
+        return
+    fi
+
+    [[ $install_journal == false && $install_receipt == true ]] \
+        || die 'corrected rollback requires a completed exceptional install'
+    [[ -e $resolution_receipt && ! -L $resolution_receipt ]] \
+        || die 'corrected rollback lacks its exact resolution receipt'
+    install_resolution_receipt
+    validate_install_receipt "$product_digest"
+    if [[ $active_manifest_sha256 == "$expected_selected_sha256" ]]; then
+        [[ $rollback_receipt == false ]] \
+            || die 'corrected rollback receipt conflicts with active selected authority'
+        if [[ $rollback_journal == true ]]; then
+            [[ $normal_journal == true ]] \
+                || die 'corrected rollback journal exists without its mutation fence'
+            validate_mutation_fence "$product_digest"
+            validate_current_rollback_state "$product_digest"
+        elif [[ $normal_journal == true ]]; then
+            validate_mutation_fence "$product_digest"
+            validate_selected_active
+        fi
+        return
+    fi
+    [[ $active_manifest_sha256 == "$expected_predecessor_sha256" \
+        && ( $rollback_journal == true || $rollback_receipt == true ) ]] \
+        || die 'corrected rollback active authority is outside its signed transaction'
+    if [[ $rollback_journal == true ]]; then
+        [[ $normal_journal == true ]] \
+            || die 'corrected rollback journal exists without its mutation fence'
+        validate_mutation_fence "$product_digest"
+        validate_current_rollback_state "$product_digest"
+    fi
+    if [[ $rollback_receipt == true ]]; then
+        validate_rollback_receipt "$product_digest"
+    fi
 }
 
 resolve_operator_home() {
@@ -1513,7 +1789,7 @@ write_rollback_journal() {
 }
 
 validate_rollback_phase_state() {
-    local phase shipper_state provisioner_state trust_state bundle_state manifest_state vector
+    local phase=$1 shipper_state provisioner_state trust_state bundle_state manifest_state vector
     local predecessor_workflow selected_workflow predecessor_trust_sha selected_trust_sha
     shipper_state=$(component_generation "$INSTALLED_SHIPPER" 1755 \
         "$(manifest_value "$predecessor_dir/$MANIFEST" shipper_sha256)" \
@@ -1744,9 +2020,9 @@ run_operator_authority_status() {
 }
 
 [[ $# -ge 1 ]] || usage
-mode=$1
+operation=$1
 shift
-[[ $mode == verify || $mode == install || $mode == rollback ]] || usage
+[[ $operation == verify || $operation == install || $operation == rollback ]] || usage
 
 predecessor_dir=
 rejected_dir=
@@ -1757,6 +2033,7 @@ expected_recovery_tool_sha256=
 expected_predecessor_sha256=
 expected_rejected_sha256=
 expected_selected_sha256=
+correction_authorization=
 authorize_reason=
 while (($#)); do
     [[ $# -ge 2 ]] || usage
@@ -1785,6 +2062,10 @@ while (($#)); do
             [[ -z $expected_selected_sha256 ]] || usage
             expected_selected_sha256=$2
             ;;
+        --correction-authorization)
+            [[ -z $correction_authorization ]] || usage
+            correction_authorization=$2
+            ;;
         --authorize-reason) [[ -z $authorize_reason ]] || usage; authorize_reason=$2 ;;
         *) usage ;;
     esac
@@ -1803,7 +2084,7 @@ if /usr/bin/env | /usr/bin/cut -d= -f1 | /usr/bin/grep -Eq '^SYNTAUR_'; then
     die 'ambient SYNTAUR_* overrides are forbidden'
 fi
 
-if [[ $mode == install || $mode == rollback ]]; then
+if [[ $operation == install || $operation == rollback ]]; then
     [[ $(/usr/bin/id -u) == 0 ]] || die 'install requires sudo and an all-root identity'
     [[ $(/usr/bin/hostname) == claudevm ]] || die 'install may run only on claudevm'
     [[ ${SUDO_UID:-} =~ ^[1-9][0-9]*$ && ${SUDO_GID:-} =~ ^[0-9]+$ \
@@ -1817,7 +2098,7 @@ if [[ $mode == install || $mode == rollback ]]; then
 else
     [[ $(sha256_file "${BASH_SOURCE[0]}") == "$expected_recovery_tool_sha256" ]] \
         || die 'verification recovery tool differs from the operator-authorized hash'
-    verify_inputs
+    verify_inputs "$operation"
     printf 'release authority replacement evidence verified: predecessor=%s rejected=%s selected=%s resolution=%s\n' \
         "$expected_predecessor_sha256" "$expected_rejected_sha256" \
         "$expected_selected_sha256" "$expected_resolution_sha256"
@@ -1839,10 +2120,11 @@ exec 7<>"$REPLACEMENT_LOCK"
 require_root_file "$REPLACEMENT_LOCK" 600 'authority replacement lock'
 /usr/bin/flock -n 7 || die 'another authority replacement recovery holds the lock'
 resolve_operator_home
-seal_install_inputs
-install_resolution_receipt
+seal_install_inputs "$operation"
 active_manifest_sha256=$(sha256_file "$AUTHORITY_ROOT/$MANIFEST")
-if [[ $mode == rollback ]]; then
+verify_resolution_correction_state "$operation" "$active_manifest_sha256"
+install_resolution_receipt
+if [[ $operation == rollback ]]; then
     transaction_product_digest=$(resolution_value \
         "$resolution_dir/$RESOLUTION" settled_product_state_sha256)
     if [[ $active_manifest_sha256 == "$expected_predecessor_sha256" \
