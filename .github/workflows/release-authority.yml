@@ -2808,16 +2808,12 @@ jobs:
                 gh api --method DELETE \
                   "/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}"
               done < <(jq -r '.assets[].id' <<<"$release")
-              upload_assets=(
-                signed-resolution/recover-release-authority-replacement-v1.sh
-                signed-resolution/release-authority-manifest.sh
-                signed-resolution/release-authority-selection-review-v1.json
-                signed-resolution/release-authority-replacement-v1.json
-                signed-resolution/release-authority-replacement-v1.json.cosign.bundle
-              )
-              if [[ -f signed-resolution/release-authority-resolution-correction-v1.json ]]; then
-                upload_assets+=(signed-resolution/release-authority-resolution-correction-v1.json)
-              fi
+              # The validator above owns the exact revision-specific asset set.
+              # Upload that complete validated set so new required assets cannot be
+              # omitted by a second, independently maintained list.
+              mapfile -t upload_assets < <(find signed-resolution \
+                -mindepth 1 -maxdepth 1 -type f -printf '%p\n' | LC_ALL=C sort)
+              test "${#upload_assets[@]}" -gt 0
               gh release upload "$resolution_tag" "${upload_assets[@]}" \
                 --repo "$GITHUB_REPOSITORY"
             fi
