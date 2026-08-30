@@ -485,6 +485,12 @@ export SUPERSEDED_RECOVERY_TOOL_SHA256 CORRECTION_REVIEW_SHA256
 expect_failure "$helper" validate-replacement-resolution-tag \
     authority-resolution-v1-g701-r3 \
     "$resolution_dir/release-authority-replacement-v1.json"
+jq -c --arg commit "$(printf '6%.0s' {1..40})" \
+    '.planned_product_base_commit = $commit' \
+    "$resolution_dir/release-authority-replacement-v1.json" \
+    >"$tmp_root/replacement-resolution-r2-wrong-planned-base.json"
+expect_failure "$helper" validate-replacement-resolution \
+    "$tmp_root/replacement-resolution-r2-wrong-planned-base.json"
 RESOLUTION_SHA256=$(sha256sum \
     "$resolution_dir/release-authority-replacement-v1.json" | awk '{print $1}')
 export RESOLUTION_SHA256
@@ -921,6 +927,7 @@ expect_failure verify_g1 \
 workflow="$repo_root/.github/workflows/release-authority.yml"
 release_workflow="$repo_root/.github/workflows/release-sign.yml"
 recovery_tool="$repo_root/scripts/recover-release-authority-replacement-v1.sh"
+checked_in_selection_review="$repo_root/.github/authority-replacement-reviews/g60.json"
 checked_in_r2_correction="$repo_root/.github/authority-resolution-corrections/g60-r2.json"
 checked_in_r3_correction="$repo_root/.github/authority-resolution-corrections/g60-r3.json"
 expected_authority_download_consumers=$(printf '%s\n' \
@@ -1095,6 +1102,128 @@ exercise_single_artifact_selector \
     == 5ac27c9c1ad06b32b6e1ba5858b6964383c70da0 ]]
 [[ $(jq -er '.proof_helper_sha256' "$checked_in_r3_correction") \
     == c4e3e85d35216a06173f5a68d6574db917d099f89458241d4ee969a4abac96de ]]
+(
+    REPLACEMENT_PREDECESSOR_GENERATION=$(jq -er \
+        '.predecessor_generation' "$checked_in_selection_review")
+    REPLACEMENT_PREDECESSOR_MANIFEST_SHA256=$(jq -er \
+        '.predecessor_manifest_sha256' "$checked_in_selection_review")
+    REJECTED_AUTHORITY_GENERATION=$(jq -er \
+        '.rejected_generation' "$checked_in_selection_review")
+    REJECTED_AUTHORITY_MANIFEST_SHA256=$(jq -er \
+        '.rejected_manifest_sha256' "$checked_in_selection_review")
+    REJECTED_AUTHORITY_WORKFLOW_COMMIT=$(jq -er \
+        '.rejected_workflow_commit' "$checked_in_selection_review")
+    REJECTED_AUTHORITY_VERSION=$(jq -er \
+        '.rejected_authority_version' "$checked_in_selection_review")
+    REJECTED_AUTHORITY_COMMIT=$(jq -er \
+        '.rejected_authority_commit' "$checked_in_selection_review")
+    REJECTED_PRODUCT_RELEASE_COMMIT=$(jq -er \
+        '.rejected_product_release_commit' "$checked_in_selection_review")
+    SELECTED_AUTHORITY_GENERATION=$(jq -er \
+        '.selected_generation' "$checked_in_selection_review")
+    SELECTED_AUTHORITY_MANIFEST_SHA256=$(jq -er \
+        '.selected_manifest_sha256' "$checked_in_selection_review")
+    SELECTED_AUTHORITY_WORKFLOW_COMMIT=$(jq -er \
+        '.selected_workflow_commit' "$checked_in_selection_review")
+    SELECTED_AUTHORITY_VERSION=$(jq -er \
+        '.selected_authority_version' "$checked_in_selection_review")
+    SELECTED_AUTHORITY_COMMIT=$(jq -er \
+        '.selected_authority_commit' "$checked_in_selection_review")
+    SETTLED_PRODUCT_VERSION=$(jq -er \
+        '.settled_product_version' "$checked_in_selection_review")
+    SETTLED_PRODUCT_GATEWAY_COMMIT=$(jq -er \
+        '.settled_product_gateway_commit' "$checked_in_selection_review")
+    SETTLED_PRODUCT_ENGINE_COMMIT=$(jq -er \
+        '.settled_product_engine_commit' "$checked_in_selection_review")
+    SETTLED_PRODUCT_STATE_SHA256=$(jq -er \
+        '.settled_product_state_sha256' "$checked_in_selection_review")
+    SETTLED_PROMOTION_POLICY_SHA256=$(jq -er \
+        '.settled_promotion_policy_sha256' "$checked_in_selection_review")
+    SELECTED_ENGINE_COMMIT=$(jq -er \
+        '.selected_engine_commit' "$checked_in_selection_review")
+    PLANNED_PRODUCT_VERSION=$(jq -er \
+        '.planned_product_version' "$checked_in_selection_review")
+    PLANNED_PRODUCT_BASE_COMMIT=$(jq -er \
+        '.corrected_planned_product_base_commit' "$checked_in_r3_correction")
+    RECOVERY_TOOL_SHA256=$(sha256sum "$recovery_tool" | awk '{print $1}')
+    MANIFEST_HELPER_SHA256=$(sha256sum "$helper" | awk '{print $1}')
+    SELECTION_REVIEW_SHA256=$(sha256sum \
+        "$checked_in_selection_review" | awk '{print $1}')
+    RESOLUTION_WORKFLOW_COMMIT=$(git -C "$repo_root" rev-parse HEAD)
+    RESOLUTION_REVISION=3
+    SUPERSEDES_RESOLUTION_TAG=$(jq -er \
+        '.supersedes_resolution_tag' "$checked_in_r3_correction")
+    SUPERSEDES_RESOLUTION_SHA256=$(jq -er \
+        '.supersedes_resolution_sha256' "$checked_in_r3_correction")
+    SUPERSEDED_RECOVERY_TOOL_SHA256=$(jq -er \
+        '.superseded_recovery_tool_sha256' "$checked_in_r3_correction")
+    CORRECTION_REVIEW_SHA256=$(sha256sum \
+        "$checked_in_r3_correction" | awk '{print $1}')
+    PROOF_HELPER_SOURCE_COMMIT=$(jq -er \
+        '.proof_helper_source_commit' "$checked_in_r3_correction")
+    PROOF_HELPER_SOURCE_TREE_SHA256=$(jq -er \
+        '.proof_helper_source_tree_sha256' "$checked_in_r3_correction")
+    PROOF_HELPER_SHA256=$(jq -er \
+        '.proof_helper_sha256' "$checked_in_r3_correction")
+    PROOF_HELPER_CONTROL_PLANE_SHA256=$(jq -er \
+        '.proof_helper_control_plane_sha256' "$checked_in_r3_correction")
+    PROOF_HELPER_TOOLCHAIN_SHA256=$(jq -er \
+        '.proof_helper_toolchain_sha256' "$checked_in_r3_correction")
+    PROOF_HELPER_RUSTFLAGS_SHA256=$(jq -er \
+        '.proof_helper_rustflags_sha256' "$checked_in_r3_correction")
+    PROOF_HELPER_BUILD_TARGET=$(jq -er \
+        '.proof_helper_build_target' "$checked_in_r3_correction")
+    PROOF_HELPER_BUILD_PROFILE=$(jq -er \
+        '.proof_helper_build_profile' "$checked_in_r3_correction")
+    PROOF_HELPER_BUILD_CLEAN=$(jq -er \
+        '.proof_helper_build_clean' "$checked_in_r3_correction")
+    PROOF_HELPER_EXECUTION_PATH=$(jq -er \
+        '.proof_helper_execution_path' "$checked_in_r3_correction")
+    PROOF_HELPER_PROTOCOL_SHA256=$(jq -er \
+        '.proof_helper_protocol_sha256' "$checked_in_r3_correction")
+    export REPLACEMENT_PREDECESSOR_GENERATION
+    export REPLACEMENT_PREDECESSOR_MANIFEST_SHA256
+    export REJECTED_AUTHORITY_GENERATION REJECTED_AUTHORITY_MANIFEST_SHA256
+    export REJECTED_AUTHORITY_WORKFLOW_COMMIT REJECTED_AUTHORITY_VERSION
+    export REJECTED_AUTHORITY_COMMIT REJECTED_PRODUCT_RELEASE_COMMIT
+    export SELECTED_AUTHORITY_GENERATION SELECTED_AUTHORITY_MANIFEST_SHA256
+    export SELECTED_AUTHORITY_WORKFLOW_COMMIT SELECTED_AUTHORITY_VERSION
+    export SELECTED_AUTHORITY_COMMIT SETTLED_PRODUCT_VERSION
+    export SETTLED_PRODUCT_GATEWAY_COMMIT SETTLED_PRODUCT_ENGINE_COMMIT
+    export SETTLED_PRODUCT_STATE_SHA256 SETTLED_PROMOTION_POLICY_SHA256
+    export SELECTED_ENGINE_COMMIT PLANNED_PRODUCT_VERSION
+    export PLANNED_PRODUCT_BASE_COMMIT RECOVERY_TOOL_SHA256
+    export MANIFEST_HELPER_SHA256 SELECTION_REVIEW_SHA256
+    export RESOLUTION_WORKFLOW_COMMIT RESOLUTION_REVISION
+    export SUPERSEDES_RESOLUTION_TAG SUPERSEDES_RESOLUTION_SHA256
+    export SUPERSEDED_RECOVERY_TOOL_SHA256 CORRECTION_REVIEW_SHA256
+    export PROOF_HELPER_SOURCE_COMMIT PROOF_HELPER_SOURCE_TREE_SHA256
+    export PROOF_HELPER_SHA256 PROOF_HELPER_CONTROL_PLANE_SHA256
+    export PROOF_HELPER_TOOLCHAIN_SHA256 PROOF_HELPER_RUSTFLAGS_SHA256
+    export PROOF_HELPER_BUILD_TARGET PROOF_HELPER_BUILD_PROFILE
+    export PROOF_HELPER_BUILD_CLEAN PROOF_HELPER_EXECUTION_PATH
+    export PROOF_HELPER_PROTOCOL_SHA256
+
+    checked_in_r3_resolution="$tmp_root/checked-in-r3-resolution.json"
+    "$helper" render-replacement-resolution "$checked_in_r3_resolution"
+    "$helper" validate-replacement-resolution "$checked_in_r3_resolution"
+    "$helper" validate-replacement-resolution-tag \
+        authority-resolution-v1-g60-r3 "$checked_in_r3_resolution"
+    jq -c '
+        .planned_product_base_commit = .selected_authority_commit |
+        .proof_helper_source_commit = .selected_authority_commit
+    ' \
+        "$checked_in_r3_resolution" \
+        >"$tmp_root/r3-resolution-selected-authority-base.json"
+    expect_failure "$helper" validate-replacement-resolution \
+        "$tmp_root/r3-resolution-selected-authority-base.json"
+    jq -c --arg commit "$(printf '6%.0s' {1..40})" \
+        '.planned_product_base_commit = $commit' \
+        "$checked_in_r3_resolution" \
+        >"$tmp_root/r3-resolution-non-proof-base.json"
+    expect_failure "$helper" validate-replacement-resolution \
+        "$tmp_root/r3-resolution-non-proof-base.json"
+)
 grep -Fq 'approval_record:' "$workflow"
 for required in \
     verification_policy_revision \
