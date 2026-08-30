@@ -1282,6 +1282,18 @@ grep -Fq 'recover_sign_resolution:' "$workflow"
 grep -Fq 'recover_publish_resolution:' "$workflow"
 grep -Fq 'resolution_workflow_commit' "$workflow"
 grep -Fq 'release-authority-selection-review-v1.json' "$workflow"
+recovered_resolution_publisher=$(yq -r '
+    .jobs.recover_publish_resolution.steps[] |
+    select(.name == "Publish or finish exact recovered replacement resolution") |
+    .run
+' "$workflow")
+grep -Fq 'mapfile -t upload_assets' <<<"$recovered_resolution_publisher"
+grep -Fq -- '-mindepth 1 -maxdepth 1 -type f' \
+    <<<"$recovered_resolution_publisher"
+grep -Fq '"${upload_assets[@]}"' <<<"$recovered_resolution_publisher"
+if grep -Fq 'upload_assets=(' <<<"$recovered_resolution_publisher"; then
+    fail 'replacement resolution publisher maintains a second static asset list'
+fi
 grep -Fq 'SELECTION_REVIEW_SHA256' "$workflow"
 grep -Fq 'SETTLED_PROMOTION_POLICY_SHA256' "$workflow"
 grep -Fq 'target_already_published' "$workflow"
