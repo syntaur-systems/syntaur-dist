@@ -2814,8 +2814,20 @@ jobs:
               mapfile -t upload_assets < <(find signed-resolution \
                 -mindepth 1 -maxdepth 1 -type f -printf '%p\n' | LC_ALL=C sort)
               test "${#upload_assets[@]}" -gt 0
-              gh release upload "$resolution_tag" "${upload_assets[@]}" \
-                --repo "$GITHUB_REPOSITORY"
+              printf '%s' "$release_id" | grep -Eq '^[1-9][0-9]*$'
+              upload_url=$(jq -er '.upload_url' <<<"$release")
+              test "$upload_url" = \
+                "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets{?name,label}"
+              upload_base=${upload_url%%\{*}
+              for asset_path in "${upload_assets[@]}"; do
+                asset_name=${asset_path##*/}
+                printf '%s' "$asset_name" | grep -Eq '^[A-Za-z0-9._-]+$'
+                gh api --method POST \
+                  -H 'Content-Type: application/octet-stream' \
+                  --input "$asset_path" \
+                  -f "name=${asset_name}" \
+                  "$upload_base" >/dev/null
+              done
             fi
             release=$(gh api "/repos/${GITHUB_REPOSITORY}/releases/${release_id}")
             observed_assets=$(jq -r '.assets[].name' <<<"$release" | LC_ALL=C sort)
