@@ -1253,7 +1253,12 @@ validate_replacement_resolution() {
         (.planned_product_base_commit | commit) and
         (.settled_product_version == .selected_authority_version) and
         (.settled_product_gateway_commit != .selected_authority_commit) and
-        (.planned_product_base_commit == .selected_authority_commit) and
+        (if .schema == 2 and .resolution_revision == 3 then
+           (.planned_product_base_commit == .proof_helper_source_commit) and
+           (.planned_product_base_commit != .selected_authority_commit)
+         else
+           (.planned_product_base_commit == .selected_authority_commit)
+         end) and
         ((.selected_authority_version | split(".") | map(tonumber)) as $selected |
          (.planned_product_version | split(".") | map(tonumber)) as $planned |
          ($planned[0] == $selected[0]) and
