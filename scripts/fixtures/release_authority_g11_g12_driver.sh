@@ -226,6 +226,7 @@ cosign_sha=$(sha256_file "$fake_cosign")
 helper_sha=$(sha256_file "$helper")
 
 patched=/run/recover-release-authority-g11-g12-canary-root-v1.sh
+# shellcheck disable=SC2016 # Preserve fixture variables in the injected script.
 sed \
     -e "s/^readonly COSIGN_SHA256=.*/readonly COSIGN_SHA256=$cosign_sha/" \
     -e "s/^readonly MANIFEST_HELPER_SHA256=.*/readonly MANIFEST_HELPER_SHA256=$helper_sha/" \
@@ -241,7 +242,22 @@ sed \
     -e "s/^readonly G12_SHIPPER_SHA256=.*/readonly G12_SHIPPER_SHA256=$g12_shipper_sha/" \
     -e "s/^readonly G12_VERIFIER_SHA256=.*/readonly G12_VERIFIER_SHA256=$verifier_sha/" \
     -e "s/^readonly G12_PROVISIONER_SHA256=.*/readonly G12_PROVISIONER_SHA256=$g12_provisioner_sha/" \
+    -e '/^exec 9<"\$DEPLOYMENT_LOCK"$/a\
+# Fixture-only deployment-lock acquisition barrier.\
+if [[ ${SYNTAUR_FIXTURE_DEPLOY_LOCK_BARRIER:-} == 1 ]]; then\
+    : >"$SYNTAUR_FIXTURE_DEPLOY_LOCK_READY"\
+    for ((fixture_attempt = 0; fixture_attempt < 10000; fixture_attempt++)); do\
+        [[ -e $SYNTAUR_FIXTURE_DEPLOY_LOCK_RELEASE ]] && break\
+        /usr/bin/sleep 0.001\
+    done\
+    if [[ ! -e $SYNTAUR_FIXTURE_DEPLOY_LOCK_RELEASE ]]; then\
+        die "fixture deployment-lock barrier timed out"\
+    fi\
+fi' \
     "$source_script" >"$patched"
+[[ $(grep -Fxc '# Fixture-only deployment-lock acquisition barrier.' \
+    "$patched") -eq 1 ]] \
+    || die 'fixture deployment-lock barrier injection count differs'
 
 install -d -o root -g root -m 0700 "$runtime"
 install -o root -g root -m 0500 "$patched" "$recovery"
@@ -660,9 +676,14 @@ case $scenario in
         ;;
     acquisition-lock-replace)
         replacement=$operator_state/deploy.lock.replacement
+        barrier_ready=/run/acquisition-lock-replace.ready
+        barrier_release=/run/acquisition-lock-replace.release
         install -o "$operator_uid" -g "$operator_gid" -m 0600 /dev/null \
             "$replacement"
-        SUDO_UID=$operator_uid SUDO_GID=$operator_gid \
+        SYNTAUR_FIXTURE_DEPLOY_LOCK_BARRIER=1 \
+            SYNTAUR_FIXTURE_DEPLOY_LOCK_READY=$barrier_ready \
+            SYNTAUR_FIXTURE_DEPLOY_LOCK_RELEASE=$barrier_release \
+            SUDO_UID=$operator_uid SUDO_GID=$operator_gid \
             "$recovery" install \
             --g11-dir "$g11" --g12-dir "$g12" \
             --expected-current-shipper-sha256 "$g11_shipper_sha" \
@@ -671,8 +692,11 @@ case $scenario in
         recovery_pid=$!
         replaced=false
         for ((attempt = 0; attempt < 1000000; attempt++)); do
-            if [[ -e /proc/$recovery_pid/fd/9 ]]; then
+            if [[ -e $barrier_ready ]]; then
+                [[ -e /proc/$recovery_pid/fd/9 ]] \
+                    || die 'recovery deployment-lock descriptor is absent at barrier'
                 mv -fT "$replacement" "$operator_state/deploy.lock"
+                : >"$barrier_release"
                 replaced=true
                 break
             fi
@@ -683,16 +707,23 @@ case $scenario in
         if wait "$recovery_pid"; then
             die 'deployment-lock acquisition replacement unexpectedly succeeded'
         fi
-        grep -Eq 'operator deployment lock (changed|descriptor differs)' \
-            /run/acquisition-lock-replace.err \
-            || die 'deployment-lock descriptor/path split was not rejected'
+        if ! grep -Fq 'operator deployment lock descriptor differs' \
+            /run/acquisition-lock-replace.err; then
+            sed -n '1,80p' /run/acquisition-lock-replace.err >&2
+            die 'deployment-lock descriptor/path split was not rejected'
+        fi
         [[ ! -e $authority_root/authority-promotion-v1.json ]]
         [[ ! -e $authority_root/authority-g11-g12-recovery-v1.json ]]
         install_exact
         assert_complete
         ;;
     acquisition-lock-metadata)
-        SUDO_UID=$operator_uid SUDO_GID=$operator_gid \
+        barrier_ready=/run/acquisition-lock-metadata.ready
+        barrier_release=/run/acquisition-lock-metadata.release
+        SYNTAUR_FIXTURE_DEPLOY_LOCK_BARRIER=1 \
+            SYNTAUR_FIXTURE_DEPLOY_LOCK_READY=$barrier_ready \
+            SYNTAUR_FIXTURE_DEPLOY_LOCK_RELEASE=$barrier_release \
+            SUDO_UID=$operator_uid SUDO_GID=$operator_gid \
             "$recovery" install \
             --g11-dir "$g11" --g12-dir "$g12" \
             --expected-current-shipper-sha256 "$g11_shipper_sha" \
@@ -701,10 +732,13 @@ case $scenario in
         recovery_pid=$!
         mutated=false
         for ((attempt = 0; attempt < 1000000; attempt++)); do
-            if [[ -e /proc/$recovery_pid/fd/9 ]]; then
+            if [[ -e $barrier_ready ]]; then
+                [[ -e /proc/$recovery_pid/fd/9 ]] \
+                    || die 'recovery deployment-lock descriptor is absent at barrier'
                 printf 'unsafe same-inode mutation\n' \
                     >"$operator_state/deploy.lock"
                 chmod 0666 "$operator_state/deploy.lock"
+                : >"$barrier_release"
                 mutated=true
                 break
             fi
@@ -715,9 +749,11 @@ case $scenario in
         if wait "$recovery_pid"; then
             die 'deployment-lock metadata mutation unexpectedly succeeded'
         fi
-        grep -Eq 'operator deployment lock (expected identity is unsafe|expected size is unsafe|changed|descriptor differs)' \
-            /run/acquisition-lock-metadata.err \
-            || die 'same-inode deployment-lock metadata mutation was not rejected'
+        if ! grep -Fq 'operator deployment lock expected identity is unsafe' \
+            /run/acquisition-lock-metadata.err; then
+            sed -n '1,80p' /run/acquisition-lock-metadata.err >&2
+            die 'same-inode deployment-lock metadata mutation was not rejected'
+        fi
         [[ ! -e $authority_root/authority-promotion-v1.json ]]
         [[ ! -e $authority_root/authority-g11-g12-recovery-v1.json ]]
         : >"$operator_state/deploy.lock"
