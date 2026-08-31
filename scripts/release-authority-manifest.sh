@@ -650,6 +650,8 @@ resolution_correction_review_from_file() {
             "$(jq -er '.proof_helper_subprocess_protocol_sha256 // ""' "$record")" \
         --arg proof_helper_source_commit \
             "$(jq -er '.proof_helper_source_commit // ""' "$record")" \
+        --arg proof_helper_source_parent_commit \
+            "$(jq -er '.proof_helper_source_parent_commit // ""' "$record")" \
         --arg proof_helper_source_tree_sha256 \
             "$(jq -er '.proof_helper_source_tree_sha256 // ""' "$record")" \
         --arg proof_helper_sha256 \
@@ -739,6 +741,7 @@ resolution_correction_review_from_file() {
           r3_resolution_receipt_present:$r3_resolution_receipt_present
         } else {} end) +
         (if $schema == 2 and $resolution_revision >= 5 then {
+          proof_helper_source_parent_commit:$proof_helper_source_parent_commit,
           superseded_runtime_inputs_present:$superseded_runtime_inputs_present,
           superseded_runtime_resolution_sha256:$superseded_runtime_resolution_sha256,
           superseded_correction_authorization_sha256:$superseded_correction_authorization_sha256,
@@ -861,6 +864,9 @@ validate_resolution_correction_review() {
            (.r2_resolution_receipt_present == true) and
            (.r3_resolution_receipt_present == false) and
            (if .resolution_revision >= 5 then
+              (.proof_helper_source_parent_commit | commit) and
+              (.proof_helper_source_parent_commit !=
+                .proof_helper_source_commit) and
               (.superseded_runtime_inputs_present == true) and
               (.superseded_runtime_resolution_sha256 | digest) and
               (.superseded_runtime_resolution_sha256 ==
@@ -904,6 +910,7 @@ validate_resolution_correction_review() {
           "proof_helper_protocol_sha256", "r2_resolution_receipt_present",
           "r3_resolution_receipt_present"
         ] else [] end) + (if .schema == 2 and .resolution_revision >= 5 then [
+          "proof_helper_source_parent_commit",
           "superseded_runtime_inputs_present",
           "superseded_runtime_resolution_sha256",
           "superseded_correction_authorization_sha256",
@@ -1570,7 +1577,7 @@ validate_replacement_resolution_assets() {
     local directory=$1
     [[ -d $directory && ! -L $directory ]] \
         || die 'authority replacement resolution directory is unsafe'
-    local actual expected resolution review correction schema revision
+    local actual expected resolution review correction schema revision selection_base
     resolution=$directory/release-authority-replacement-v1.json
     review=$directory/release-authority-selection-review-v1.json
     [[ -f $resolution && ! -L $resolution ]] \
@@ -1636,16 +1643,19 @@ validate_replacement_resolution_assets() {
     [[ $review_sha == "$(manifest_value "$resolution" selection_review_sha256)" ]] \
         || die 'authority replacement selection review differs from the signed resolution'
     if [[ $schema == 2 && $revision -ge 3 ]]; then
+        selection_base=$(manifest_value \
+            "$correction" superseded_planned_product_base_commit)
+        if [[ $revision -ge 5 ]]; then
+            selection_base=$(manifest_value \
+                "$correction" proof_helper_source_parent_commit)
+        fi
         [[ $(selection_review_from_file "$resolution" \
-                | jq -c --arg base \
-                    "$(manifest_value "$correction" \
-                        superseded_planned_product_base_commit)" \
+                | jq -c --arg base "$selection_base" \
                     '.planned_product_base_commit = $base') == "$(<"$review")" ]] \
-            || die 'r3 resolution does not preserve the superseded exact selection review'
-        [[ $(manifest_value "$correction" \
-                superseded_planned_product_base_commit) == \
-                "$(manifest_value "$resolution" selected_authority_commit)" ]] \
-            || die 'r3 correction does not bind the selected authority base it supersedes'
+            || die 'corrected resolution does not preserve the exact selection review'
+        [[ $selection_base == \
+            "$(manifest_value "$resolution" selected_authority_commit)" ]] \
+            || die 'correction does not bind the selected authority source parent'
     else
         [[ $(selection_review_from_file "$resolution") == "$(<"$review")" ]] \
             || die 'authority replacement resolution does not bind the exact selection review'

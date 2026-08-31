@@ -773,11 +773,18 @@ jobs:
             source_commit=$(jq -er '.proof_helper_source_commit' "$correction")
             source_tree_sha256=$(jq -er \
               '.proof_helper_source_tree_sha256' "$correction")
-            source_parent=$(jq -er \
-              '.superseded_planned_product_base_commit' "$correction")
+            if [[ $RESOLUTION_REVISION -ge 5 ]]; then
+              source_parent=$(jq -er \
+                '.proof_helper_source_parent_commit' "$correction")
+            else
+              source_parent=$(jq -er \
+                '.superseded_planned_product_base_commit' "$correction")
+            fi
             source_version=$(jq -er '.selected_authority_version' "$review")
             test "$source_commit" \
               = "$(jq -er '.corrected_planned_product_base_commit' "$correction")"
+            test "$source_parent" \
+              = "$(jq -er '.planned_product_base_commit' "$review")"
           fi
           printf '%s' "$source_commit" | grep -Eq '^[0-9a-f]{40}$'
           printf '%s' "$source_parent" | grep -Eq '^[0-9a-f]{40}$'
@@ -1902,8 +1909,13 @@ jobs:
             --get-all http.https://github.com/.extraheader || true)"
           test "$(git -C source rev-parse HEAD)" = "$SOURCE_COMMIT"
           test "$(git -C source rev-list --parents -n 1 HEAD | awk '{print NF}')" = 2
-          test "$(git -C source rev-parse HEAD^)" \
-            = "$(jq -er '.superseded_planned_product_base_commit' "$correction")"
+          if [[ $RESOLUTION_REVISION -ge 5 ]]; then
+            source_parent=$(jq -er '.proof_helper_source_parent_commit' "$correction")
+          else
+            source_parent=$(jq -er \
+              '.superseded_planned_product_base_commit' "$correction")
+          fi
+          test "$(git -C source rev-parse HEAD^)" = "$source_parent"
           test "$(bash public-workflow/scripts/release-authority-manifest.sh \
             source-tree-sha256 source "$SOURCE_COMMIT")" = "$SOURCE_TREE_SHA256"
           test "$(<source/VERSION)" = 0.7.163
@@ -2381,7 +2393,7 @@ jobs:
                   = "$supersedes_resolution_sha256"
                 test "$(jq -er '.superseded_planned_product_base_commit' "$correction")" \
                   = "$(jq -er '.planned_product_base_commit' "$superseded_record")"
-              else
+              elif [[ $RESOLUTION_REVISION == 4 ]]; then
                 superseded_correction="$superseded/release-authority-resolution-correction-v1.json"
                 test "$(jq -er '.sealed_inputs_resolution_sha256' "$correction")" \
                   = "$(jq -er '.sealed_inputs_resolution_sha256' \
@@ -2389,6 +2401,15 @@ jobs:
                 test "$(jq -er '.superseded_planned_product_base_commit' \
                   "$correction")" = "$(jq -er \
                     '.superseded_planned_product_base_commit' \
+                    "$superseded_correction")"
+              else
+                superseded_correction="$superseded/release-authority-resolution-correction-v1.json"
+                test "$(jq -er '.sealed_inputs_resolution_sha256' "$correction")" \
+                  = "$(jq -er '.sealed_inputs_resolution_sha256' \
+                    "$superseded_correction")"
+                test "$(jq -er '.superseded_planned_product_base_commit' \
+                  "$correction")" = "$(jq -er \
+                    '.corrected_planned_product_base_commit' \
                     "$superseded_correction")"
               fi
             else

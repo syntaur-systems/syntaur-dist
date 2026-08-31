@@ -990,6 +990,21 @@ signed_authority_artifact_selector=$(yq -r '
     select(.name == "Select newest immutable signed package from this run") |
     .run
 ' "$workflow")
+source_tuple_guard=$(yq -r '
+    .jobs.source_metadata.steps[] |
+    select(.name == "Select exact private source tuple without executing it") |
+    .run
+' "$workflow")
+proof_helper_parent_guard=$(yq -r '
+    .jobs.replacement_proof_helper.steps[] |
+    select(.name == "Prove plaintext proof-helper source has no credential authority") |
+    .run
+' "$workflow")
+resolution_lineage_guard=$(yq -r '
+    .jobs.recover_sign_resolution.steps[] |
+    select(.name == "Recover or sign only the missing replacement resolution") |
+    .run
+' "$workflow")
 for selector in \
     "$proof_helper_artifact_selector" \
     "$isolated_build_artifact_selector" \
@@ -1000,6 +1015,10 @@ for selector in \
     [[ -n $selector && $selector != null ]]
 done
 [[ $proof_helper_artifact_selector == "$isolated_build_artifact_selector" ]]
+grep -Fq 'proof_helper_source_parent_commit' <<<"$source_tuple_guard"
+grep -Fq '.planned_product_base_commit' <<<"$source_tuple_guard"
+grep -Fq 'proof_helper_source_parent_commit' <<<"$proof_helper_parent_guard"
+grep -Fq '.corrected_planned_product_base_commit' <<<"$resolution_lineage_guard"
 
 run_single_artifact_selector() {
     local selector=$1
@@ -1140,6 +1159,15 @@ exercise_single_artifact_selector \
 [[ $(jq -er '.sealed_inputs_resolution_sha256' "$checked_in_r5_correction") \
     != "$(jq -er '.supersedes_resolution_sha256' \
         "$checked_in_r5_correction")" ]]
+[[ $(jq -er '.superseded_planned_product_base_commit' \
+        "$checked_in_r5_correction") \
+    == "$(jq -er '.corrected_planned_product_base_commit' \
+        "$checked_in_r4_correction")" ]]
+[[ $(jq -er '.proof_helper_source_parent_commit' "$checked_in_r5_correction") \
+    == "$(jq -er '.planned_product_base_commit' \
+        "$checked_in_selection_review")" ]]
+[[ $(jq -er '.proof_helper_source_parent_commit' "$checked_in_r5_correction") \
+    != "$(jq -er '.proof_helper_source_commit' "$checked_in_r5_correction")" ]]
 [[ $(jq -er '.superseded_runtime_inputs_present' "$checked_in_r5_correction") \
     == true ]]
 [[ $(jq -er '.superseded_runtime_resolution_sha256' "$checked_in_r5_correction") \
@@ -1156,6 +1184,14 @@ jq -cj '.superseded_resolution_receipt_present = true' \
     "$checked_in_r5_correction" >"$tmp_root/r5-false-receipt-claim.json"
 expect_failure "$helper" validate-resolution-correction-review \
     "$tmp_root/r5-false-receipt-claim.json"
+jq -cj 'del(.proof_helper_source_parent_commit)' \
+    "$checked_in_r5_correction" >"$tmp_root/r5-missing-source-parent.json"
+expect_failure "$helper" validate-resolution-correction-review \
+    "$tmp_root/r5-missing-source-parent.json"
+jq -cj '.proof_helper_source_parent_commit = .proof_helper_source_commit' \
+    "$checked_in_r5_correction" >"$tmp_root/r5-self-parent.json"
+expect_failure "$helper" validate-resolution-correction-review \
+    "$tmp_root/r5-self-parent.json"
 (
     REPLACEMENT_PREDECESSOR_GENERATION=$(jq -er \
         '.predecessor_generation' "$checked_in_selection_review")
@@ -1324,6 +1360,7 @@ grep -Fq 'release-authority-source' "$workflow"
 [[ $(grep -Fc 'secrets.SYNTAUR_SOURCE_ARCHIVE_AGE_IDENTITY' "$workflow") -eq 2 ]]
 [[ $(grep -Fc 'sudo chown -R 65534:65534 source' "$workflow") -eq 2 ]]
 grep -Fq 'proof_helper_source_commit' "$workflow"
+grep -Fq 'proof_helper_source_parent_commit' "$workflow"
 grep -Fq 'unset SOURCE_ARCHIVE_AGE_IDENTITY' "$workflow"
 grep -Fq 'encrypted-authority-source-run-' "$workflow"
 [[ $(grep -Fc -- '--repo "$GITHUB_REPOSITORY"' "$workflow") -eq 27 ]]
