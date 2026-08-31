@@ -1252,7 +1252,7 @@ grep -Fq 'release-authority-source' "$workflow"
 grep -Fq 'proof_helper_source_commit' "$workflow"
 grep -Fq 'unset SOURCE_ARCHIVE_AGE_IDENTITY' "$workflow"
 grep -Fq 'encrypted-authority-source-run-' "$workflow"
-[[ $(grep -Fc -- '--repo "$GITHUB_REPOSITORY"' "$workflow") -eq 28 ]]
+[[ $(grep -Fc -- '--repo "$GITHUB_REPOSITORY"' "$workflow") -eq 27 ]]
 grep -Fq 'mkdir -m 0700 "$age_root/bin"' "$workflow"
 grep -Fq '"$age_root/bin/"' "$workflow"
 grep -Fq '"$age_root/bin/age-keygen" -y -' "$workflow"
@@ -1291,6 +1291,14 @@ grep -Fq 'mapfile -t upload_assets' <<<"$recovered_resolution_publisher"
 grep -Fq -- '-mindepth 1 -maxdepth 1 -type f' \
     <<<"$recovered_resolution_publisher"
 grep -Fq '"${upload_assets[@]}"' <<<"$recovered_resolution_publisher"
+grep -Fq 'https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets{?name,label}' \
+    <<<"$recovered_resolution_publisher"
+grep -Fq -- '--input "$asset_path"' <<<"$recovered_resolution_publisher"
+grep -Fq -- '-f "name=${asset_name}"' <<<"$recovered_resolution_publisher"
+if grep -Fq 'gh release upload "$resolution_tag"' \
+    <<<"$recovered_resolution_publisher"; then
+    fail 'replacement resolution publisher resolves a draft by tag for upload'
+fi
 if grep -Fq 'upload_assets=(' <<<"$recovered_resolution_publisher"; then
     fail 'replacement resolution publisher maintains a second static asset list'
 fi
