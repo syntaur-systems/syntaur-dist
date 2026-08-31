@@ -2685,6 +2685,66 @@ jobs:
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             --certificate-github-workflow-sha "$resolution_workflow_commit" \
             "$record"
+          if [[ $RESOLUTION_REVISION == 6 ]]; then
+            fixture_root=/usr/local/libexec/syntaur-authority-replacement-proof-v1
+            fixture_home="$RUNNER_TEMP/r6-proof-helper-home"
+            fixture_hostname="$RUNNER_TEMP/r6-proof-helper.hostname"
+            fixture_stdout="$RUNNER_TEMP/r6-proof-helper.stdout"
+            fixture_stderr="$RUNNER_TEMP/r6-proof-helper.stderr"
+            runner_uid=$(id -u)
+            runner_gid=$(id -g)
+            cosign_path=$(command -v cosign)
+            mkdir -m 0700 "$fixture_home"
+            printf 'claudevm\n' >"$fixture_hostname"
+            chmod 0444 "$fixture_hostname"
+            sudo test ! -e "$fixture_root"
+            sudo test ! -e /usr/local/bin/syntaur-ship
+            sudo install -o root -g root -m 0755 -d "$fixture_root"
+            sudo install -o root -g root -m 0555 \
+              "$resolution/syntaur-authority-replacement-proof-linux-x86_64" \
+              "$fixture_root/syntaur-ship"
+            sudo install -o root -g root -m 0444 \
+              "$record" \
+              "$fixture_root/release-authority-replacement-v1.json"
+            sudo install -o root -g root -m 0444 \
+              "$resolution/release-authority-replacement-v1.json.cosign.bundle" \
+              "$fixture_root/release-authority-replacement-v1.json.cosign.bundle"
+            sudo install -o root -g root -m 0555 \
+              "$resolution/syntaur-authority-replacement-proof-linux-x86_64" \
+              /usr/local/bin/syntaur-ship
+            if [[ $cosign_path != /usr/local/bin/cosign ]]; then
+              sudo install -o root -g root -m 0555 \
+                "$cosign_path" /usr/local/bin/cosign
+            else
+              sudo chown root:root /usr/local/bin/cosign
+              sudo chmod 0555 /usr/local/bin/cosign
+            fi
+            test "$(stat -c '%u:%g:%a:%h' "$fixture_root/syntaur-ship")" \
+              = 0:0:555:1
+            test "$(stat -c '%u:%g:%a:%h' \
+              "$fixture_root/release-authority-replacement-v1.json")" \
+              = 0:0:444:1
+            test "$(stat -c '%u:%g:%a:%h' \
+              "$fixture_root/release-authority-replacement-v1.json.cosign.bundle")" \
+              = 0:0:444:1
+            set +e
+            sudo unshare --mount --uts --fork /bin/bash -c '
+              set -euo pipefail
+              mount --bind "$4" /etc/hostname
+              hostname claudevm
+              exec setpriv --reuid "$1" --regid "$2" --init-groups \
+                env -i HOME="$3" PATH=/usr/bin:/bin \
+                /usr/local/libexec/syntaur-authority-replacement-proof-v1/syntaur-ship \
+                authority-replacement-product-state-helper
+            ' r6-proof-helper-fixture "$runner_uid" "$runner_gid" "$fixture_home" \
+              "$fixture_hostname" \
+              >"$fixture_stdout" 2>"$fixture_stderr"
+            fixture_status=$?
+            set -e
+            test "$fixture_status" -ne 0
+            grep -Fq 'promotion endpoint policy' "$fixture_stderr"
+            ! grep -Fq 'signed provenance differs' "$fixture_stderr"
+          fi
           chmod 0400 "$record" \
             "$resolution/release-authority-replacement-v1.json.cosign.bundle" \
             "$resolution/release-authority-selection-review-v1.json"
