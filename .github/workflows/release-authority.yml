@@ -695,7 +695,7 @@ jobs:
       (needs.predecessor.outputs.already_published != 'true' &&
        needs.predecessor.outputs.target_already_published != 'true') ||
       (needs.predecessor.outputs.target_already_published == 'true' &&
-       inputs.resolution_revision == '3')
+       (inputs.resolution_revision == '3' || inputs.resolution_revision == '4'))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release-authority-source
@@ -722,7 +722,7 @@ jobs:
       (needs.predecessor.outputs.already_published != 'true' &&
        needs.predecessor.outputs.target_already_published != 'true') ||
       (needs.predecessor.outputs.target_already_published == 'true' &&
-       inputs.resolution_revision == '3')
+       (inputs.resolution_revision == '3' || inputs.resolution_revision == '4'))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release-authority-source
@@ -758,9 +758,9 @@ jobs:
           source_parent=$VERIFICATION_POLICY_REVISION
           source_version=$AUTHORITY_VERSION
           if [[ $TARGET_ALREADY_PUBLISHED == true ]]; then
-            test "$RESOLUTION_REVISION" = 3
+            printf '%s' "$RESOLUTION_REVISION" | grep -Eq '^[34]$'
             source_mode=replacement-proof-helper
-            correction="public-workflow/.github/authority-resolution-corrections/g${GENERATION}-r3.json"
+            correction="public-workflow/.github/authority-resolution-corrections/g${GENERATION}-r${RESOLUTION_REVISION}.json"
             review="public-workflow/.github/authority-replacement-reviews/g${GENERATION}.json"
             bash public-workflow/scripts/release-authority-manifest.sh \
               validate-resolution-correction-review "$correction"
@@ -1769,7 +1769,9 @@ jobs:
       - predecessor
       - resolution_policy
       - source_metadata
-    if: needs.predecessor.outputs.target_already_published == 'true' && inputs.resolution_revision == '3'
+    if: >-
+      needs.predecessor.outputs.target_already_published == 'true' &&
+      (inputs.resolution_revision == '3' || inputs.resolution_revision == '4')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: release-authority-source
@@ -1880,9 +1882,10 @@ jobs:
           SOURCE_COMMIT: ${{ needs.source_metadata.outputs.source_commit }}
           SOURCE_TREE_SHA256: ${{ needs.source_metadata.outputs.authority_tree_sha256 }}
           GENERATION: ${{ needs.predecessor.outputs.generation }}
+          RESOLUTION_REVISION: ${{ inputs.resolution_revision }}
         run: |
           set -euo pipefail
-          correction="public-workflow/.github/authority-resolution-corrections/g${GENERATION}-r3.json"
+          correction="public-workflow/.github/authority-resolution-corrections/g${GENERATION}-r${RESOLUTION_REVISION}.json"
           test -z "${SOURCE_ARCHIVE_AGE_IDENTITY:-}"
           test -z "${SYNTAUR_SOURCE_DEPLOY_KEY:-}"
           leaked_identities=$(find "$RUNNER_TEMP" "$GITHUB_WORKSPACE" \
@@ -2098,9 +2101,10 @@ jobs:
           GENERATION: ${{ needs.predecessor.outputs.generation }}
           SOURCE_COMMIT: ${{ needs.source_metadata.outputs.source_commit }}
           SOURCE_TREE_SHA256: ${{ needs.source_metadata.outputs.authority_tree_sha256 }}
+          RESOLUTION_REVISION: ${{ inputs.resolution_revision }}
         run: |
           set -euo pipefail
-          correction="public-workflow/.github/authority-resolution-corrections/g${GENERATION}-r3.json"
+          correction="public-workflow/.github/authority-resolution-corrections/g${GENERATION}-r${RESOLUTION_REVISION}.json"
           helper="$RUNNER_TEMP/proof-target-a/syntaur-authority-replacement-proof-linux-x86_64"
           attestation="$RUNNER_TEMP/proof-target-a/proof-helper-build-attestation.json"
           jq -e '
@@ -2161,7 +2165,7 @@ jobs:
       always() &&
       needs.predecessor.outputs.target_already_published == 'true' &&
       needs.resolution_policy.result == 'success' &&
-      (inputs.resolution_revision != '3' ||
+      ((inputs.resolution_revision != '3' && inputs.resolution_revision != '4') ||
        needs.replacement_proof_helper.result == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -2177,14 +2181,14 @@ jobs:
           path: public-workflow
 
       - name: Download exact replacement proof helper
-        if: inputs.resolution_revision == '3'
+        if: inputs.resolution_revision == '3' || inputs.resolution_revision == '4'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: replacement-proof-helper-run-${{ github.run_id }}-attempt-*
           path: replacement-proof-helper-artifacts
 
       - name: Select exact replacement proof helper
-        if: inputs.resolution_revision == '3'
+        if: inputs.resolution_revision == '3' || inputs.resolution_revision == '4'
         shell: bash
         run: |
           set -euo pipefail
@@ -2296,7 +2300,7 @@ jobs:
             correction_review_sha256=$(sha256sum "$correction" | awk '{print $1}')
             test "$(jq -er '.selected_manifest_sha256' "$correction")" \
               = "$(sha256sum "$target_manifest" | awk '{print $1}')"
-            if [[ $RESOLUTION_REVISION == 3 ]]; then
+            if [[ $RESOLUTION_REVISION -ge 3 ]]; then
               proof_package=replacement-proof-helper
               proof_helper="$proof_package/syntaur-authority-replacement-proof-linux-x86_64"
               proof_attestation="$proof_package/proof-helper-build-attestation.json"
@@ -2360,14 +2364,25 @@ jobs:
               --jq '.object.sha')" = "$superseded_workflow_commit"
             test "$(jq -er '.manifest_helper_sha256' "$superseded_record")" \
               = "$(jq -er '.superseded_manifest_helper_sha256' "$correction")"
-            if [[ $RESOLUTION_REVISION == 3 ]]; then
+            if [[ $RESOLUTION_REVISION -ge 3 ]]; then
               test "$(jq -er '.active_generation' "$correction")" = "$GENERATION"
               test "$(jq -er '.active_manifest_sha256' "$correction")" \
                 = "$(sha256sum "$target_manifest" | awk '{print $1}')"
-              test "$(jq -er '.sealed_inputs_resolution_sha256' "$correction")" \
-                = "$supersedes_resolution_sha256"
-              test "$(jq -er '.superseded_planned_product_base_commit' "$correction")" \
-                = "$(jq -er '.planned_product_base_commit' "$superseded_record")"
+              if [[ $RESOLUTION_REVISION == 3 ]]; then
+                test "$(jq -er '.sealed_inputs_resolution_sha256' "$correction")" \
+                  = "$supersedes_resolution_sha256"
+                test "$(jq -er '.superseded_planned_product_base_commit' "$correction")" \
+                  = "$(jq -er '.planned_product_base_commit' "$superseded_record")"
+              else
+                superseded_correction="$superseded/release-authority-resolution-correction-v1.json"
+                test "$(jq -er '.sealed_inputs_resolution_sha256' "$correction")" \
+                  = "$(jq -er '.sealed_inputs_resolution_sha256' \
+                    "$superseded_correction")"
+                test "$(jq -er '.superseded_planned_product_base_commit' \
+                  "$correction")" = "$(jq -er \
+                    '.superseded_planned_product_base_commit' \
+                    "$superseded_correction")"
+              fi
             else
               test "$(jq -er '.active_generation' "$correction")" \
                 = "$PREVIOUS_GENERATION"
@@ -2450,7 +2465,7 @@ jobs:
               install -m 0400 "$correction" \
                 "$resolution/release-authority-resolution-correction-v1.json"
             fi
-            if [[ $RESOLUTION_REVISION == 3 ]]; then
+            if [[ $RESOLUTION_REVISION -ge 3 ]]; then
               install -m 0500 \
                 "$proof_helper" \
                 "$resolution/syntaur-authority-replacement-proof-linux-x86_64"
@@ -2510,7 +2525,7 @@ jobs:
             export RESOLUTION_WORKFLOW_COMMIT RESOLUTION_REVISION
             export SUPERSEDES_RESOLUTION_TAG SUPERSEDES_RESOLUTION_SHA256
             export SUPERSEDED_RECOVERY_TOOL_SHA256 CORRECTION_REVIEW_SHA256
-            if [[ $RESOLUTION_REVISION == 3 ]]; then
+            if [[ $RESOLUTION_REVISION -ge 3 ]]; then
               export PROOF_HELPER_SOURCE_COMMIT PROOF_HELPER_SOURCE_TREE_SHA256
               export PROOF_HELPER_SHA256 PROOF_HELPER_CONTROL_PLANE_SHA256
               export PROOF_HELPER_TOOLCHAIN_SHA256 PROOF_HELPER_RUSTFLAGS_SHA256
@@ -2560,7 +2575,7 @@ jobs:
             cmp "$correction" \
               "$resolution/release-authority-resolution-correction-v1.json"
             r3=false
-            if [[ $RESOLUTION_REVISION == 3 ]]; then
+            if [[ $RESOLUTION_REVISION -ge 3 ]]; then
               r3=true
               test "$(jq -er '.planned_product_base_commit' "$record")" \
                 = "$(jq -er '.corrected_planned_product_base_commit' "$correction")"

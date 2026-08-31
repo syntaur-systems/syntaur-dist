@@ -930,6 +930,7 @@ recovery_tool="$repo_root/scripts/recover-release-authority-replacement-v1.sh"
 checked_in_selection_review="$repo_root/.github/authority-replacement-reviews/g60.json"
 checked_in_r2_correction="$repo_root/.github/authority-resolution-corrections/g60-r2.json"
 checked_in_r3_correction="$repo_root/.github/authority-resolution-corrections/g60-r3.json"
+checked_in_r4_correction="$repo_root/.github/authority-resolution-corrections/g60-r4.json"
 expected_authority_download_consumers=$(printf '%s\n' \
     $'compare_builds\tDownload both isolated builds' \
     $'isolated_build\tDownload encrypted source export' \
@@ -1082,6 +1083,7 @@ exercise_single_artifact_selector \
 [[ $(yq -r '.on.workflow_dispatch.inputs | length' "$workflow") == 2 ]]
 "$helper" validate-resolution-correction-review "$checked_in_r2_correction"
 "$helper" validate-resolution-correction-review "$checked_in_r3_correction"
+"$helper" validate-resolution-correction-review "$checked_in_r4_correction"
 [[ $(jq -er '.corrected_recovery_tool_sha256' "$checked_in_r2_correction") \
     == 2c08e0522c2589198142d1dbeeff59361b204a615ae7038e03dc39cd50de8708 ]]
 [[ $(jq -er '.corrected_manifest_helper_sha256' "$checked_in_r2_correction") \
@@ -1095,13 +1097,30 @@ exercise_single_artifact_selector \
     == "$(jq -er '.corrected_manifest_helper_sha256' \
         "$checked_in_r2_correction")" ]]
 [[ $(jq -er '.corrected_recovery_tool_sha256' "$checked_in_r3_correction") \
-    == "$(sha256sum "$recovery_tool" | awk '{print $1}')" ]]
+    == e690a545bc2640555ab96db4a321dd1b2d307e46f6f001e9b3f91cad9c8626d8 ]]
 [[ $(jq -er '.corrected_manifest_helper_sha256' "$checked_in_r3_correction") \
-    == "$(sha256sum "$helper" | awk '{print $1}')" ]]
+    == e7c2fa4f03755f2dea9664b1ee801143010852d2fd33d86a3854af9adbcbca5f ]]
 [[ $(jq -er '.proof_helper_source_commit' "$checked_in_r3_correction") \
     == 5ac27c9c1ad06b32b6e1ba5858b6964383c70da0 ]]
 [[ $(jq -er '.proof_helper_sha256' "$checked_in_r3_correction") \
     == c4e3e85d35216a06173f5a68d6574db917d099f89458241d4ee969a4abac96de ]]
+[[ $(jq -er '.supersedes_resolution_sha256' "$checked_in_r4_correction") \
+    == 24d931ae179a1a9f7a477e91ef9681d6da41180b9cf802eb7bb16e3bb8ecb734 ]]
+[[ $(jq -er '.superseded_recovery_tool_sha256' "$checked_in_r4_correction") \
+    == "$(jq -er '.corrected_recovery_tool_sha256' \
+        "$checked_in_r3_correction")" ]]
+[[ $(jq -er '.superseded_manifest_helper_sha256' "$checked_in_r4_correction") \
+    == "$(jq -er '.corrected_manifest_helper_sha256' \
+        "$checked_in_r3_correction")" ]]
+[[ $(jq -er '.corrected_recovery_tool_sha256' "$checked_in_r4_correction") \
+    == "$(sha256sum "$recovery_tool" | awk '{print $1}')" ]]
+[[ $(jq -er '.corrected_manifest_helper_sha256' "$checked_in_r4_correction") \
+    == "$(sha256sum "$helper" | awk '{print $1}')" ]]
+[[ $(jq -er '.sealed_inputs_resolution_sha256' "$checked_in_r4_correction") \
+    == 3f42c2844a4b72b9eef3f5f52f9db6cc7bbed3ba8a4cb7907f854d32d54f9293 ]]
+[[ $(jq -er '.sealed_inputs_resolution_sha256' "$checked_in_r4_correction") \
+    != "$(jq -er '.supersedes_resolution_sha256' \
+        "$checked_in_r4_correction")" ]]
 (
     REPLACEMENT_PREDECESSOR_GENERATION=$(jq -er \
         '.predecessor_generation' "$checked_in_selection_review")
@@ -1144,43 +1163,43 @@ exercise_single_artifact_selector \
     PLANNED_PRODUCT_VERSION=$(jq -er \
         '.planned_product_version' "$checked_in_selection_review")
     PLANNED_PRODUCT_BASE_COMMIT=$(jq -er \
-        '.corrected_planned_product_base_commit' "$checked_in_r3_correction")
+        '.corrected_planned_product_base_commit' "$checked_in_r4_correction")
     RECOVERY_TOOL_SHA256=$(sha256sum "$recovery_tool" | awk '{print $1}')
     MANIFEST_HELPER_SHA256=$(sha256sum "$helper" | awk '{print $1}')
     SELECTION_REVIEW_SHA256=$(sha256sum \
         "$checked_in_selection_review" | awk '{print $1}')
     RESOLUTION_WORKFLOW_COMMIT=$(git -C "$repo_root" rev-parse HEAD)
-    RESOLUTION_REVISION=3
+    RESOLUTION_REVISION=4
     SUPERSEDES_RESOLUTION_TAG=$(jq -er \
-        '.supersedes_resolution_tag' "$checked_in_r3_correction")
+        '.supersedes_resolution_tag' "$checked_in_r4_correction")
     SUPERSEDES_RESOLUTION_SHA256=$(jq -er \
-        '.supersedes_resolution_sha256' "$checked_in_r3_correction")
+        '.supersedes_resolution_sha256' "$checked_in_r4_correction")
     SUPERSEDED_RECOVERY_TOOL_SHA256=$(jq -er \
-        '.superseded_recovery_tool_sha256' "$checked_in_r3_correction")
+        '.superseded_recovery_tool_sha256' "$checked_in_r4_correction")
     CORRECTION_REVIEW_SHA256=$(sha256sum \
-        "$checked_in_r3_correction" | awk '{print $1}')
+        "$checked_in_r4_correction" | awk '{print $1}')
     PROOF_HELPER_SOURCE_COMMIT=$(jq -er \
-        '.proof_helper_source_commit' "$checked_in_r3_correction")
+        '.proof_helper_source_commit' "$checked_in_r4_correction")
     PROOF_HELPER_SOURCE_TREE_SHA256=$(jq -er \
-        '.proof_helper_source_tree_sha256' "$checked_in_r3_correction")
+        '.proof_helper_source_tree_sha256' "$checked_in_r4_correction")
     PROOF_HELPER_SHA256=$(jq -er \
-        '.proof_helper_sha256' "$checked_in_r3_correction")
+        '.proof_helper_sha256' "$checked_in_r4_correction")
     PROOF_HELPER_CONTROL_PLANE_SHA256=$(jq -er \
-        '.proof_helper_control_plane_sha256' "$checked_in_r3_correction")
+        '.proof_helper_control_plane_sha256' "$checked_in_r4_correction")
     PROOF_HELPER_TOOLCHAIN_SHA256=$(jq -er \
-        '.proof_helper_toolchain_sha256' "$checked_in_r3_correction")
+        '.proof_helper_toolchain_sha256' "$checked_in_r4_correction")
     PROOF_HELPER_RUSTFLAGS_SHA256=$(jq -er \
-        '.proof_helper_rustflags_sha256' "$checked_in_r3_correction")
+        '.proof_helper_rustflags_sha256' "$checked_in_r4_correction")
     PROOF_HELPER_BUILD_TARGET=$(jq -er \
-        '.proof_helper_build_target' "$checked_in_r3_correction")
+        '.proof_helper_build_target' "$checked_in_r4_correction")
     PROOF_HELPER_BUILD_PROFILE=$(jq -er \
-        '.proof_helper_build_profile' "$checked_in_r3_correction")
+        '.proof_helper_build_profile' "$checked_in_r4_correction")
     PROOF_HELPER_BUILD_CLEAN=$(jq -er \
-        '.proof_helper_build_clean' "$checked_in_r3_correction")
+        '.proof_helper_build_clean' "$checked_in_r4_correction")
     PROOF_HELPER_EXECUTION_PATH=$(jq -er \
-        '.proof_helper_execution_path' "$checked_in_r3_correction")
+        '.proof_helper_execution_path' "$checked_in_r4_correction")
     PROOF_HELPER_PROTOCOL_SHA256=$(jq -er \
-        '.proof_helper_protocol_sha256' "$checked_in_r3_correction")
+        '.proof_helper_protocol_sha256' "$checked_in_r4_correction")
     export REPLACEMENT_PREDECESSOR_GENERATION
     export REPLACEMENT_PREDECESSOR_MANIFEST_SHA256
     export REJECTED_AUTHORITY_GENERATION REJECTED_AUTHORITY_MANIFEST_SHA256
@@ -1204,25 +1223,25 @@ exercise_single_artifact_selector \
     export PROOF_HELPER_BUILD_CLEAN PROOF_HELPER_EXECUTION_PATH
     export PROOF_HELPER_PROTOCOL_SHA256
 
-    checked_in_r3_resolution="$tmp_root/checked-in-r3-resolution.json"
-    "$helper" render-replacement-resolution "$checked_in_r3_resolution"
-    "$helper" validate-replacement-resolution "$checked_in_r3_resolution"
+    checked_in_r4_resolution="$tmp_root/checked-in-r4-resolution.json"
+    "$helper" render-replacement-resolution "$checked_in_r4_resolution"
+    "$helper" validate-replacement-resolution "$checked_in_r4_resolution"
     "$helper" validate-replacement-resolution-tag \
-        authority-resolution-v1-g60-r3 "$checked_in_r3_resolution"
+        authority-resolution-v1-g60-r4 "$checked_in_r4_resolution"
     jq -c '
         .planned_product_base_commit = .selected_authority_commit |
         .proof_helper_source_commit = .selected_authority_commit
     ' \
-        "$checked_in_r3_resolution" \
-        >"$tmp_root/r3-resolution-selected-authority-base.json"
+        "$checked_in_r4_resolution" \
+        >"$tmp_root/r4-resolution-selected-authority-base.json"
     expect_failure "$helper" validate-replacement-resolution \
-        "$tmp_root/r3-resolution-selected-authority-base.json"
+        "$tmp_root/r4-resolution-selected-authority-base.json"
     jq -c --arg commit "$(printf '6%.0s' {1..40})" \
         '.planned_product_base_commit = $commit' \
-        "$checked_in_r3_resolution" \
-        >"$tmp_root/r3-resolution-non-proof-base.json"
+        "$checked_in_r4_resolution" \
+        >"$tmp_root/r4-resolution-non-proof-base.json"
     expect_failure "$helper" validate-replacement-resolution \
-        "$tmp_root/r3-resolution-non-proof-base.json"
+        "$tmp_root/r4-resolution-non-proof-base.json"
 )
 grep -Fq 'approval_record:' "$workflow"
 for required in \
@@ -1360,6 +1379,36 @@ awk '
         -e "s|^readonly PROOF_HELPER_PARENT=.*|readonly PROOF_HELPER_PARENT=$root_fixture/usr/local/libexec|" \
     >"$root_helpers"
 chmod 0500 "$root_helpers"
+
+large_resolution_source=$tmp_root/r4-large-resolution-source
+install -d -m 0700 "$large_resolution_source"
+printf '{}\n' >"$large_resolution_source/release-authority-replacement-v1.json"
+chmod 0400 "$large_resolution_source/release-authority-replacement-v1.json"
+install -m 0500 "$recovery_tool" \
+    "$large_resolution_source/recover-release-authority-replacement-v1.sh"
+install -m 0500 "$helper" \
+    "$large_resolution_source/release-authority-manifest.sh"
+truncate -s 5242880 \
+    "$large_resolution_source/syntaur-authority-replacement-proof-linux-x86_64"
+chmod 0500 \
+    "$large_resolution_source/syntaur-authority-replacement-proof-linux-x86_64"
+[[ $(stat -c '%s' \
+    "$large_resolution_source/syntaur-authority-replacement-proof-linux-x86_64") \
+    -gt 4194304 ]] || fail 'large proof-helper fixture does not cross the document limit'
+/usr/bin/env RECOVERY_HELPERS="$root_helpers" \
+    RESOLUTION_SOURCE="$large_resolution_source" /usr/bin/bash -c '
+        set -euo pipefail
+        source "$RECOVERY_HELPERS"
+        validate_resolution_inline() { :; }
+        resolution_data_names() {
+            /usr/bin/printf "%s\n" "$RESOLUTION" "$PROOF_HELPER_ASSET"
+        }
+        resolution_all_names() {
+            resolution_data_names "$1"
+            /usr/bin/printf "%s\n" "$RECOVERY_TOOL" "$MANIFEST_HELPER"
+        }
+        require_resolution_source "$RESOLUTION_SOURCE"
+    '
 
 shadow_runtime=$tmp_root/dynamic-scope-runtime
 shadow_stage=$shadow_runtime/inputs.staged

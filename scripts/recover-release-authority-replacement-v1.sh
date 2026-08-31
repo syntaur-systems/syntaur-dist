@@ -25,7 +25,7 @@ readonly INSTALL_RECEIPT=/etc/syntaur/release-authority-replacement-v1.receipt.j
 readonly ROLLBACK_RECEIPT=/etc/syntaur/release-authority-replacement-v1.rollback-receipt.json
 readonly PRODUCT_STATE_PROOF_TEMP=$AUTHORITY_ROOT/.authority-replacement-product-state-v1.tmp
 readonly RESOLUTION_PARENT=$AUTHORITY_ROOT/replacement-resolution-v1
-readonly SEALED_RUNTIME_ROOT=/etc/syntaur/release-authority-replacement-v1-r3.runtime
+readonly SEALED_RUNTIME_ROOT=/etc/syntaur/release-authority-replacement-v1-r4.runtime
 readonly SUPERSEDED_SEALED_RUNTIME_ROOT=/etc/syntaur/release-authority-replacement-v1.runtime
 readonly PROOF_HELPER_PARENT=/usr/local/libexec
 readonly PROOF_HELPER_ROOT=$PROOF_HELPER_PARENT/syntaur-authority-replacement-proof-v1
@@ -193,7 +193,7 @@ resolution_data_names() {
     /usr/bin/printf '%s\n' "$SELECTION_REVIEW" "$RESOLUTION" "$RESOLUTION_BUNDLE"
     if [[ $schema == 2 ]]; then
         /usr/bin/printf '%s\n' "$CORRECTION_REVIEW"
-        if [[ $(resolution_revision "$record") == 3 ]]; then
+        if [[ $(resolution_revision "$record") -ge 3 ]]; then
             /usr/bin/printf '%s\n' "$PROOF_HELPER_ASSET"
         fi
     fi
@@ -241,7 +241,7 @@ validate_resolution_inline() {
         (.planned_product_base_commit | commit) and
         (.settled_product_version == .selected_authority_version) and
         (.settled_product_gateway_commit != .selected_authority_commit) and
-        (if .schema == 2 and .resolution_revision == 3 then
+        (if .schema == 2 and .resolution_revision >= 3 then
            .planned_product_base_commit == .proof_helper_source_commit
          else
            .planned_product_base_commit == .selected_authority_commit
@@ -260,7 +260,7 @@ validate_resolution_inline() {
              has("superseded_recovery_tool_sha256") or
              has("correction_reason") or has("correction_review_sha256")) | not)
          else
-           (.resolution_revision | type == "number" and . >= 2 and . <= 3 and floor == .) and
+           (.resolution_revision | type == "number" and . >= 2 and . <= 4 and floor == .) and
            (.supersedes_resolution_tag ==
              ("authority-resolution-v1-g" + (.selected_generation | tostring) +
               (if .resolution_revision == 2 then ""
@@ -337,7 +337,7 @@ verify_correction_authorization() {
         "$record" selected_generation)-r${revision}
     correction_sha=$(sha256_file "$resolution_dir/$CORRECTION_REVIEW")
     authorization_schema=1
-    [[ $revision == 3 ]] && authorization_schema=2
+    [[ $revision -ge 3 ]] && authorization_schema=2
     /usr/bin/jq -e \
         --argjson schema "$authorization_schema" \
         --argjson revision "$revision" \
@@ -689,7 +689,7 @@ require_sealed_runtime() {
 }
 
 require_resolution_source() {
-    local directory=$1 actual expected name executable
+    local directory=$1 actual expected name executable maximum
     directory=$(canonical_dir "$directory" 'resolution source directory')
     require_safe_file "$directory/$RESOLUTION" 32768 false \
         'resolution source replacement resolution'
@@ -699,7 +699,14 @@ require_resolution_source() {
     expected=$(resolution_all_names "$directory/$RESOLUTION" | LC_ALL=C /usr/bin/sort)
     [[ $actual == "$expected" ]] || die 'resolution source has an inexact entry set'
     while IFS= read -r name; do
-        require_safe_file "$directory/$name" 4194304 false "resolution source $name"
+        executable=false
+        maximum=4194304
+        if [[ $name == "$PROOF_HELPER_ASSET" ]]; then
+            executable=true
+            maximum=268435456
+        fi
+        require_safe_file "$directory/$name" "$maximum" "$executable" \
+            "resolution source $name"
     done < <(resolution_data_names "$directory/$RESOLUTION")
     for name in "$RECOVERY_TOOL" "$MANIFEST_HELPER"; do
         executable=true
@@ -785,7 +792,7 @@ require_sealed_input_root() {
 seal_install_inputs() {
     local operation=$1
     local source_predecessor source_rejected source_selected source_resolution
-    local leaf name actual source
+    local leaf name actual source mode maximum
     if [[ -e $SEALED_INPUTS || -L $SEALED_INPUTS ]]; then
         [[ ! -e $SEALED_INPUTS_STAGE && ! -L $SEALED_INPUTS_STAGE ]] \
             || die 'sealed final and staged inputs both exist'
@@ -848,8 +855,14 @@ seal_install_inputs() {
         "$SEALED_INPUTS_STAGE/resolution/$MANIFEST_HELPER" 500 1048576 \
         'resolution manifest helper'
     while IFS= read -r name; do
+        mode=400
+        maximum=4194304
+        if [[ $name == "$PROOF_HELPER_ASSET" ]]; then
+            mode=500
+            maximum=268435456
+        fi
         copy_to_stage "$source_resolution/$name" \
-            "$SEALED_INPUTS_STAGE/resolution/$name" 400 4194304 \
+            "$SEALED_INPUTS_STAGE/resolution/$name" "$mode" "$maximum" \
             "resolution $name"
     done < <(resolution_data_names "$source_resolution/$RESOLUTION")
     sync_path "$SEALED_INPUTS_STAGE/resolution"
@@ -1002,7 +1015,7 @@ verify_resolution_correction_state() {
     [[ $product_digest == \
         "$(resolution_value "$correction" active_product_state_sha256)" ]] \
         || die 'corrected resolution product state moved from its reviewed prestate'
-    if [[ $(resolution_revision "$record") == 3 ]]; then
+    if [[ $(resolution_revision "$record") -ge 3 ]]; then
         verify_resolution_correction_r3_state \
             "$operation" "$active_manifest_sha256" "$product_digest" "$correction"
         return
@@ -1325,8 +1338,8 @@ discard_proof_helper_stage() {
 
 install_proof_helper() {
     local record=$resolution_dir/$RESOLUTION
-    [[ $(resolution_revision "$record") == 3 ]] \
-        || die 'proof helper installation requires an r3 signed resolution'
+    [[ $(resolution_revision "$record") -ge 3 ]] \
+        || die 'proof helper installation requires a proof-helper signed resolution'
     require_proof_helper_parent
     if [[ -e $PROOF_HELPER_ROOT || -L $PROOF_HELPER_ROOT ]]; then
         [[ ! -e $PROOF_HELPER_STAGE && ! -L $PROOF_HELPER_STAGE ]] \
@@ -1368,14 +1381,14 @@ run_operator_product_state_proof() {
     local gateway_sha browser_sha production_id product_digest policy_digest
     record=$resolution_dir/$RESOLUTION
     revision=$(resolution_revision "$record")
-    if [[ $revision == 3 ]]; then
+    if [[ $revision -ge 3 ]]; then
         install_proof_helper
     fi
     discard_safe_root_temporary "$PRODUCT_STATE_PROOF_TEMP" 16384 \
         'authority replacement product-state proof temporary'
     (
         ulimit -f 32
-        if [[ $revision == 3 ]]; then
+        if [[ $revision -ge 3 ]]; then
             /usr/bin/setpriv \
                 --reuid "$SUDO_UID" \
                 --regid "$SUDO_GID" \
@@ -1516,7 +1529,7 @@ run_operator_product_state_proof() {
         || die 'authority replacement product-state proof is not canonical JSON'
     /usr/bin/rm -f -- "$PRODUCT_STATE_PROOF_TEMP"
     sync_path "$AUTHORITY_ROOT"
-    if [[ $revision == 3 ]]; then
+    if [[ $revision -ge 3 ]]; then
         retire_proof_helper
     fi
 }
@@ -1678,7 +1691,7 @@ publish_active_file() {
 
 journal_resolution_record() {
     local record=$resolution_dir/$RESOLUTION
-    if [[ $(resolution_revision "$record") == 3 ]]; then
+    if [[ $(resolution_revision "$record") -ge 3 ]]; then
         /usr/bin/printf '%s\n' \
             "$SUPERSEDED_SEALED_RUNTIME_ROOT/inputs/resolution/$RESOLUTION"
     else
@@ -1829,7 +1842,7 @@ publish_mutation_fence() {
 
 install_receipt_json() {
     local product_digest=$1 record=$resolution_dir/$RESOLUTION base
-    if [[ $(resolution_revision "$record") != 3 ]]; then
+    if [[ $(resolution_revision "$record") -lt 3 ]]; then
         install_record_json syntaur.authority-replacement-receipt.v1 \
             complete "$product_digest"
         return
@@ -1840,7 +1853,8 @@ install_receipt_json() {
         --arg origin_resolution_sha256 \
             "$(sha256_file "$(journal_resolution_record)")" \
         --arg recovery_resolution_sha256 "$expected_resolution_sha256" \
-        --argjson recovery_resolution_revision 3 \
+        --argjson recovery_resolution_revision \
+            "$(resolution_revision "$record")" \
         --arg recovery_tool_sha256 "$expected_recovery_tool_sha256" \
         --arg correction_review_sha256 \
             "$(sha256_file "$resolution_dir/$CORRECTION_REVIEW")" \
