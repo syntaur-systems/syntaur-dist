@@ -932,6 +932,7 @@ checked_in_r2_correction="$repo_root/.github/authority-resolution-corrections/g6
 checked_in_r3_correction="$repo_root/.github/authority-resolution-corrections/g60-r3.json"
 checked_in_r4_correction="$repo_root/.github/authority-resolution-corrections/g60-r4.json"
 checked_in_r5_correction="$repo_root/.github/authority-resolution-corrections/g60-r5.json"
+checked_in_r6_correction="$repo_root/.github/authority-resolution-corrections/g60-r6.json"
 expected_authority_download_consumers=$(printf '%s\n' \
     $'compare_builds\tDownload both isolated builds' \
     $'isolated_build\tDownload encrypted source export' \
@@ -1105,6 +1106,7 @@ exercise_single_artifact_selector \
 "$helper" validate-resolution-correction-review "$checked_in_r3_correction"
 "$helper" validate-resolution-correction-review "$checked_in_r4_correction"
 "$helper" validate-resolution-correction-review "$checked_in_r5_correction"
+"$helper" validate-resolution-correction-review "$checked_in_r6_correction"
 [[ $(jq -er '.corrected_recovery_tool_sha256' "$checked_in_r2_correction") \
     == 2c08e0522c2589198142d1dbeeff59361b204a615ae7038e03dc39cd50de8708 ]]
 [[ $(jq -er '.corrected_manifest_helper_sha256' "$checked_in_r2_correction") \
@@ -1151,9 +1153,9 @@ exercise_single_artifact_selector \
     == "$(jq -er '.corrected_manifest_helper_sha256' \
         "$checked_in_r4_correction")" ]]
 [[ $(jq -er '.corrected_recovery_tool_sha256' "$checked_in_r5_correction") \
-    == "$(sha256sum "$recovery_tool" | awk '{print $1}')" ]]
+    == c62327e3afbda9e4caa120ebd902ad2e35ef4a9b242727e73e39732e03bd73cb ]]
 [[ $(jq -er '.corrected_manifest_helper_sha256' "$checked_in_r5_correction") \
-    == "$(sha256sum "$helper" | awk '{print $1}')" ]]
+    == 66dc7e776b258c246a189c486d6fd423bd9b7541e9d48d9b71c67eac6a1006da ]]
 [[ $(jq -er '.sealed_inputs_resolution_sha256' "$checked_in_r5_correction") \
     == 3f42c2844a4b72b9eef3f5f52f9db6cc7bbed3ba8a4cb7907f854d32d54f9293 ]]
 [[ $(jq -er '.sealed_inputs_resolution_sha256' "$checked_in_r5_correction") \
@@ -1192,6 +1194,47 @@ jq -cj '.proof_helper_source_parent_commit = .proof_helper_source_commit' \
     "$checked_in_r5_correction" >"$tmp_root/r5-self-parent.json"
 expect_failure "$helper" validate-resolution-correction-review \
     "$tmp_root/r5-self-parent.json"
+[[ $(jq -er '.supersedes_resolution_sha256' "$checked_in_r6_correction") \
+    == 4808b8d292197bbbbf04298442fc917585d11f0cf61ecbf1c359d616faa81ee7 ]]
+[[ $(jq -er '.superseded_recovery_tool_sha256' "$checked_in_r6_correction") \
+    == "$(jq -er '.corrected_recovery_tool_sha256' \
+        "$checked_in_r5_correction")" ]]
+[[ $(jq -er '.superseded_manifest_helper_sha256' "$checked_in_r6_correction") \
+    == "$(jq -er '.corrected_manifest_helper_sha256' \
+        "$checked_in_r5_correction")" ]]
+[[ $(jq -er '.corrected_recovery_tool_sha256' "$checked_in_r6_correction") \
+    == "$(sha256sum "$recovery_tool" | awk '{print $1}')" ]]
+[[ $(jq -er '.corrected_manifest_helper_sha256' "$checked_in_r6_correction") \
+    == "$(sha256sum "$helper" | awk '{print $1}')" ]]
+[[ $(jq -er '.failure_class' "$checked_in_r6_correction") \
+    == proof_helper_resolution_revision_contract_mismatch ]]
+[[ $(jq -er '.failure_stage' "$checked_in_r6_correction") \
+    == post_manifest_product_state_proof ]]
+[[ $(jq -er '.superseded_planned_product_base_commit' \
+        "$checked_in_r6_correction") \
+    == "$(jq -er '.proof_helper_source_commit' "$checked_in_r5_correction")" ]]
+[[ $(jq -er '.corrected_planned_product_base_commit' \
+        "$checked_in_r6_correction") \
+    == 0d6902283cb446b8aeeb56b33b26118658b5263c ]]
+[[ $(jq -er '.proof_helper_source_parent_commit' "$checked_in_r6_correction") \
+    == "$(jq -er '.superseded_planned_product_base_commit' \
+        "$checked_in_r6_correction")" ]]
+[[ $(jq -er '.superseded_runtime_resolution_sha256' "$checked_in_r6_correction") \
+    == "$(jq -er '.supersedes_resolution_sha256' \
+        "$checked_in_r6_correction")" ]]
+[[ $(jq -er '.superseded_correction_authorization_sha256' \
+        "$checked_in_r6_correction") \
+    == 3d0d4868cd76fc2dae39b6126f308aee196fde33f4187af55cf63c1ea400336b ]]
+[[ $(jq -er '.superseded_resolution_receipt_present' \
+        "$checked_in_r6_correction") == true ]]
+jq -cj '.superseded_resolution_receipt_present = false' \
+    "$checked_in_r6_correction" >"$tmp_root/r6-missing-receipt-claim.json"
+expect_failure "$helper" validate-resolution-correction-review \
+    "$tmp_root/r6-missing-receipt-claim.json"
+jq -cj '.proof_helper_source_parent_commit = .selected_manifest_sha256' \
+    "$checked_in_r6_correction" >"$tmp_root/r6-wrong-source-parent.json"
+expect_failure "$helper" validate-resolution-correction-review \
+    "$tmp_root/r6-wrong-source-parent.json"
 (
     REPLACEMENT_PREDECESSOR_GENERATION=$(jq -er \
         '.predecessor_generation' "$checked_in_selection_review")
@@ -1333,6 +1376,54 @@ expect_failure "$helper" validate-resolution-correction-review \
     "$helper" validate-replacement-resolution "$checked_in_r5_resolution"
     "$helper" validate-replacement-resolution-tag \
         authority-resolution-v1-g60-r5 "$checked_in_r5_resolution"
+
+    RESOLUTION_REVISION=6
+    SUPERSEDES_RESOLUTION_TAG=$(jq -er \
+        '.supersedes_resolution_tag' "$checked_in_r6_correction")
+    SUPERSEDES_RESOLUTION_SHA256=$(jq -er \
+        '.supersedes_resolution_sha256' "$checked_in_r6_correction")
+    SUPERSEDED_RECOVERY_TOOL_SHA256=$(jq -er \
+        '.superseded_recovery_tool_sha256' "$checked_in_r6_correction")
+    CORRECTION_REVIEW_SHA256=$(sha256sum \
+        "$checked_in_r6_correction" | awk '{print $1}')
+    PLANNED_PRODUCT_BASE_COMMIT=$(jq -er \
+        '.corrected_planned_product_base_commit' "$checked_in_r6_correction")
+    PROOF_HELPER_SOURCE_COMMIT=$(jq -er \
+        '.proof_helper_source_commit' "$checked_in_r6_correction")
+    PROOF_HELPER_SOURCE_TREE_SHA256=$(jq -er \
+        '.proof_helper_source_tree_sha256' "$checked_in_r6_correction")
+    PROOF_HELPER_SHA256=$(jq -er \
+        '.proof_helper_sha256' "$checked_in_r6_correction")
+    PROOF_HELPER_CONTROL_PLANE_SHA256=$(jq -er \
+        '.proof_helper_control_plane_sha256' "$checked_in_r6_correction")
+    PROOF_HELPER_TOOLCHAIN_SHA256=$(jq -er \
+        '.proof_helper_toolchain_sha256' "$checked_in_r6_correction")
+    PROOF_HELPER_RUSTFLAGS_SHA256=$(jq -er \
+        '.proof_helper_rustflags_sha256' "$checked_in_r6_correction")
+    PROOF_HELPER_BUILD_TARGET=$(jq -er \
+        '.proof_helper_build_target' "$checked_in_r6_correction")
+    PROOF_HELPER_BUILD_PROFILE=$(jq -er \
+        '.proof_helper_build_profile' "$checked_in_r6_correction")
+    PROOF_HELPER_BUILD_CLEAN=$(jq -er \
+        '.proof_helper_build_clean' "$checked_in_r6_correction")
+    PROOF_HELPER_EXECUTION_PATH=$(jq -er \
+        '.proof_helper_execution_path' "$checked_in_r6_correction")
+    PROOF_HELPER_PROTOCOL_SHA256=$(jq -er \
+        '.proof_helper_protocol_sha256' "$checked_in_r6_correction")
+    export RESOLUTION_REVISION SUPERSEDES_RESOLUTION_TAG
+    export SUPERSEDES_RESOLUTION_SHA256 SUPERSEDED_RECOVERY_TOOL_SHA256
+    export CORRECTION_REVIEW_SHA256 PLANNED_PRODUCT_BASE_COMMIT
+    export PROOF_HELPER_SOURCE_COMMIT PROOF_HELPER_SOURCE_TREE_SHA256
+    export PROOF_HELPER_SHA256 PROOF_HELPER_CONTROL_PLANE_SHA256
+    export PROOF_HELPER_TOOLCHAIN_SHA256 PROOF_HELPER_RUSTFLAGS_SHA256
+    export PROOF_HELPER_BUILD_TARGET PROOF_HELPER_BUILD_PROFILE
+    export PROOF_HELPER_BUILD_CLEAN PROOF_HELPER_EXECUTION_PATH
+    export PROOF_HELPER_PROTOCOL_SHA256
+    checked_in_r6_resolution="$tmp_root/checked-in-r6-resolution.json"
+    "$helper" render-replacement-resolution "$checked_in_r6_resolution"
+    "$helper" validate-replacement-resolution "$checked_in_r6_resolution"
+    "$helper" validate-replacement-resolution-tag \
+        authority-resolution-v1-g60-r6 "$checked_in_r6_resolution"
 )
 grep -Fq 'approval_record:' "$workflow"
 for required in \
@@ -1377,6 +1468,8 @@ fi
 grep -Fq 'authority-replacement-v1-g${generation}' "$workflow"
 grep -Fq 'authority-resolution-v1-g${GENERATION}' "$workflow"
 grep -Fq 'resolution_revision' "$workflow"
+grep -Fq '"source_commit", "resolution_revision", "toolchain_sha256"' "$workflow"
+grep -Fq "= \"\$RESOLUTION_REVISION\"" "$workflow"
 grep -Fq 'validate-resolution-correction-review' "$workflow"
 grep -Fq 'release-authority-resolution-correction-v1.json' "$workflow"
 grep -Fq 'validate-replacement-resolution-assets' "$workflow"
@@ -1419,7 +1512,11 @@ grep -Fq 'target_already_published' "$workflow"
 grep -Fq 'special_namespace_max=$previous' "$workflow"
 grep -Fq 'validate-special-tag-namespace' "$workflow"
 grep -Fq 'assert-replacement' "$recovery_tool"
-grep -Fq 'SEALED_RUNTIME_ROOT=/etc/syntaur/release-authority-replacement-v1.runtime' \
+grep -Fq 'SEALED_RUNTIME_ROOT=/etc/syntaur/release-authority-replacement-v1-r6.runtime' \
+    "$recovery_tool"
+grep -Fq 'SUPERSEDED_SEALED_RUNTIME_ROOT=/etc/syntaur/release-authority-replacement-v1.runtime' \
+    "$recovery_tool"
+grep -Fq 'SUPERSEDED_CORRECTION_RUNTIME_ROOT=/etc/syntaur/release-authority-replacement-v1-r5.runtime' \
     "$recovery_tool"
 grep -Fq 'seal_install_inputs' "$recovery_tool"
 grep -Fq 'verify_inputs "$operation"' "$recovery_tool"
@@ -1614,6 +1711,8 @@ shadow_stage=$shadow_runtime/inputs.staged
 shadow_resolution=$shadow_stage/resolution
 install -d -m 0700 "$shadow_stage/predecessor" "$shadow_stage/rejected" \
     "$shadow_stage/selected" "$shadow_resolution"
+chmod 0700 "$shadow_runtime" "$shadow_stage" "$shadow_stage/predecessor" \
+    "$shadow_stage/rejected" "$shadow_stage/selected" "$shadow_resolution"
 shadow_tool=$shadow_runtime/recover-release-authority-replacement-v1.sh
 awk '
     /^\[\[ \$# -ge 1 \]\] \|\| usage$/ { exit }

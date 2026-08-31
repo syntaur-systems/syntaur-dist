@@ -696,7 +696,7 @@ jobs:
        needs.predecessor.outputs.target_already_published != 'true') ||
       (needs.predecessor.outputs.target_already_published == 'true' &&
        (inputs.resolution_revision == '3' || inputs.resolution_revision == '4' ||
-        inputs.resolution_revision == '5'))
+        inputs.resolution_revision == '5' || inputs.resolution_revision == '6'))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release-authority-source
@@ -724,7 +724,7 @@ jobs:
        needs.predecessor.outputs.target_already_published != 'true') ||
       (needs.predecessor.outputs.target_already_published == 'true' &&
        (inputs.resolution_revision == '3' || inputs.resolution_revision == '4' ||
-        inputs.resolution_revision == '5'))
+        inputs.resolution_revision == '5' || inputs.resolution_revision == '6'))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release-authority-source
@@ -760,7 +760,7 @@ jobs:
           source_parent=$VERIFICATION_POLICY_REVISION
           source_version=$AUTHORITY_VERSION
           if [[ $TARGET_ALREADY_PUBLISHED == true ]]; then
-            printf '%s' "$RESOLUTION_REVISION" | grep -Eq '^[345]$'
+            printf '%s' "$RESOLUTION_REVISION" | grep -Eq '^[3456]$'
             source_mode=replacement-proof-helper
             correction="public-workflow/.github/authority-resolution-corrections/g${GENERATION}-r${RESOLUTION_REVISION}.json"
             review="public-workflow/.github/authority-replacement-reviews/g${GENERATION}.json"
@@ -1781,7 +1781,7 @@ jobs:
     if: >-
       needs.predecessor.outputs.target_already_published == 'true' &&
       (inputs.resolution_revision == '3' || inputs.resolution_revision == '4' ||
-       inputs.resolution_revision == '5')
+       inputs.resolution_revision == '5' || inputs.resolution_revision == '6')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: release-authority-source
@@ -2128,10 +2128,12 @@ jobs:
               "build_clean", "build_profile", "build_target",
               "control_plane_sha256", "executable_sha256",
               "protocol_sha256", "rustflags_sha256", "schema",
-              "source_commit", "toolchain_sha256"
+              "source_commit", "resolution_revision", "toolchain_sha256"
             ] | sort))
           ' "$attestation" >/dev/null
           test "$(jq -er '.source_commit' "$attestation")" = "$SOURCE_COMMIT"
+          test "$(jq -er '.resolution_revision' "$attestation")" \
+            = "$RESOLUTION_REVISION"
           test "$(jq -er '.executable_sha256' "$attestation")" \
             = "$(sha256sum "$helper" | awk '{print $1}')"
           test "$(jq -er '.executable_sha256' "$attestation")" \
@@ -2181,7 +2183,7 @@ jobs:
       needs.predecessor.outputs.target_already_published == 'true' &&
       needs.resolution_policy.result == 'success' &&
       ((inputs.resolution_revision != '3' && inputs.resolution_revision != '4' &&
-        inputs.resolution_revision != '5') ||
+        inputs.resolution_revision != '5' && inputs.resolution_revision != '6') ||
        needs.replacement_proof_helper.result == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -2199,7 +2201,7 @@ jobs:
       - name: Download exact replacement proof helper
         if: >-
           inputs.resolution_revision == '3' || inputs.resolution_revision == '4' ||
-          inputs.resolution_revision == '5'
+          inputs.resolution_revision == '5' || inputs.resolution_revision == '6'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: replacement-proof-helper-run-${{ github.run_id }}-attempt-*
@@ -2208,7 +2210,7 @@ jobs:
       - name: Select exact replacement proof helper
         if: >-
           inputs.resolution_revision == '3' || inputs.resolution_revision == '4' ||
-          inputs.resolution_revision == '5'
+          inputs.resolution_revision == '5' || inputs.resolution_revision == '6'
         shell: bash
         run: |
           set -euo pipefail
