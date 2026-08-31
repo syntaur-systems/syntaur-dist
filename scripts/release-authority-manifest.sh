@@ -742,9 +742,9 @@ validate_resolution_correction_review() {
         def uint: type == "number" and . >= 0 and . <= 9007199254740991 and floor == .;
         (.schema == 1 or .schema == 2) and
         (.generation | uint and . > 0) and
-        (.resolution_revision | uint and . >= 2 and . <= 3) and
+        (.resolution_revision | uint and . >= 2 and . <= 4) and
         ((.schema == 1 and .resolution_revision == 2) or
-         (.schema == 2 and .resolution_revision == 3)) and
+         (.schema == 2 and .resolution_revision >= 3 and .resolution_revision <= 4)) and
         (.resolution_tag ==
           ("authority-resolution-v1-g" + (.generation | tostring) +
            "-r" + (.resolution_revision | tostring))) and
@@ -783,8 +783,13 @@ validate_resolution_correction_review() {
            (.active_generation == .generation) and
            (.active_manifest_sha256 == .selected_manifest_sha256) and
            (.correction_reason == "product_state_proof_execution_failure") and
-           (.failure_class == "nonroot_signature_path_requires_root_controller") and
-           (.failure_stage == "post_manifest_product_state_proof") and
+           (if .resolution_revision == 3 then
+              (.failure_class == "nonroot_signature_path_requires_root_controller") and
+              (.failure_stage == "post_manifest_product_state_proof")
+            else
+              (.failure_class == "resolution_proof_helper_size_limit_mismatch") and
+              (.failure_stage == "preseal_resolution_source_validation")
+            end) and
            (.authority_mutated == true) and
            (.product_state_mutated == false) and
            (.normal_promotion_journal_present == true) and
@@ -802,7 +807,12 @@ validate_resolution_correction_review() {
            (.active_product_proof_temp_sha256 ==
              "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") and
            (.active_product_proof_temp_size == 0) and
-           (.sealed_inputs_resolution_sha256 == .supersedes_resolution_sha256) and
+           (.sealed_inputs_resolution_sha256 | digest) and
+           (if .resolution_revision == 3 then
+              .sealed_inputs_resolution_sha256 == .supersedes_resolution_sha256
+            else
+              .sealed_inputs_resolution_sha256 != .supersedes_resolution_sha256
+            end) and
            (.superseded_planned_product_base_commit | commit) and
            (.corrected_planned_product_base_commit | commit) and
            (.corrected_planned_product_base_commit == .proof_helper_source_commit) and
@@ -954,9 +964,9 @@ validate_resolution_correction_authorization() {
         def uint: type == "number" and . >= 0 and . <= 9007199254740991 and floor == .;
         (.schema == 1 or .schema == 2) and
         (.generation | uint and . > 0) and
-        (.resolution_revision | uint and . >= 2 and . <= 3) and
+        (.resolution_revision | uint and . >= 2 and . <= 4) and
         ((.schema == 1 and .resolution_revision == 2) or
-         (.schema == 2 and .resolution_revision == 3)) and
+         (.schema == 2 and .resolution_revision >= 3 and .resolution_revision <= 4)) and
         (.resolution_tag ==
           ("authority-resolution-v1-g" + (.generation | tostring) +
            "-r" + (.resolution_revision | tostring))) and
@@ -974,7 +984,7 @@ validate_resolution_correction_authorization() {
            (.active_install_journal_sha256 | digest) and
            (.active_product_proof_temp_sha256 ==
              "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") and
-           (.sealed_inputs_resolution_sha256 == .supersedes_resolution_sha256) and
+           (.sealed_inputs_resolution_sha256 | digest) and
            (.planned_product_base_commit | commit) and
            (.planned_product_base_commit == .proof_helper_source_commit) and
            (.proof_helper_source_commit | commit) and
@@ -1027,7 +1037,7 @@ render_resolution_correction_authorization() {
     : "${CORRECTION_REVIEW_SHA256:?}"
     : "${SUPERSEDES_RESOLUTION_SHA256:?}"
     : "${SELECTED_AUTHORITY_MANIFEST_SHA256:?}"
-    if [[ $RESOLUTION_REVISION == 3 ]]; then
+    if [[ $RESOLUTION_REVISION -ge 3 ]]; then
         authorization_schema=2
         authorize_reason=product_state_proof_execution_failure
         : "${ACTIVE_INSTALL_JOURNAL_SHA256:?}"
@@ -1197,7 +1207,7 @@ replacement_resolution_from_file() {
           correction_reason:$correction_reason,
           correction_review_sha256:$correction_review_sha256
         } else {} end) +
-        (if $schema == 2 and $resolution_revision == 3 then {
+        (if $schema == 2 and $resolution_revision >= 3 then {
           proof_helper_source_commit:$proof_helper_source_commit,
           proof_helper_source_tree_sha256:$proof_helper_source_tree_sha256,
           proof_helper_sha256:$proof_helper_sha256,
@@ -1253,7 +1263,7 @@ validate_replacement_resolution() {
         (.planned_product_base_commit | commit) and
         (.settled_product_version == .selected_authority_version) and
         (.settled_product_gateway_commit != .selected_authority_commit) and
-        (if .schema == 2 and .resolution_revision == 3 then
+        (if .schema == 2 and .resolution_revision >= 3 then
            (.planned_product_base_commit == .proof_helper_source_commit) and
            (.planned_product_base_commit != .selected_authority_commit)
          else
@@ -1275,7 +1285,7 @@ validate_replacement_resolution() {
             has("superseded_recovery_tool_sha256") or
             has("correction_reason") or has("correction_review_sha256")) | not)
         else
-          (.resolution_revision | uint and . >= 2 and . <= 3) and
+          (.resolution_revision | uint and . >= 2 and . <= 4) and
           (.supersedes_resolution_tag ==
             ("authority-resolution-v1-g" + (.selected_generation | tostring) +
              (if .resolution_revision == 2 then ""
@@ -1331,7 +1341,7 @@ validate_replacement_resolution() {
           "superseded_recovery_tool_sha256", "supersedes_resolution_sha256",
           "supersedes_resolution_tag"
         ] else [] end) +
-        (if .schema == 2 and .resolution_revision == 3 then [
+        (if .schema == 2 and .resolution_revision >= 3 then [
           "proof_helper_build_clean", "proof_helper_build_profile",
           "proof_helper_build_target", "proof_helper_control_plane_sha256",
           "proof_helper_execution_path", "proof_helper_protocol_sha256",
@@ -1375,7 +1385,7 @@ render_replacement_resolution() {
         : "${SUPERSEDED_RECOVERY_TOOL_SHA256:?}"
         : "${CORRECTION_REVIEW_SHA256:?}"
     fi
-    if [[ $resolution_revision == 3 ]]; then
+    if [[ $resolution_revision -ge 3 ]]; then
         correction_reason=product_state_proof_execution_failure
         : "${PROOF_HELPER_SOURCE_COMMIT:?}"
         : "${PROOF_HELPER_SOURCE_TREE_SHA256:?}"
@@ -1500,7 +1510,7 @@ render_replacement_resolution() {
           correction_reason:$correction_reason,
           correction_review_sha256:$correction_review_sha256
         } else {} end) +
-        (if $schema == 2 and $resolution_revision == 3 then {
+        (if $schema == 2 and $resolution_revision >= 3 then {
           proof_helper_source_commit:$proof_helper_source_commit,
           proof_helper_source_tree_sha256:$proof_helper_source_tree_sha256,
           proof_helper_sha256:$proof_helper_sha256,
@@ -1540,7 +1550,7 @@ validate_replacement_resolution_assets() {
         expected=$(printf '%s\n' "$expected" \
             release-authority-resolution-correction-v1.json | LC_ALL=C sort)
         revision=$(manifest_value "$resolution" resolution_revision)
-        if [[ $revision == 3 ]]; then
+        if [[ $revision -ge 3 ]]; then
             expected=$(printf '%s\n' "$expected" \
                 syntaur-authority-replacement-proof-linux-x86_64 \
                 | LC_ALL=C sort)
@@ -1562,7 +1572,7 @@ validate_replacement_resolution_assets() {
         [[ -f $correction && ! -L $correction ]] \
             || die 'authority resolution correction review is absent or unsafe'
         validate_resolution_correction_review "$correction"
-        if [[ $revision == 3 ]]; then
+        if [[ $revision -ge 3 ]]; then
             [[ -f $directory/syntaur-authority-replacement-proof-linux-x86_64 \
                 && ! -L $directory/syntaur-authority-replacement-proof-linux-x86_64 ]] \
                 || die 'authority replacement proof helper is absent or unsafe'
@@ -1585,7 +1595,7 @@ validate_replacement_resolution_assets() {
         || die 'authority replacement manifest helper differs from the signed resolution'
     [[ $review_sha == "$(manifest_value "$resolution" selection_review_sha256)" ]] \
         || die 'authority replacement selection review differs from the signed resolution'
-    if [[ $schema == 2 && $revision == 3 ]]; then
+    if [[ $schema == 2 && $revision -ge 3 ]]; then
         [[ $(selection_review_from_file "$resolution" \
                 | jq -c --arg base \
                     "$(manifest_value "$correction" \
