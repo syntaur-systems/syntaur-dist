@@ -931,6 +931,7 @@ checked_in_selection_review="$repo_root/.github/authority-replacement-reviews/g6
 checked_in_r2_correction="$repo_root/.github/authority-resolution-corrections/g60-r2.json"
 checked_in_r3_correction="$repo_root/.github/authority-resolution-corrections/g60-r3.json"
 checked_in_r4_correction="$repo_root/.github/authority-resolution-corrections/g60-r4.json"
+checked_in_r5_correction="$repo_root/.github/authority-resolution-corrections/g60-r5.json"
 expected_authority_download_consumers=$(printf '%s\n' \
     $'compare_builds\tDownload both isolated builds' \
     $'isolated_build\tDownload encrypted source export' \
@@ -1084,6 +1085,7 @@ exercise_single_artifact_selector \
 "$helper" validate-resolution-correction-review "$checked_in_r2_correction"
 "$helper" validate-resolution-correction-review "$checked_in_r3_correction"
 "$helper" validate-resolution-correction-review "$checked_in_r4_correction"
+"$helper" validate-resolution-correction-review "$checked_in_r5_correction"
 [[ $(jq -er '.corrected_recovery_tool_sha256' "$checked_in_r2_correction") \
     == 2c08e0522c2589198142d1dbeeff59361b204a615ae7038e03dc39cd50de8708 ]]
 [[ $(jq -er '.corrected_manifest_helper_sha256' "$checked_in_r2_correction") \
@@ -1113,14 +1115,47 @@ exercise_single_artifact_selector \
     == "$(jq -er '.corrected_manifest_helper_sha256' \
         "$checked_in_r3_correction")" ]]
 [[ $(jq -er '.corrected_recovery_tool_sha256' "$checked_in_r4_correction") \
-    == "$(sha256sum "$recovery_tool" | awk '{print $1}')" ]]
+    == 87ab613c1d3be9e434717ea2086b7efc01fe830334e0b32c0f4c27d323e47e86 ]]
 [[ $(jq -er '.corrected_manifest_helper_sha256' "$checked_in_r4_correction") \
-    == "$(sha256sum "$helper" | awk '{print $1}')" ]]
+    == 625c20103eaa6c79adbba3443937a014e64154ef3c5e60396fa596cb68885733 ]]
 [[ $(jq -er '.sealed_inputs_resolution_sha256' "$checked_in_r4_correction") \
     == 3f42c2844a4b72b9eef3f5f52f9db6cc7bbed3ba8a4cb7907f854d32d54f9293 ]]
 [[ $(jq -er '.sealed_inputs_resolution_sha256' "$checked_in_r4_correction") \
     != "$(jq -er '.supersedes_resolution_sha256' \
         "$checked_in_r4_correction")" ]]
+[[ $(jq -er '.supersedes_resolution_sha256' "$checked_in_r5_correction") \
+    == 2fbd262d7068e477787244b4b9c0fe74abd198d875053f5bbbfe7c7a0d5194f5 ]]
+[[ $(jq -er '.superseded_recovery_tool_sha256' "$checked_in_r5_correction") \
+    == "$(jq -er '.corrected_recovery_tool_sha256' \
+        "$checked_in_r4_correction")" ]]
+[[ $(jq -er '.superseded_manifest_helper_sha256' "$checked_in_r5_correction") \
+    == "$(jq -er '.corrected_manifest_helper_sha256' \
+        "$checked_in_r4_correction")" ]]
+[[ $(jq -er '.corrected_recovery_tool_sha256' "$checked_in_r5_correction") \
+    == "$(sha256sum "$recovery_tool" | awk '{print $1}')" ]]
+[[ $(jq -er '.corrected_manifest_helper_sha256' "$checked_in_r5_correction") \
+    == "$(sha256sum "$helper" | awk '{print $1}')" ]]
+[[ $(jq -er '.sealed_inputs_resolution_sha256' "$checked_in_r5_correction") \
+    == 3f42c2844a4b72b9eef3f5f52f9db6cc7bbed3ba8a4cb7907f854d32d54f9293 ]]
+[[ $(jq -er '.sealed_inputs_resolution_sha256' "$checked_in_r5_correction") \
+    != "$(jq -er '.supersedes_resolution_sha256' \
+        "$checked_in_r5_correction")" ]]
+[[ $(jq -er '.superseded_runtime_inputs_present' "$checked_in_r5_correction") \
+    == true ]]
+[[ $(jq -er '.superseded_runtime_resolution_sha256' "$checked_in_r5_correction") \
+    == "$(jq -er '.supersedes_resolution_sha256' \
+        "$checked_in_r5_correction")" ]]
+[[ $(jq -er '.superseded_resolution_receipt_present' "$checked_in_r5_correction") \
+    == false ]]
+jq -cj \
+    '.superseded_runtime_resolution_sha256 = .sealed_inputs_resolution_sha256' \
+    "$checked_in_r5_correction" >"$tmp_root/r5-wrong-superseded-runtime.json"
+expect_failure "$helper" validate-resolution-correction-review \
+    "$tmp_root/r5-wrong-superseded-runtime.json"
+jq -cj '.superseded_resolution_receipt_present = true' \
+    "$checked_in_r5_correction" >"$tmp_root/r5-false-receipt-claim.json"
+expect_failure "$helper" validate-resolution-correction-review \
+    "$tmp_root/r5-false-receipt-claim.json"
 (
     REPLACEMENT_PREDECESSOR_GENERATION=$(jq -er \
         '.predecessor_generation' "$checked_in_selection_review")
@@ -1242,6 +1277,26 @@ exercise_single_artifact_selector \
         >"$tmp_root/r4-resolution-non-proof-base.json"
     expect_failure "$helper" validate-replacement-resolution \
         "$tmp_root/r4-resolution-non-proof-base.json"
+
+    RESOLUTION_REVISION=5
+    SUPERSEDES_RESOLUTION_TAG=$(jq -er \
+        '.supersedes_resolution_tag' "$checked_in_r5_correction")
+    SUPERSEDES_RESOLUTION_SHA256=$(jq -er \
+        '.supersedes_resolution_sha256' "$checked_in_r5_correction")
+    SUPERSEDED_RECOVERY_TOOL_SHA256=$(jq -er \
+        '.superseded_recovery_tool_sha256' "$checked_in_r5_correction")
+    CORRECTION_REVIEW_SHA256=$(sha256sum \
+        "$checked_in_r5_correction" | awk '{print $1}')
+    PLANNED_PRODUCT_BASE_COMMIT=$(jq -er \
+        '.corrected_planned_product_base_commit' "$checked_in_r5_correction")
+    export RESOLUTION_REVISION SUPERSEDES_RESOLUTION_TAG
+    export SUPERSEDES_RESOLUTION_SHA256 SUPERSEDED_RECOVERY_TOOL_SHA256
+    export CORRECTION_REVIEW_SHA256 PLANNED_PRODUCT_BASE_COMMIT
+    checked_in_r5_resolution="$tmp_root/checked-in-r5-resolution.json"
+    "$helper" render-replacement-resolution "$checked_in_r5_resolution"
+    "$helper" validate-replacement-resolution "$checked_in_r5_resolution"
+    "$helper" validate-replacement-resolution-tag \
+        authority-resolution-v1-g60-r5 "$checked_in_r5_resolution"
 )
 grep -Fq 'approval_record:' "$workflow"
 for required in \
@@ -1409,6 +1464,113 @@ chmod 0500 \
         }
         require_resolution_source "$RESOLUTION_SOURCE"
     '
+
+lineage_fixture=$tmp_root/lineage-hash-domain-regression
+lineage_authority_root=$lineage_fixture/etc/syntaur/release-authority
+lineage_runtime=$lineage_fixture/etc/syntaur/release-authority-replacement-v1.runtime
+lineage_origin=$lineage_runtime/inputs/resolution
+lineage_resolution=$lineage_fixture/resolution
+lineage_receipt=$lineage_authority_root/replacement-resolution-v1/generation-60-r2
+lineage_helpers=$lineage_fixture/recovery-functions.sh
+install -d -m 0700 "$lineage_origin" "$lineage_resolution" "$lineage_receipt" \
+    "$lineage_authority_root"
+chmod 0700 "$lineage_runtime" "$lineage_runtime/inputs" "$lineage_origin"
+awk '
+    /^\[\[ \$# -ge 1 \]\] \|\| usage$/ { exit }
+    { print }
+' "$recovery_tool" | sed \
+    -e "s|^readonly AUTHORITY_ROOT=.*|readonly AUTHORITY_ROOT=$lineage_authority_root|" \
+    -e "s|^readonly SUPERSEDED_SEALED_RUNTIME_ROOT=.*|readonly SUPERSEDED_SEALED_RUNTIME_ROOT=$lineage_runtime|" \
+    -e "s|^readonly INSTALL_RECEIPT=.*|readonly INSTALL_RECEIPT=$lineage_fixture/install-receipt.json|" \
+    -e "s|^readonly ROLLBACK_RECEIPT=.*|readonly ROLLBACK_RECEIPT=$lineage_fixture/rollback-receipt.json|" \
+    >"$lineage_helpers"
+chmod 0500 "$lineage_helpers"
+printf 'r2-resolution' >"$lineage_origin/release-authority-replacement-v1.json"
+printf 'r2-bundle' >"$lineage_origin/release-authority-replacement-v1.json.cosign.bundle"
+install -m 0400 "$lineage_origin/release-authority-replacement-v1.json" \
+    "$lineage_receipt/release-authority-replacement-v1.json"
+printf 'r4-resolution' >"$lineage_resolution/release-authority-replacement-v1.json"
+printf 'r4-correction' >"$lineage_resolution/release-authority-resolution-correction-v1.json"
+printf '{"phase":"manifest_published"}' \
+    >"$lineage_authority_root/authority-replacement-v1-install.json"
+printf 'promotion-journal' \
+    >"$lineage_authority_root/authority-promotion-v1.json"
+printf 'selected-authority' >"$lineage_authority_root/release-authority-v2.json"
+: >"$lineage_authority_root/.authority-replacement-product-state-v1.tmp"
+LINEAGE_HELPERS=$lineage_helpers LINEAGE_FIXTURE=$lineage_fixture \
+LINEAGE_SELECTED=$(digest_text lineage-selected) \
+LINEAGE_PRODUCT=$(digest_text lineage-product) \
+LINEAGE_JOURNAL=$(digest_text lineage-journal) \
+LINEAGE_R2=$(digest_text lineage-r2) \
+LINEAGE_R3=$(digest_text lineage-r3) \
+/usr/bin/bash -c '
+    set -euo pipefail
+    source "$LINEAGE_HELPERS"
+    resolution_dir=$LINEAGE_FIXTURE/resolution
+    expected_selected_sha256=$LINEAGE_SELECTED
+    expected_predecessor_sha256=$(printf "a%.0s" {1..64})
+    resolution_value() {
+        local file=$1 field=$2
+        case $(basename "$file"):$field in
+            release-authority-resolution-correction-v1.json:active_manifest_sha256)
+                printf "%s\n" "$LINEAGE_SELECTED" ;;
+            release-authority-resolution-correction-v1.json:active_generation)
+                printf "60\n" ;;
+            release-authority-resolution-correction-v1.json:active_product_state_sha256)
+                printf "%s\n" "$LINEAGE_PRODUCT" ;;
+            release-authority-resolution-correction-v1.json:active_install_journal_sha256)
+                printf "%s\n" "$LINEAGE_JOURNAL" ;;
+            release-authority-resolution-correction-v1.json:active_install_journal_phase)
+                printf "manifest_published\n" ;;
+            release-authority-resolution-correction-v1.json:sealed_inputs_resolution_sha256)
+                printf "%s\n" "$LINEAGE_R2" ;;
+            release-authority-resolution-correction-v1.json:active_product_proof_temp_sha256)
+                printf "%s\n" "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ;;
+            release-authority-resolution-correction-v1.json:active_product_proof_temp_size)
+                printf "0\n" ;;
+            release-authority-replacement-v1.json:selected_generation)
+                printf "60\n" ;;
+            release-authority-replacement-v1.json:selected_manifest_sha256)
+                printf "%s\n" "$LINEAGE_SELECTED" ;;
+            release-authority-replacement-v1.json:supersedes_resolution_sha256)
+                printf "%s\n" "$LINEAGE_R3" ;;
+            release-authority-replacement-v1.json:resolution_workflow_commit)
+                printf "1111111111111111111111111111111111111111\n" ;;
+            *) printf "unexpected lineage field: %s %s\n" "$file" "$field" >&2; return 1 ;;
+        esac
+    }
+    resolution_revision() {
+        if [[ $1 == "$resolution_dir/$RESOLUTION" ]]; then printf "4\n"; else printf "2\n"; fi
+    }
+    manifest_value() {
+        [[ $2 == generation ]] || return 1
+        printf "60\n"
+    }
+    sha256_file() {
+        case $1 in
+            "$INSTALL_JOURNAL") printf "%s\n" "$LINEAGE_JOURNAL" ;;
+            "$SUPERSEDED_SEALED_RUNTIME_ROOT/inputs/resolution/$RESOLUTION")
+                printf "%s\n" "$LINEAGE_R2" ;;
+            "$PRODUCT_STATE_PROOF_TEMP")
+                printf "%s\n" "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ;;
+            *) /usr/bin/sha256sum "$1" | /usr/bin/cut -d" " -f1 ;;
+        esac
+    }
+    product_state_digest() { printf "%s\n" "$LINEAGE_PRODUCT"; }
+    require_root_directory() { :; }
+    require_root_file() { :; }
+    validate_resolution_inline() { :; }
+    verify_cosign() { :; }
+    validate_mutation_fence() { :; }
+    validate_current_install_state() { :; }
+    validate_selected_active() { :; }
+    install_resolution_receipt() { :; }
+    resolution_receipt_directory() { printf "%s/current-r4-receipt\n" "$LINEAGE_FIXTURE"; }
+    resolution_data_names() { printf "%s\n" "$RESOLUTION"; }
+    verify_resolution_correction_r3_state \
+        install "$LINEAGE_SELECTED" "$LINEAGE_PRODUCT" \
+        "$resolution_dir/$CORRECTION_REVIEW"
+'
 
 shadow_runtime=$tmp_root/dynamic-scope-runtime
 shadow_stage=$shadow_runtime/inputs.staged
