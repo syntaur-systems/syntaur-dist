@@ -695,7 +695,8 @@ jobs:
       (needs.predecessor.outputs.already_published != 'true' &&
        needs.predecessor.outputs.target_already_published != 'true') ||
       (needs.predecessor.outputs.target_already_published == 'true' &&
-       (inputs.resolution_revision == '3' || inputs.resolution_revision == '4'))
+       (inputs.resolution_revision == '3' || inputs.resolution_revision == '4' ||
+        inputs.resolution_revision == '5'))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release-authority-source
@@ -722,7 +723,8 @@ jobs:
       (needs.predecessor.outputs.already_published != 'true' &&
        needs.predecessor.outputs.target_already_published != 'true') ||
       (needs.predecessor.outputs.target_already_published == 'true' &&
-       (inputs.resolution_revision == '3' || inputs.resolution_revision == '4'))
+       (inputs.resolution_revision == '3' || inputs.resolution_revision == '4' ||
+        inputs.resolution_revision == '5'))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release-authority-source
@@ -758,7 +760,7 @@ jobs:
           source_parent=$VERIFICATION_POLICY_REVISION
           source_version=$AUTHORITY_VERSION
           if [[ $TARGET_ALREADY_PUBLISHED == true ]]; then
-            printf '%s' "$RESOLUTION_REVISION" | grep -Eq '^[34]$'
+            printf '%s' "$RESOLUTION_REVISION" | grep -Eq '^[345]$'
             source_mode=replacement-proof-helper
             correction="public-workflow/.github/authority-resolution-corrections/g${GENERATION}-r${RESOLUTION_REVISION}.json"
             review="public-workflow/.github/authority-replacement-reviews/g${GENERATION}.json"
@@ -1771,7 +1773,8 @@ jobs:
       - source_metadata
     if: >-
       needs.predecessor.outputs.target_already_published == 'true' &&
-      (inputs.resolution_revision == '3' || inputs.resolution_revision == '4')
+      (inputs.resolution_revision == '3' || inputs.resolution_revision == '4' ||
+       inputs.resolution_revision == '5')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: release-authority-source
@@ -2165,7 +2168,8 @@ jobs:
       always() &&
       needs.predecessor.outputs.target_already_published == 'true' &&
       needs.resolution_policy.result == 'success' &&
-      ((inputs.resolution_revision != '3' && inputs.resolution_revision != '4') ||
+      ((inputs.resolution_revision != '3' && inputs.resolution_revision != '4' &&
+        inputs.resolution_revision != '5') ||
        needs.replacement_proof_helper.result == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -2181,14 +2185,18 @@ jobs:
           path: public-workflow
 
       - name: Download exact replacement proof helper
-        if: inputs.resolution_revision == '3' || inputs.resolution_revision == '4'
+        if: >-
+          inputs.resolution_revision == '3' || inputs.resolution_revision == '4' ||
+          inputs.resolution_revision == '5'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: replacement-proof-helper-run-${{ github.run_id }}-attempt-*
           path: replacement-proof-helper-artifacts
 
       - name: Select exact replacement proof helper
-        if: inputs.resolution_revision == '3' || inputs.resolution_revision == '4'
+        if: >-
+          inputs.resolution_revision == '3' || inputs.resolution_revision == '4' ||
+          inputs.resolution_revision == '5'
         shell: bash
         run: |
           set -euo pipefail

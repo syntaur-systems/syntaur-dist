@@ -674,6 +674,14 @@ resolution_correction_review_from_file() {
             "$(jq -er '.r2_resolution_receipt_present // false' "$record")" \
         --argjson r3_resolution_receipt_present \
             "$(jq -er '.r3_resolution_receipt_present // false' "$record")" \
+        --argjson superseded_runtime_inputs_present \
+            "$(jq -er '.superseded_runtime_inputs_present // false' "$record")" \
+        --arg superseded_runtime_resolution_sha256 \
+            "$(jq -er '.superseded_runtime_resolution_sha256 // ""' "$record")" \
+        --arg superseded_correction_authorization_sha256 \
+            "$(jq -er '.superseded_correction_authorization_sha256 // ""' "$record")" \
+        --argjson superseded_resolution_receipt_present \
+            "$(jq -er '.superseded_resolution_receipt_present // false' "$record")" \
         '{
           schema:$schema,
           generation:$generation,
@@ -729,6 +737,12 @@ resolution_correction_review_from_file() {
           proof_helper_protocol_sha256:$proof_helper_protocol_sha256,
           r2_resolution_receipt_present:$r2_resolution_receipt_present,
           r3_resolution_receipt_present:$r3_resolution_receipt_present
+        } else {} end) +
+        (if $schema == 2 and $resolution_revision >= 5 then {
+          superseded_runtime_inputs_present:$superseded_runtime_inputs_present,
+          superseded_runtime_resolution_sha256:$superseded_runtime_resolution_sha256,
+          superseded_correction_authorization_sha256:$superseded_correction_authorization_sha256,
+          superseded_resolution_receipt_present:$superseded_resolution_receipt_present
         } else {} end)'
 }
 
@@ -742,9 +756,9 @@ validate_resolution_correction_review() {
         def uint: type == "number" and . >= 0 and . <= 9007199254740991 and floor == .;
         (.schema == 1 or .schema == 2) and
         (.generation | uint and . > 0) and
-        (.resolution_revision | uint and . >= 2 and . <= 4) and
+        (.resolution_revision | uint and . >= 2 and . <= 5) and
         ((.schema == 1 and .resolution_revision == 2) or
-         (.schema == 2 and .resolution_revision >= 3 and .resolution_revision <= 4)) and
+         (.schema == 2 and .resolution_revision >= 3 and .resolution_revision <= 5)) and
         (.resolution_tag ==
           ("authority-resolution-v1-g" + (.generation | tostring) +
            "-r" + (.resolution_revision | tostring))) and
@@ -786,9 +800,12 @@ validate_resolution_correction_review() {
            (if .resolution_revision == 3 then
               (.failure_class == "nonroot_signature_path_requires_root_controller") and
               (.failure_stage == "post_manifest_product_state_proof")
-            else
+            elif .resolution_revision == 4 then
               (.failure_class == "resolution_proof_helper_size_limit_mismatch") and
               (.failure_stage == "preseal_resolution_source_validation")
+            else
+              (.failure_class == "resolution_lineage_hash_domain_conflation") and
+              (.failure_stage == "postseal_resolution_correction_state_validation")
             end) and
            (.authority_mutated == true) and
            (.product_state_mutated == false) and
@@ -816,8 +833,13 @@ validate_resolution_correction_review() {
            (.superseded_planned_product_base_commit | commit) and
            (.corrected_planned_product_base_commit | commit) and
            (.corrected_planned_product_base_commit == .proof_helper_source_commit) and
-           (.corrected_planned_product_base_commit !=
-             .superseded_planned_product_base_commit) and
+           (if .resolution_revision >= 5 then
+              .corrected_planned_product_base_commit ==
+                .superseded_planned_product_base_commit
+            else
+              .corrected_planned_product_base_commit !=
+                .superseded_planned_product_base_commit
+            end) and
            (.proof_helper_asset_name ==
              "syntaur-authority-replacement-proof-linux-x86_64") and
            (.proof_helper_reproducible_build_count == 2) and
@@ -837,7 +859,20 @@ validate_resolution_correction_review() {
              "/usr/local/libexec/syntaur-authority-replacement-proof-v1/syntaur-ship") and
            (.proof_helper_protocol_sha256 | digest) and
            (.r2_resolution_receipt_present == true) and
-           (.r3_resolution_receipt_present == false)
+           (.r3_resolution_receipt_present == false) and
+           (if .resolution_revision >= 5 then
+              (.superseded_runtime_inputs_present == true) and
+              (.superseded_runtime_resolution_sha256 | digest) and
+              (.superseded_runtime_resolution_sha256 ==
+                .supersedes_resolution_sha256) and
+              (.superseded_correction_authorization_sha256 | digest) and
+              (.superseded_resolution_receipt_present == false)
+            else
+              ((has("superseded_runtime_inputs_present") or
+                has("superseded_runtime_resolution_sha256") or
+                has("superseded_correction_authorization_sha256") or
+                has("superseded_resolution_receipt_present")) | not)
+            end)
          end) and
         (keys | sort) == ([
           "active_generation", "active_manifest_sha256", "active_product_state_sha256",
@@ -868,6 +903,11 @@ validate_resolution_correction_review() {
           "proof_helper_build_clean", "proof_helper_execution_path",
           "proof_helper_protocol_sha256", "r2_resolution_receipt_present",
           "r3_resolution_receipt_present"
+        ] else [] end) + (if .schema == 2 and .resolution_revision >= 5 then [
+          "superseded_runtime_inputs_present",
+          "superseded_runtime_resolution_sha256",
+          "superseded_correction_authorization_sha256",
+          "superseded_resolution_receipt_present"
         ] else [] end) | sort)
     ' "$record" >/dev/null || die 'authority resolution correction review shape or values are invalid'
     local canonical
@@ -964,9 +1004,9 @@ validate_resolution_correction_authorization() {
         def uint: type == "number" and . >= 0 and . <= 9007199254740991 and floor == .;
         (.schema == 1 or .schema == 2) and
         (.generation | uint and . > 0) and
-        (.resolution_revision | uint and . >= 2 and . <= 4) and
+        (.resolution_revision | uint and . >= 2 and . <= 5) and
         ((.schema == 1 and .resolution_revision == 2) or
-         (.schema == 2 and .resolution_revision >= 3 and .resolution_revision <= 4)) and
+         (.schema == 2 and .resolution_revision >= 3 and .resolution_revision <= 5)) and
         (.resolution_tag ==
           ("authority-resolution-v1-g" + (.generation | tostring) +
            "-r" + (.resolution_revision | tostring))) and
@@ -1285,7 +1325,7 @@ validate_replacement_resolution() {
             has("superseded_recovery_tool_sha256") or
             has("correction_reason") or has("correction_review_sha256")) | not)
         else
-          (.resolution_revision | uint and . >= 2 and . <= 4) and
+          (.resolution_revision | uint and . >= 2 and . <= 5) and
           (.supersedes_resolution_tag ==
             ("authority-resolution-v1-g" + (.selected_generation | tostring) +
              (if .resolution_revision == 2 then ""
