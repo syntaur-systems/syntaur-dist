@@ -2728,6 +2728,7 @@ jobs:
               "$fixture_root/release-authority-replacement-v1.json.cosign.bundle")" \
               = 0:0:444:1
             set +e
+            # shellcheck disable=SC2024 # Runner-owned capture files intentionally redirect before sudo.
             sudo unshare --mount --uts --fork /bin/bash -c '
               set -euo pipefail
               mount --bind "$4" /etc/hostname
@@ -2743,7 +2744,9 @@ jobs:
             set -e
             test "$fixture_status" -ne 0
             grep -Fq 'promotion endpoint policy' "$fixture_stderr"
-            ! grep -Fq 'signed provenance differs' "$fixture_stderr"
+            if grep -Fq 'signed provenance differs' "$fixture_stderr"; then
+              exit 1
+            fi
           fi
           chmod 0400 "$record" \
             "$resolution/release-authority-replacement-v1.json.cosign.bundle" \
