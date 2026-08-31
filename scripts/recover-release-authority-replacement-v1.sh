@@ -25,9 +25,9 @@ readonly INSTALL_RECEIPT=/etc/syntaur/release-authority-replacement-v1.receipt.j
 readonly ROLLBACK_RECEIPT=/etc/syntaur/release-authority-replacement-v1.rollback-receipt.json
 readonly PRODUCT_STATE_PROOF_TEMP=$AUTHORITY_ROOT/.authority-replacement-product-state-v1.tmp
 readonly RESOLUTION_PARENT=$AUTHORITY_ROOT/replacement-resolution-v1
-readonly SEALED_RUNTIME_ROOT=/etc/syntaur/release-authority-replacement-v1-r5.runtime
+readonly SEALED_RUNTIME_ROOT=/etc/syntaur/release-authority-replacement-v1-r6.runtime
 readonly SUPERSEDED_SEALED_RUNTIME_ROOT=/etc/syntaur/release-authority-replacement-v1.runtime
-readonly SUPERSEDED_CORRECTION_RUNTIME_ROOT=/etc/syntaur/release-authority-replacement-v1-r4.runtime
+readonly SUPERSEDED_CORRECTION_RUNTIME_ROOT=/etc/syntaur/release-authority-replacement-v1-r5.runtime
 readonly PROOF_HELPER_PARENT=/usr/local/libexec
 readonly PROOF_HELPER_ROOT=$PROOF_HELPER_PARENT/syntaur-authority-replacement-proof-v1
 readonly PROOF_HELPER_STAGE=$PROOF_HELPER_PARENT/.syntaur-authority-replacement-proof-v1.staged
@@ -261,7 +261,7 @@ validate_resolution_inline() {
              has("superseded_recovery_tool_sha256") or
              has("correction_reason") or has("correction_review_sha256")) | not)
          else
-           (.resolution_revision | type == "number" and . >= 2 and . <= 5 and floor == .) and
+           (.resolution_revision | type == "number" and . >= 2 and . <= 6 and floor == .) and
            (.supersedes_resolution_tag ==
              ("authority-resolution-v1-g" + (.selected_generation | tostring) +
               (if .resolution_revision == 2 then ""
@@ -910,31 +910,31 @@ verify_superseded_correction_attempt() {
     local authorization=$runtime/$CORRECTION_AUTHORIZATION_NAME
     local current_revision superseded_revision generation actual expected receipt
     current_revision=$(resolution_revision "$record")
-    [[ $current_revision == 5 ]] || return 0
+    [[ $current_revision == 6 ]] || return 0
     [[ $(resolution_value "$correction" superseded_runtime_inputs_present) == true ]] \
-        || die 'r5 correction does not record the sealed r4 attempt'
-    require_root_directory "$runtime" 'superseded r4 correction runtime'
+        || die 'r6 correction does not record the sealed r5 attempt'
+    require_root_directory "$runtime" 'superseded correction runtime'
     [[ $(/usr/bin/stat -c '%a' "$runtime") == 700 ]] \
-        || die 'superseded r4 correction runtime mode differs'
+        || die 'superseded correction runtime mode differs'
     actual=$(/usr/bin/find "$runtime" -mindepth 1 -maxdepth 1 \
         -printf '%f\n' | LC_ALL=C /usr/bin/sort)
     expected=$(/usr/bin/printf '%s\n' \
         "$RECOVERY_TOOL" "$CORRECTION_AUTHORIZATION_NAME" inputs \
         | LC_ALL=C /usr/bin/sort)
     [[ $actual == "$expected" ]] \
-        || die 'superseded r4 correction runtime is inexact'
+        || die 'superseded correction runtime is inexact'
     require_root_file "$runtime/$RECOVERY_TOOL" 500 \
-        'superseded r4 correction recovery tool'
+        'superseded correction recovery tool'
     require_root_file "$authorization" 400 \
-        'superseded r4 correction authorization'
-    require_root_directory "$inputs" 'superseded r4 sealed inputs'
+        'superseded correction authorization'
+    require_root_directory "$inputs" 'superseded sealed inputs'
     [[ $(/usr/bin/stat -c '%a' "$inputs") == 700 ]] \
-        || die 'superseded r4 sealed inputs mode differs'
+        || die 'superseded sealed inputs mode differs'
     actual=$(/usr/bin/find "$inputs" -mindepth 1 -maxdepth 1 \
         -printf '%f\n' | LC_ALL=C /usr/bin/sort)
     expected=$(/usr/bin/printf '%s\n' predecessor rejected resolution selected \
         | LC_ALL=C /usr/bin/sort)
-    [[ $actual == "$expected" ]] || die 'superseded r4 sealed inputs are inexact'
+    [[ $actual == "$expected" ]] || die 'superseded sealed inputs are inexact'
     require_resolution_source "$origin_root"
     [[ $(sha256_file "$runtime/$RECOVERY_TOOL") == \
             "$(resolution_value "$record" superseded_recovery_tool_sha256)" \
@@ -944,9 +944,9 @@ verify_superseded_correction_attempt() {
             "$(resolution_value "$correction" superseded_runtime_resolution_sha256)" \
         && $(sha256_file "$origin_record") == \
             "$(resolution_value "$record" supersedes_resolution_sha256)" ]] \
-        || die 'superseded r4 correction runtime differs from the reviewed failure'
+        || die 'superseded correction runtime differs from the reviewed failure'
     /usr/bin/cmp -s "$runtime/$RECOVERY_TOOL" "$origin_root/$RECOVERY_TOOL" \
-        || die 'superseded r4 runtime and sealed recovery tools differ'
+        || die 'superseded runtime and sealed recovery tools differ'
     superseded_revision=$((current_revision - 1))
     generation=$(resolution_value "$record" selected_generation)
     validate_resolution_inline "$origin_record"
@@ -996,14 +996,30 @@ verify_superseded_correction_attempt() {
          .active_install_journal_sha256 == $active_install_journal_sha256 and
          .sealed_inputs_resolution_sha256 == $sealed_inputs_resolution_sha256' \
         "$authorization" >/dev/null \
-        || die 'superseded r4 authorization differs from the reviewed failure'
+        || die 'superseded authorization differs from the reviewed failure'
     verify_cosign "$origin_record" "$origin_root/$RESOLUTION_BUNDLE" \
         "$(resolution_value "$origin_record" resolution_workflow_commit)" \
-        'superseded r4 correction resolution'
+        'superseded correction resolution'
     receipt=$RESOLUTION_PARENT/generation-$generation-r$superseded_revision
-    [[ $(resolution_value "$correction" superseded_resolution_receipt_present) == false \
-        && ! -e $receipt && ! -L $receipt ]] \
-        || die 'superseded r4 resolution receipt state differs from the reviewed failure'
+    if [[ $(resolution_value "$correction" superseded_resolution_receipt_present) == true ]]; then
+        require_root_directory "$receipt" 'superseded resolution receipt'
+        [[ $(/usr/bin/stat -c '%a' "$receipt") == 700 ]] \
+            || die 'superseded resolution receipt mode differs'
+        actual=$(/usr/bin/find "$receipt" -mindepth 1 -maxdepth 1 \
+            -printf '%f\n' | LC_ALL=C /usr/bin/sort)
+        expected=$(resolution_data_names "$origin_record" | LC_ALL=C /usr/bin/sort)
+        [[ $actual == "$expected" ]] \
+            || die 'superseded resolution receipt is inexact'
+        while IFS= read -r name; do
+            require_root_file "$receipt/$name" 444 \
+                "superseded resolution receipt $name"
+            /usr/bin/cmp -s "$receipt/$name" "$origin_root/$name" \
+                || die "superseded resolution receipt $name differs"
+        done < <(resolution_data_names "$origin_record")
+    else
+        [[ ! -e $receipt && ! -L $receipt ]] \
+            || die 'superseded resolution receipt state differs from the reviewed failure'
+    fi
 }
 
 verify_resolution_correction_r3_state() {

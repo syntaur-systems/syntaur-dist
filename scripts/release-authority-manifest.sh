@@ -759,9 +759,9 @@ validate_resolution_correction_review() {
         def uint: type == "number" and . >= 0 and . <= 9007199254740991 and floor == .;
         (.schema == 1 or .schema == 2) and
         (.generation | uint and . > 0) and
-        (.resolution_revision | uint and . >= 2 and . <= 5) and
+        (.resolution_revision | uint and . >= 2 and . <= 6) and
         ((.schema == 1 and .resolution_revision == 2) or
-         (.schema == 2 and .resolution_revision >= 3 and .resolution_revision <= 5)) and
+         (.schema == 2 and .resolution_revision >= 3 and .resolution_revision <= 6)) and
         (.resolution_tag ==
           ("authority-resolution-v1-g" + (.generation | tostring) +
            "-r" + (.resolution_revision | tostring))) and
@@ -806,9 +806,12 @@ validate_resolution_correction_review() {
             elif .resolution_revision == 4 then
               (.failure_class == "resolution_proof_helper_size_limit_mismatch") and
               (.failure_stage == "preseal_resolution_source_validation")
-            else
+            elif .resolution_revision == 5 then
               (.failure_class == "resolution_lineage_hash_domain_conflation") and
               (.failure_stage == "postseal_resolution_correction_state_validation")
+            else
+              (.failure_class == "proof_helper_resolution_revision_contract_mismatch") and
+              (.failure_stage == "post_manifest_product_state_proof")
             end) and
            (.authority_mutated == true) and
            (.product_state_mutated == false) and
@@ -836,7 +839,7 @@ validate_resolution_correction_review() {
            (.superseded_planned_product_base_commit | commit) and
            (.corrected_planned_product_base_commit | commit) and
            (.corrected_planned_product_base_commit == .proof_helper_source_commit) and
-           (if .resolution_revision >= 5 then
+           (if .resolution_revision == 5 then
               .corrected_planned_product_base_commit ==
                 .superseded_planned_product_base_commit
             else
@@ -867,12 +870,17 @@ validate_resolution_correction_review() {
               (.proof_helper_source_parent_commit | commit) and
               (.proof_helper_source_parent_commit !=
                 .proof_helper_source_commit) and
+              (if .resolution_revision >= 6 then
+                 .proof_helper_source_parent_commit ==
+                   .superseded_planned_product_base_commit
+               else true end) and
               (.superseded_runtime_inputs_present == true) and
               (.superseded_runtime_resolution_sha256 | digest) and
               (.superseded_runtime_resolution_sha256 ==
                 .supersedes_resolution_sha256) and
               (.superseded_correction_authorization_sha256 | digest) and
-              (.superseded_resolution_receipt_present == false)
+              (.superseded_resolution_receipt_present ==
+                (.resolution_revision >= 6))
             else
               ((has("superseded_runtime_inputs_present") or
                 has("superseded_runtime_resolution_sha256") or
@@ -1011,9 +1019,9 @@ validate_resolution_correction_authorization() {
         def uint: type == "number" and . >= 0 and . <= 9007199254740991 and floor == .;
         (.schema == 1 or .schema == 2) and
         (.generation | uint and . > 0) and
-        (.resolution_revision | uint and . >= 2 and . <= 5) and
+        (.resolution_revision | uint and . >= 2 and . <= 6) and
         ((.schema == 1 and .resolution_revision == 2) or
-         (.schema == 2 and .resolution_revision >= 3 and .resolution_revision <= 5)) and
+         (.schema == 2 and .resolution_revision >= 3 and .resolution_revision <= 6)) and
         (.resolution_tag ==
           ("authority-resolution-v1-g" + (.generation | tostring) +
            "-r" + (.resolution_revision | tostring))) and
@@ -1332,7 +1340,7 @@ validate_replacement_resolution() {
             has("superseded_recovery_tool_sha256") or
             has("correction_reason") or has("correction_review_sha256")) | not)
         else
-          (.resolution_revision | uint and . >= 2 and . <= 5) and
+          (.resolution_revision | uint and . >= 2 and . <= 6) and
           (.supersedes_resolution_tag ==
             ("authority-resolution-v1-g" + (.selected_generation | tostring) +
              (if .resolution_revision == 2 then ""

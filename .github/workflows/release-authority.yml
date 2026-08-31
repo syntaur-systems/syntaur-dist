@@ -696,7 +696,7 @@ jobs:
        needs.predecessor.outputs.target_already_published != 'true') ||
       (needs.predecessor.outputs.target_already_published == 'true' &&
        (inputs.resolution_revision == '3' || inputs.resolution_revision == '4' ||
-        inputs.resolution_revision == '5'))
+        inputs.resolution_revision == '5' || inputs.resolution_revision == '6'))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release-authority-source
@@ -724,7 +724,7 @@ jobs:
        needs.predecessor.outputs.target_already_published != 'true') ||
       (needs.predecessor.outputs.target_already_published == 'true' &&
        (inputs.resolution_revision == '3' || inputs.resolution_revision == '4' ||
-        inputs.resolution_revision == '5'))
+        inputs.resolution_revision == '5' || inputs.resolution_revision == '6'))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release-authority-source
@@ -760,7 +760,7 @@ jobs:
           source_parent=$VERIFICATION_POLICY_REVISION
           source_version=$AUTHORITY_VERSION
           if [[ $TARGET_ALREADY_PUBLISHED == true ]]; then
-            printf '%s' "$RESOLUTION_REVISION" | grep -Eq '^[345]$'
+            printf '%s' "$RESOLUTION_REVISION" | grep -Eq '^[3456]$'
             source_mode=replacement-proof-helper
             correction="public-workflow/.github/authority-resolution-corrections/g${GENERATION}-r${RESOLUTION_REVISION}.json"
             review="public-workflow/.github/authority-replacement-reviews/g${GENERATION}.json"
@@ -1781,7 +1781,7 @@ jobs:
     if: >-
       needs.predecessor.outputs.target_already_published == 'true' &&
       (inputs.resolution_revision == '3' || inputs.resolution_revision == '4' ||
-       inputs.resolution_revision == '5')
+       inputs.resolution_revision == '5' || inputs.resolution_revision == '6')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: release-authority-source
@@ -2128,10 +2128,12 @@ jobs:
               "build_clean", "build_profile", "build_target",
               "control_plane_sha256", "executable_sha256",
               "protocol_sha256", "rustflags_sha256", "schema",
-              "source_commit", "toolchain_sha256"
+              "source_commit", "resolution_revision", "toolchain_sha256"
             ] | sort))
           ' "$attestation" >/dev/null
           test "$(jq -er '.source_commit' "$attestation")" = "$SOURCE_COMMIT"
+          test "$(jq -er '.resolution_revision' "$attestation")" \
+            = "$RESOLUTION_REVISION"
           test "$(jq -er '.executable_sha256' "$attestation")" \
             = "$(sha256sum "$helper" | awk '{print $1}')"
           test "$(jq -er '.executable_sha256' "$attestation")" \
@@ -2181,7 +2183,7 @@ jobs:
       needs.predecessor.outputs.target_already_published == 'true' &&
       needs.resolution_policy.result == 'success' &&
       ((inputs.resolution_revision != '3' && inputs.resolution_revision != '4' &&
-        inputs.resolution_revision != '5') ||
+        inputs.resolution_revision != '5' && inputs.resolution_revision != '6') ||
        needs.replacement_proof_helper.result == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -2199,7 +2201,7 @@ jobs:
       - name: Download exact replacement proof helper
         if: >-
           inputs.resolution_revision == '3' || inputs.resolution_revision == '4' ||
-          inputs.resolution_revision == '5'
+          inputs.resolution_revision == '5' || inputs.resolution_revision == '6'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: replacement-proof-helper-run-${{ github.run_id }}-attempt-*
@@ -2208,7 +2210,7 @@ jobs:
       - name: Select exact replacement proof helper
         if: >-
           inputs.resolution_revision == '3' || inputs.resolution_revision == '4' ||
-          inputs.resolution_revision == '5'
+          inputs.resolution_revision == '5' || inputs.resolution_revision == '6'
         shell: bash
         run: |
           set -euo pipefail
@@ -2683,6 +2685,69 @@ jobs:
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             --certificate-github-workflow-sha "$resolution_workflow_commit" \
             "$record"
+          if [[ $RESOLUTION_REVISION == 6 ]]; then
+            fixture_root=/usr/local/libexec/syntaur-authority-replacement-proof-v1
+            fixture_home="$RUNNER_TEMP/r6-proof-helper-home"
+            fixture_hostname="$RUNNER_TEMP/r6-proof-helper.hostname"
+            fixture_stdout="$RUNNER_TEMP/r6-proof-helper.stdout"
+            fixture_stderr="$RUNNER_TEMP/r6-proof-helper.stderr"
+            runner_uid=$(id -u)
+            runner_gid=$(id -g)
+            cosign_path=$(command -v cosign)
+            mkdir -m 0700 "$fixture_home"
+            printf 'claudevm\n' >"$fixture_hostname"
+            chmod 0444 "$fixture_hostname"
+            sudo test ! -e "$fixture_root"
+            sudo test ! -e /usr/local/bin/syntaur-ship
+            sudo install -o root -g root -m 0755 -d "$fixture_root"
+            sudo install -o root -g root -m 0555 \
+              "$resolution/syntaur-authority-replacement-proof-linux-x86_64" \
+              "$fixture_root/syntaur-ship"
+            sudo install -o root -g root -m 0444 \
+              "$record" \
+              "$fixture_root/release-authority-replacement-v1.json"
+            sudo install -o root -g root -m 0444 \
+              "$resolution/release-authority-replacement-v1.json.cosign.bundle" \
+              "$fixture_root/release-authority-replacement-v1.json.cosign.bundle"
+            sudo install -o root -g root -m 0555 \
+              "$resolution/syntaur-authority-replacement-proof-linux-x86_64" \
+              /usr/local/bin/syntaur-ship
+            if [[ $cosign_path != /usr/local/bin/cosign ]]; then
+              sudo install -o root -g root -m 0555 \
+                "$cosign_path" /usr/local/bin/cosign
+            else
+              sudo chown root:root /usr/local/bin/cosign
+              sudo chmod 0555 /usr/local/bin/cosign
+            fi
+            test "$(stat -c '%u:%g:%a:%h' "$fixture_root/syntaur-ship")" \
+              = 0:0:555:1
+            test "$(stat -c '%u:%g:%a:%h' \
+              "$fixture_root/release-authority-replacement-v1.json")" \
+              = 0:0:444:1
+            test "$(stat -c '%u:%g:%a:%h' \
+              "$fixture_root/release-authority-replacement-v1.json.cosign.bundle")" \
+              = 0:0:444:1
+            set +e
+            # shellcheck disable=SC2024 # Runner-owned capture files intentionally redirect before sudo.
+            sudo unshare --mount --uts --fork /bin/bash -c '
+              set -euo pipefail
+              mount --bind "$4" /etc/hostname
+              hostname claudevm
+              exec setpriv --reuid "$1" --regid "$2" --init-groups \
+                env -i HOME="$3" PATH=/usr/bin:/bin \
+                /usr/local/libexec/syntaur-authority-replacement-proof-v1/syntaur-ship \
+                authority-replacement-product-state-helper
+            ' r6-proof-helper-fixture "$runner_uid" "$runner_gid" "$fixture_home" \
+              "$fixture_hostname" \
+              >"$fixture_stdout" 2>"$fixture_stderr"
+            fixture_status=$?
+            set -e
+            test "$fixture_status" -ne 0
+            grep -Fq 'promotion endpoint policy' "$fixture_stderr"
+            if grep -Fq 'signed provenance differs' "$fixture_stderr"; then
+              exit 1
+            fi
+          fi
           chmod 0400 "$record" \
             "$resolution/release-authority-replacement-v1.json.cosign.bundle" \
             "$resolution/release-authority-selection-review-v1.json"
