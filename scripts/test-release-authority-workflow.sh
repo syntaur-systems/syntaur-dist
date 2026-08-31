@@ -1018,8 +1018,51 @@ done
 [[ $proof_helper_artifact_selector == "$isolated_build_artifact_selector" ]]
 grep -Fq 'proof_helper_source_parent_commit' <<<"$source_tuple_guard"
 grep -Fq '.planned_product_base_commit' <<<"$source_tuple_guard"
+grep -Fq '.superseded_planned_product_base_commit' <<<"$source_tuple_guard"
 grep -Fq 'proof_helper_source_parent_commit' <<<"$proof_helper_parent_guard"
 grep -Fq '.corrected_planned_product_base_commit' <<<"$resolution_lineage_guard"
+
+source_tuple_fixture="$tmp_root/source-tuple"
+mkdir -p \
+    "$source_tuple_fixture/public-workflow/scripts" \
+    "$source_tuple_fixture/public-workflow/.github/authority-resolution-corrections" \
+    "$source_tuple_fixture/public-workflow/.github/authority-replacement-reviews"
+cp "$helper" "$source_tuple_fixture/public-workflow/scripts/"
+cp "$checked_in_selection_review" \
+    "$source_tuple_fixture/public-workflow/.github/authority-replacement-reviews/g60.json"
+cp "$checked_in_r5_correction" "$checked_in_r6_correction" \
+    "$source_tuple_fixture/public-workflow/.github/authority-resolution-corrections/"
+
+exercise_source_tuple_guard() {
+    local revision=$1
+    local correction=$2
+    local output="$tmp_root/source-tuple-r${revision}.output"
+    (
+        cd "$source_tuple_fixture"
+        GENERATION=60 \
+        TARGET_ALREADY_PUBLISHED=true \
+        RESOLUTION_REVISION=$revision \
+        AUTHORITY_COMMIT=$AUTHORITY_COMMIT \
+        AUTHORITY_TREE_SHA256=$AUTHORITY_TREE_SHA256 \
+        AUTHORITY_VERSION=$AUTHORITY_VERSION \
+        VERIFICATION_POLICY_REVISION=$VERIFICATION_POLICY_REVISION \
+        GITHUB_OUTPUT=$output \
+            bash --noprofile --norc -e -o pipefail -c "$source_tuple_guard"
+    )
+    grep -Fxq 'source_mode=replacement-proof-helper' "$output"
+    grep -Fxq \
+        "source_commit=$(jq -er '.proof_helper_source_commit' "$correction")" \
+        "$output"
+    grep -Fxq \
+        "source_tree_sha256=$(jq -er '.proof_helper_source_tree_sha256' "$correction")" \
+        "$output"
+    grep -Fxq \
+        "source_parent=$(jq -er '.proof_helper_source_parent_commit' "$correction")" \
+        "$output"
+}
+
+exercise_source_tuple_guard 5 "$checked_in_r5_correction"
+exercise_source_tuple_guard 6 "$checked_in_r6_correction"
 
 run_single_artifact_selector() {
     local selector=$1
