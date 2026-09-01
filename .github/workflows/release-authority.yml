@@ -2692,7 +2692,10 @@ jobs:
             --certificate-github-workflow-sha "$resolution_workflow_commit" \
             "$record"
           if [[ $RESOLUTION_REVISION == 6 ]]; then
-            fixture_root=/usr/local/libexec/syntaur-authority-replacement-proof-v1
+            fixture_usr_local="$RUNNER_TEMP/r6-proof-helper-usr-local"
+            fixture_bin="$fixture_usr_local/bin"
+            fixture_libexec="$fixture_usr_local/libexec"
+            fixture_root="$fixture_libexec/syntaur-authority-replacement-proof-v1"
             fixture_home="$RUNNER_TEMP/r6-proof-helper-home"
             fixture_hostname="$RUNNER_TEMP/r6-proof-helper.hostname"
             fixture_stdout="$RUNNER_TEMP/r6-proof-helper.stdout"
@@ -2703,9 +2706,9 @@ jobs:
             mkdir -m 0700 "$fixture_home"
             printf 'claudevm\n' >"$fixture_hostname"
             chmod 0444 "$fixture_hostname"
-            sudo test ! -e "$fixture_root"
-            sudo test ! -e /usr/local/bin/syntaur-ship
-            sudo install -o root -g root -m 0755 -d "$fixture_root"
+            sudo test ! -e "$fixture_usr_local"
+            sudo install -o root -g root -m 0755 -d \
+              "$fixture_usr_local" "$fixture_bin" "$fixture_libexec" "$fixture_root"
             sudo install -o root -g root -m 0555 \
               "$resolution/syntaur-authority-replacement-proof-linux-x86_64" \
               "$fixture_root/syntaur-ship"
@@ -2717,14 +2720,13 @@ jobs:
               "$fixture_root/release-authority-replacement-v1.json.cosign.bundle"
             sudo install -o root -g root -m 1755 \
               "$resolution/syntaur-authority-replacement-proof-linux-x86_64" \
-              /usr/local/bin/syntaur-ship
-            if [[ $cosign_path != /usr/local/bin/cosign ]]; then
-              sudo install -o root -g root -m 0555 \
-                "$cosign_path" /usr/local/bin/cosign
-            else
-              sudo chown root:root /usr/local/bin/cosign
-              sudo chmod 0555 /usr/local/bin/cosign
-            fi
+              "$fixture_bin/syntaur-ship"
+            sudo install -o root -g root -m 0555 \
+              "$cosign_path" "$fixture_bin/cosign"
+            test "$(stat -c '%u:%g:%a' "$fixture_usr_local")" = 0:0:755
+            test "$(stat -c '%u:%g:%a' "$fixture_bin")" = 0:0:755
+            test "$(stat -c '%u:%g:%a' "$fixture_libexec")" = 0:0:755
+            test "$(stat -c '%u:%g:%a' "$fixture_root")" = 0:0:755
             test "$(stat -c '%u:%g:%a:%h' "$fixture_root/syntaur-ship")" \
               = 0:0:555:1
             test "$(stat -c '%u:%g:%a:%h' \
@@ -2733,20 +2735,26 @@ jobs:
             test "$(stat -c '%u:%g:%a:%h' \
               "$fixture_root/release-authority-replacement-v1.json.cosign.bundle")" \
               = 0:0:444:1
-            test "$(stat -c '%u:%g:%a:%h' /usr/local/bin/syntaur-ship)" \
+            test "$(stat -c '%u:%g:%a:%h' "$fixture_bin/syntaur-ship")" \
               = 0:0:1755:1
+            test "$(stat -c '%u:%g:%a:%h' "$fixture_bin/cosign")" \
+              = 0:0:555:1
             set +e
             # shellcheck disable=SC2024 # Runner-owned capture files intentionally redirect before sudo.
             sudo unshare --mount --uts --fork /bin/bash -c '
               set -euo pipefail
               mount --bind "$4" /etc/hostname
+              mount --bind "$5" /usr/local
               hostname claudevm
+              test "$(stat -c "%u:%g:%a" /usr/local)" = 0:0:755
+              test "$(stat -c "%u:%g:%a:%h" /usr/local/bin/syntaur-ship)" \
+                = 0:0:1755:1
               exec setpriv --reuid "$1" --regid "$2" --init-groups \
                 env -i HOME="$3" PATH=/usr/bin:/bin \
                 /usr/local/libexec/syntaur-authority-replacement-proof-v1/syntaur-ship \
                 authority-replacement-product-state-helper
             ' r6-proof-helper-fixture "$runner_uid" "$runner_gid" "$fixture_home" \
-              "$fixture_hostname" \
+              "$fixture_hostname" "$fixture_usr_local" \
               >"$fixture_stdout" 2>"$fixture_stderr"
             fixture_status=$?
             set -e
