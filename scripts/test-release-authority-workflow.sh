@@ -1515,8 +1515,15 @@ grep -Fq '"source_commit", "resolution_revision", "toolchain_sha256"' "$workflow
 grep -Fq "= \"\$RESOLUTION_REVISION\"" "$workflow"
 grep -Fq 'r6-proof-helper-fixture' "$workflow"
 grep -Fq "stat -c '%u:%g:%a:%h' \"\$fixture_root/syntaur-ship\"" "$workflow"
+[[ $(grep -Fc 'sudo install -o root -g root -m 1755' "$workflow") -eq 1 ]]
+grep -Fq "stat -c '%u:%g:%a:%h' /usr/local/bin/syntaur-ship" "$workflow"
+grep -Fq '= 0:0:1755:1' "$workflow"
 grep -Fq 'authority-replacement-product-state-helper' "$workflow"
-grep -Fq "grep -Fq 'promotion endpoint policy' \"\$fixture_stderr\"" "$workflow"
+grep -Fq "if ! grep -Fq 'promotion endpoint policy' \"\$fixture_stderr\"; then" \
+    "$workflow"
+grep -Fq 'R6 proof-helper fixture failed before the expected policy boundary:' \
+    "$workflow"
+grep -Fq "sed -n '1,120p' \"\$fixture_stderr\" >&2" "$workflow"
 grep -Fq "if grep -Fq 'signed provenance differs' \"\$fixture_stderr\"; then" \
     "$workflow"
 grep -Fq 'validate-resolution-correction-review' "$workflow"
