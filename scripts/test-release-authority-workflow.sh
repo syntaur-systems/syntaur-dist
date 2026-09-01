@@ -1565,10 +1565,15 @@ grep -Fq 'resolution_revision' "$workflow"
 grep -Fq '"source_commit", "resolution_revision", "toolchain_sha256"' "$workflow"
 grep -Fq "= \"\$RESOLUTION_REVISION\"" "$workflow"
 grep -Fq 'r6-proof-helper-fixture' "$workflow"
+grep -Fq 'fixture_usr_local="$RUNNER_TEMP/r6-proof-helper-usr-local"' "$workflow"
+grep -Fq 'mount --bind "$5" /usr/local' "$workflow"
 grep -Fq "stat -c '%u:%g:%a:%h' \"\$fixture_root/syntaur-ship\"" "$workflow"
 [[ $(grep -Fc 'sudo install -o root -g root -m 1755' "$workflow") -eq 1 ]]
-grep -Fq "stat -c '%u:%g:%a:%h' /usr/local/bin/syntaur-ship" "$workflow"
+grep -Fq "stat -c '%u:%g:%a:%h' \"\$fixture_bin/syntaur-ship\"" "$workflow"
 grep -Fq '= 0:0:1755:1' "$workflow"
+if grep -Fq 'sudo test ! -e /usr/local/bin/syntaur-ship' "$workflow"; then
+    fail 'R6 fixture still mutates the hosted runner /usr/local/bin'
+fi
 grep -Fq 'authority-replacement-product-state-helper' "$workflow"
 grep -Fq "if ! grep -Fq 'promotion endpoint policy' \"\$fixture_stderr\"; then" \
     "$workflow"
