@@ -1467,6 +1467,57 @@ expect_failure "$helper" validate-resolution-correction-review \
     "$helper" validate-replacement-resolution "$checked_in_r6_resolution"
     "$helper" validate-replacement-resolution-tag \
         authority-resolution-v1-g60-r6 "$checked_in_r6_resolution"
+
+    r6_asset_dir="$tmp_root/checked-in-r6-resolution-assets"
+    mkdir -m 0700 "$r6_asset_dir"
+    printf 'R6 proof-helper asset fixture\n' \
+        >"$r6_asset_dir/syntaur-authority-replacement-proof-linux-x86_64"
+    r6_fixture_proof_sha=$(sha256sum \
+        "$r6_asset_dir/syntaur-authority-replacement-proof-linux-x86_64" \
+        | awk '{print $1}')
+    jq -cj \
+        --arg proof_sha "$r6_fixture_proof_sha" \
+        --arg tool_sha "$(sha256sum "$recovery_tool" | awk '{print $1}')" \
+        --arg helper_sha "$(sha256sum "$helper" | awk '{print $1}')" \
+        '.proof_helper_sha256 = $proof_sha |
+         .corrected_recovery_tool_sha256 = $tool_sha |
+         .corrected_manifest_helper_sha256 = $helper_sha' \
+        "$checked_in_r6_correction" \
+        >"$r6_asset_dir/release-authority-resolution-correction-v1.json"
+    CORRECTION_REVIEW_SHA256=$(sha256sum \
+        "$r6_asset_dir/release-authority-resolution-correction-v1.json" \
+        | awk '{print $1}')
+    PROOF_HELPER_SHA256=$r6_fixture_proof_sha
+    export CORRECTION_REVIEW_SHA256 PROOF_HELPER_SHA256
+    install -m 0500 "$recovery_tool" \
+        "$r6_asset_dir/recover-release-authority-replacement-v1.sh"
+    install -m 0500 "$helper" \
+        "$r6_asset_dir/release-authority-manifest.sh"
+    install -m 0400 "$checked_in_selection_review" \
+        "$r6_asset_dir/release-authority-selection-review-v1.json"
+    "$helper" render-replacement-resolution \
+        "$r6_asset_dir/release-authority-replacement-v1.json"
+    printf '{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}\n' \
+        >"$r6_asset_dir/release-authority-replacement-v1.json.cosign.bundle"
+    "$helper" validate-replacement-resolution-assets "$r6_asset_dir"
+
+    r6_helper_parent=$(jq -er '.proof_helper_source_parent_commit' \
+        "$r6_asset_dir/release-authority-resolution-correction-v1.json")
+    r6_wrong_review="$tmp_root/r6-helper-parent-selection-review.json"
+    jq -cj --arg base "$r6_helper_parent" \
+        '.planned_product_base_commit = $base' \
+        "$checked_in_selection_review" \
+        >"$r6_wrong_review"
+    chmod 0600 "$r6_asset_dir/release-authority-selection-review-v1.json"
+    install -m 0400 "$r6_wrong_review" \
+        "$r6_asset_dir/release-authority-selection-review-v1.json"
+    SELECTION_REVIEW_SHA256=$(sha256sum \
+        "$r6_asset_dir/release-authority-selection-review-v1.json" \
+        | awk '{print $1}')
+    export SELECTION_REVIEW_SHA256
+    "$helper" render-replacement-resolution \
+        "$r6_asset_dir/release-authority-replacement-v1.json"
+    expect_failure "$helper" validate-replacement-resolution-assets "$r6_asset_dir"
 )
 grep -Fq 'approval_record:' "$workflow"
 for required in \
@@ -1515,8 +1566,15 @@ grep -Fq '"source_commit", "resolution_revision", "toolchain_sha256"' "$workflow
 grep -Fq "= \"\$RESOLUTION_REVISION\"" "$workflow"
 grep -Fq 'r6-proof-helper-fixture' "$workflow"
 grep -Fq "stat -c '%u:%g:%a:%h' \"\$fixture_root/syntaur-ship\"" "$workflow"
+[[ $(grep -Fc 'sudo install -o root -g root -m 1755' "$workflow") -eq 1 ]]
+grep -Fq "stat -c '%u:%g:%a:%h' /usr/local/bin/syntaur-ship" "$workflow"
+grep -Fq '= 0:0:1755:1' "$workflow"
 grep -Fq 'authority-replacement-product-state-helper' "$workflow"
-grep -Fq "grep -Fq 'promotion endpoint policy' \"\$fixture_stderr\"" "$workflow"
+grep -Fq "if ! grep -Fq 'promotion endpoint policy' \"\$fixture_stderr\"; then" \
+    "$workflow"
+grep -Fq 'R6 proof-helper fixture failed before the expected policy boundary:' \
+    "$workflow"
+grep -Fq "sed -n '1,120p' \"\$fixture_stderr\" >&2" "$workflow"
 grep -Fq "if grep -Fq 'signed provenance differs' \"\$fixture_stderr\"; then" \
     "$workflow"
 grep -Fq 'validate-resolution-correction-review' "$workflow"

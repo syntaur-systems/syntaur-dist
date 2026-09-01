@@ -2715,7 +2715,7 @@ jobs:
             sudo install -o root -g root -m 0444 \
               "$resolution/release-authority-replacement-v1.json.cosign.bundle" \
               "$fixture_root/release-authority-replacement-v1.json.cosign.bundle"
-            sudo install -o root -g root -m 0555 \
+            sudo install -o root -g root -m 1755 \
               "$resolution/syntaur-authority-replacement-proof-linux-x86_64" \
               /usr/local/bin/syntaur-ship
             if [[ $cosign_path != /usr/local/bin/cosign ]]; then
@@ -2733,6 +2733,8 @@ jobs:
             test "$(stat -c '%u:%g:%a:%h' \
               "$fixture_root/release-authority-replacement-v1.json.cosign.bundle")" \
               = 0:0:444:1
+            test "$(stat -c '%u:%g:%a:%h' /usr/local/bin/syntaur-ship)" \
+              = 0:0:1755:1
             set +e
             # shellcheck disable=SC2024 # Runner-owned capture files intentionally redirect before sudo.
             sudo unshare --mount --uts --fork /bin/bash -c '
@@ -2748,9 +2750,17 @@ jobs:
               >"$fixture_stdout" 2>"$fixture_stderr"
             fixture_status=$?
             set -e
-            test "$fixture_status" -ne 0
-            grep -Fq 'promotion endpoint policy' "$fixture_stderr"
+            if [[ $fixture_status -eq 0 ]]; then
+              printf 'R6 proof-helper fixture unexpectedly reached terminal product state\n' >&2
+              exit 1
+            fi
+            if ! grep -Fq 'promotion endpoint policy' "$fixture_stderr"; then
+              printf 'R6 proof-helper fixture failed before the expected policy boundary:\n' >&2
+              sed -n '1,120p' "$fixture_stderr" >&2
+              exit 1
+            fi
             if grep -Fq 'signed provenance differs' "$fixture_stderr"; then
+              sed -n '1,120p' "$fixture_stderr" >&2
               exit 1
             fi
           fi

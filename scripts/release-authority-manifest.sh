@@ -1651,19 +1651,16 @@ validate_replacement_resolution_assets() {
     [[ $review_sha == "$(manifest_value "$resolution" selection_review_sha256)" ]] \
         || die 'authority replacement selection review differs from the signed resolution'
     if [[ $schema == 2 && $revision -ge 3 ]]; then
+        # The selection review permanently binds the original product base to
+        # the selected authority source. Correction-only proof helpers may
+        # advance through later source commits, so their parent lineage must
+        # not be projected back into the immutable selection review.
         selection_base=$(manifest_value \
-            "$correction" superseded_planned_product_base_commit)
-        if [[ $revision -ge 5 ]]; then
-            selection_base=$(manifest_value \
-                "$correction" proof_helper_source_parent_commit)
-        fi
+            "$resolution" selected_authority_commit)
         [[ $(selection_review_from_file "$resolution" \
                 | jq -c --arg base "$selection_base" \
                     '.planned_product_base_commit = $base') == "$(<"$review")" ]] \
             || die 'corrected resolution does not preserve the exact selection review'
-        [[ $selection_base == \
-            "$(manifest_value "$resolution" selected_authority_commit)" ]] \
-            || die 'correction does not bind the selected authority source parent'
     else
         [[ $(selection_review_from_file "$resolution") == "$(<"$review")" ]] \
             || die 'authority replacement resolution does not bind the exact selection review'
