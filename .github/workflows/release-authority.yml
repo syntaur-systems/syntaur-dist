@@ -783,8 +783,14 @@ jobs:
             source_version=$(jq -er '.selected_authority_version' "$review")
             test "$source_commit" \
               = "$(jq -er '.corrected_planned_product_base_commit' "$correction")"
-            test "$source_parent" \
-              = "$(jq -er '.planned_product_base_commit' "$review")"
+            if [[ $RESOLUTION_REVISION -ge 6 ]]; then
+              expected_source_parent=$(jq -er \
+                '.superseded_planned_product_base_commit' "$correction")
+            else
+              expected_source_parent=$(jq -er \
+                '.planned_product_base_commit' "$review")
+            fi
+            test "$source_parent" = "$expected_source_parent"
           fi
           printf '%s' "$source_commit" | grep -Eq '^[0-9a-f]{40}$'
           printf '%s' "$source_parent" | grep -Eq '^[0-9a-f]{40}$'
