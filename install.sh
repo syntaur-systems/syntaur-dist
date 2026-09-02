@@ -21,16 +21,16 @@ BRAND="Syntaur"
 # before tagging a release so this string and install.ps1 stay in sync with
 # the workspace version in Cargo.toml. install.sh ships standalone (users
 # curl|sh it), so it can't read the VERSION file at runtime.
-VERSION="0.7.166"
+VERSION="0.7.168"
 # Stamped from the built runtime artifact by release-sign.yml before this
 # installer is signed. Managed installs enforce it regardless of --skip-verify.
-RUNTIME_BOOTSTRAP_SHA256="03f5adb76adcc92428d20838b4fc3b595321560a5cf030dd03a2509a8738b6c7"
+RUNTIME_BOOTSTRAP_SHA256="92feb65f9b22f63d472a1af541b31b01d80fe5ae684ac4b5ec65829ef959dbd4"
 # Stamped from the matching helper asset. This pin remains mandatory even
 # when --skip-verify is used for developer-only direct assets.
-PROCESS_INSPECTOR_SHA256="02c832d4cc3deac49bc5da1afa36cfda07ba4bc8ed7f95c7d6c077aa69ce22cb"
+PROCESS_INSPECTOR_SHA256="639422533fe999fe9858065e70360273c5e19afff75e13354d7810fc774f7b83"
 # Stamped from the exact public workflow checkout before this installer is
 # signed. Cosign verification binds the manifest to this immutable commit.
-DIST_WORKFLOW_COMMIT="d6c4de9302e8dc1d1bf223cec22bdb524c4516c7"
+DIST_WORKFLOW_COMMIT="2f9a75f665c27a5dbf669ae27104de1e584feac0"
 # Immutable provenance for the exact EULA bytes below. This changes only when
 # EULA_VERSION or EULA_SHA256 changes, never for an ordinary product release.
 EULA_SOURCE_COMMIT="8811aa006673caa5082a7c9343e83c0b7ac51d16"
