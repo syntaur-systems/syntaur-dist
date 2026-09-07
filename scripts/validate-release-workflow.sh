@@ -470,6 +470,7 @@ for syntax_workflow in "$workflow" "$authority_workflow"; do
 done
 
 bash scripts/test-release-workflow-recovery.sh "$workflow"
+bash scripts/test-workflow-change-scope.sh
 bash scripts/test-release-provenance-retry.sh "$workflow"
 authority_scripts=(
   scripts/test-release-provenance-retry.sh
@@ -499,6 +500,7 @@ authority_scripts=(
   scripts/release-authority-manifest.sh
   scripts/test-release-authority-bootstrap.sh
   scripts/test-release-authority-workflow.sh
+  scripts/test-workflow-change-scope.sh
   scripts/test-process-inspector-install.sh
   scripts/test-process-inspector-install-container.sh
   scripts/validate-release-workflow.sh
