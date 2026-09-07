@@ -31,7 +31,8 @@ jobs:
               base=$PR_BASE_SHA
               ;;
             push)
-              if [[ $PUSH_BEFORE_SHA =~ ^[1-9a-f][0-9a-f]{39}$ ]]; then
+              if [[ $PUSH_BEFORE_SHA =~ ^[0-9a-f]{40}$ &&
+                    $PUSH_BEFORE_SHA != 0000000000000000000000000000000000000000 ]]; then
                 base=$PUSH_BEFORE_SHA
               elif git show-ref --verify --quiet refs/remotes/origin/main; then
                 base=$(git merge-base "$GITHUB_SHA" refs/remotes/origin/main)
