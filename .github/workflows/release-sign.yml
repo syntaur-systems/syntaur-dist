@@ -1461,12 +1461,67 @@ jobs:
           fi
 
       - name: Attest SLSA provenance
+        id: provenance_1
+        timeout-minutes: 5
+        continue-on-error: true
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-path: |
             dist/syntaur-*
             dist/install.sh
             dist/install.ps1
+
+      # Retry only within this original job over the same signed files. A
+      # transient OIDC outage must not require rebuilding every platform.
+      # The mandatory outcome gate below still forbids publication without a
+      # successful attestation; this never admits a workflow rerun or new run.
+      - name: Back off before second provenance attempt
+        if: steps.provenance_1.outcome == 'failure'
+        run: sleep 20
+
+      - name: Attest SLSA provenance (second attempt)
+        id: provenance_2
+        if: steps.provenance_1.outcome == 'failure'
+        timeout-minutes: 5
+        continue-on-error: true
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            dist/syntaur-*
+            dist/install.sh
+            dist/install.ps1
+
+      - name: Back off before final provenance attempt
+        if: steps.provenance_1.outcome == 'failure' && steps.provenance_2.outcome == 'failure'
+        run: sleep 40
+
+      - name: Attest SLSA provenance (final attempt)
+        id: provenance_3
+        if: steps.provenance_1.outcome == 'failure' && steps.provenance_2.outcome == 'failure'
+        timeout-minutes: 5
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            dist/syntaur-*
+            dist/install.sh
+            dist/install.ps1
+
+      - name: Require successful SLSA provenance
+        env:
+          PROVENANCE_1: ${{ steps.provenance_1.outcome }}
+          PROVENANCE_2: ${{ steps.provenance_2.outcome }}
+          PROVENANCE_3: ${{ steps.provenance_3.outcome }}
+        run: |
+          set -euo pipefail
+          case "$PROVENANCE_1/$PROVENANCE_2/$PROVENANCE_3" in
+            success/skipped/skipped|failure/success/skipped|failure/failure/success)
+              printf 'SLSA provenance completed in the original release job.\n'
+              ;;
+            *)
+              echo '::error::No valid successful SLSA provenance attempt; refusing publication.' >&2
+              exit 1
+              ;;
+          esac
 
       - name: Create draft release + upload assets (with retry + verification)
         env:
