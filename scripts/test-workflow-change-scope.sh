@@ -94,4 +94,42 @@ git reset -q --hard "$zero_base"
 git rm -q install.sh
 git commit -qm 'remove installer'
 check_scope installer-deletion push "$zero_base" '' "$(git rev-parse HEAD)" installer-only
+# Product release workflows are not inputs to the isolated legacy bootstrap
+# fixture. Any mixed change must retain full coverage.
+git reset -q --hard "$zero_base"
+mkdir -p .github/workflows
+printf 'release fixture\n' >.github/workflows/release-sign.yml
+git add .github/workflows/release-sign.yml
+git commit -qm 'product release workflow'
+product_base=$(git rev-parse HEAD)
+check_scope product-release-workflow push "$zero_base" '' "$product_base" product-workflows-only
+printf 'pretag fixture\n' >.github/workflows/source-pretag.yml
+git add .github/workflows/source-pretag.yml
+git commit -qm 'source pretag workflow'
+product_head=$(git rev-parse HEAD)
+check_scope source-pretag-workflow push "$product_base" '' "$product_head" product-workflows-only
+check_scope both-product-workflows push "$zero_base" '' "$product_head" product-workflows-only
+check_scope product-workflow-pr pull_request '' "$zero_base" "$product_head" product-workflows-only
+for mixed_path in \
+    install.sh \
+    policy.txt \
+    .github/workflows/workflow-lint.yml \
+    .github/workflows/release-authority.yml \
+    scripts/classify-workflow-change.sh \
+    scripts/test-release-authority-bootstrap.sh \
+    scripts/bootstrap-release-authority-genesis-v2.sh \
+    scripts/fixtures/release_authority_bootstrap.Dockerfile; do
+  git reset -q --hard "$product_head"
+  mkdir -p "$(dirname "$mixed_path")"
+  printf '# mixed change\n' >>"$mixed_path"
+  git add "$mixed_path"
+  git commit -qm 'mixed product and bootstrap dependency'
+  check_scope "product-mixed-$mixed_path" push "$zero_base" '' "$(git rev-parse HEAD)" full
+done
+git reset -q --hard "$product_head"
+git rm -q .github/workflows/source-pretag.yml
+git commit -qm 'remove pretag workflow'
+check_scope product-deletion push "$product_head" '' "$(git rev-parse HEAD)" product-workflows-only
+# Classifying a deletion does not admit a missing required workflow; the
+# mandatory validator rejects it before any scope-dependent fixture step.
 printf 'workflow change-scope cases passed: %s\n' "$cases"

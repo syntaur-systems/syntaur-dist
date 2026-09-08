@@ -66,7 +66,9 @@ jobs:
         run: bash scripts/test-release-authority-workflow.sh
 
       - name: Verify V2 genesis bootstrap behavior
-        if: steps.scope.outputs.scope != 'installer-only'
+        # Product workflow edits retain strict schema validation above; this
+        # container suite runs whenever its scripts, fixtures or inputs change.
+        if: steps.scope.outputs.scope != 'installer-only' && steps.scope.outputs.scope != 'product-workflows-only'
         run: bash scripts/test-release-authority-bootstrap.sh
 
       - name: Verify POSIX EULA acceptance reuse
