@@ -117,7 +117,8 @@ jobs:
             timeout_minutes: 90
           - os: macos-15-intel
             target: x86_64-apple-darwin
-            timeout_minutes: 90
+            # The checked + optimized Gateway build can exceed 90 minutes.
+            timeout_minutes: 120
           - os: windows-2025
             target: x86_64-pc-windows-msvc
             timeout_minutes: 180
