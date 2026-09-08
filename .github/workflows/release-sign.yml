@@ -220,6 +220,7 @@ jobs:
             package: syntaur-gateway
             binary: syntaur-gateway
             artifact_name: syntaur-gateway-macos-x86_64
+            timeout_minutes: 120
           - os: macos-15-intel
             target: x86_64-apple-darwin
             package: syntaur-viewer
@@ -237,7 +238,9 @@ jobs:
             artifact_name: syntaur-viewer-windows-x86_64.exe
     runs-on: ${{ matrix.os }}
     environment: product-release-source
-    timeout-minutes: 90
+    # Preserve the normal 90 minute cap; allow the measured Intel Gateway build
+    # the same bounded headroom as its source pre-tag gate.
+    timeout-minutes: ${{ matrix.timeout_minutes || 90 }}
     steps:
       # Check out the PRIVATE application source via the read-only deploy
       # key. Its private half is isolated in the main-only protected
