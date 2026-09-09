@@ -15,8 +15,8 @@ $Brand = "Syntaur"
 # MUST match the VERSION file at repo root. Run scripts/sync-version.sh
 # before tagging a release so this and install.sh stay in sync with the
 # workspace version in Cargo.toml. install.ps1 ships standalone.
-$Version = "0.7.179"
-$DistWorkflowCommit = "31ffe4727e9ed2db19274977f89cf0d339410c48"
+$Version = "0.7.185"
+$DistWorkflowCommit = "8642df564eecdd974449976b6fbce6c45633a882"
 $EulaSourceCommit = "8811aa006673caa5082a7c9343e83c0b7ac51d16"
 $Binary = "syntaur.exe"
 $InstallDir = "$env:LOCALAPPDATA\Syntaur"
