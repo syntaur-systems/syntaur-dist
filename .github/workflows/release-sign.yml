@@ -1425,10 +1425,57 @@ jobs:
           cat checksums.txt
 
       - name: Sign each artifact
+        timeout-minutes: 15
         working-directory: dist
         run: |
           set -euo pipefail
           shopt -s nullglob
+          umask 077
+          signing_temporary=$(mktemp -d "${RUNNER_TEMP:?}/syntaur-sign.XXXXXXXX")
+          trap 'rm -rf -- "$signing_temporary"' EXIT
+
+          # Ambient OIDC can return an empty token after a transient GitHub
+          # response. Force token-only GitHub authentication so CI never enters
+          # browser/device login. Retry in this original job over the same bytes;
+          # a workflow rerun is never a substitute for release authority.
+          sign_blob() {
+            local blob=$1 expected_hash attempt bundle
+            expected_hash=$(sha256sum -- "$blob")
+            for attempt in 1 2 3; do
+              if [ "$(sha256sum -- "$blob")" != "$expected_hash" ]; then
+                echo "::error::artifact changed between signing attempts: $blob" >&2
+                return 1
+              fi
+              bundle="${signing_temporary}/${attempt}.cosign.bundle"
+              if timeout --kill-after=10s 120s cosign sign-blob \
+                  --yes \
+                  --oidc-provider github-actions \
+                  --fulcio-auth-flow token \
+                  --bundle "$bundle" \
+                  "$blob"; then
+                if [ "$(sha256sum -- "$blob")" != "$expected_hash" ]; then
+                  echo "::error::artifact changed while signing: $blob" >&2
+                  return 1
+                fi
+                cosign verify-blob \
+                  --bundle "$bundle" \
+                  --certificate-identity "https://github.com/syntaur-systems/syntaur-dist/.github/workflows/release-sign.yml@refs/heads/main" \
+                  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+                  --certificate-github-workflow-sha "$DIST_COMMIT" \
+                  "$blob" || return 1
+                mv -- "$bundle" "${blob}.cosign.bundle" || return 1
+                return 0
+              fi
+              rm -f -- "$bundle"
+              if [ "$attempt" -lt 3 ]; then
+                printf 'Signing %s attempt %s failed; retrying in %s seconds in this original job.\n' \
+                  "$blob" "$attempt" "$((attempt * 20))" >&2
+                sleep "$((attempt * 20))"
+              fi
+            done
+            echo "::error::signing failed after three bounded attempts: $blob" >&2
+            return 1
+          }
           for f in syntaur-* install.sh install.ps1; do
             case "$f" in
               *.cosign.bundle|checksums.txt) continue ;;
@@ -1442,10 +1489,7 @@ jobs:
                 "$f"
               cp ".resume-assets/${f}.cosign.bundle" "${f}.cosign.bundle"
             else
-              cosign sign-blob \
-                --yes \
-                --bundle "${f}.cosign.bundle" \
-                "$f"
+              sign_blob "$f"
             fi
           done
           if [ -f .resume-assets/checksums.txt.cosign.bundle ]; then
@@ -1457,10 +1501,7 @@ jobs:
               checksums.txt
             cp .resume-assets/checksums.txt.cosign.bundle checksums.txt.cosign.bundle
           else
-            cosign sign-blob \
-              --yes \
-              --bundle checksums.txt.cosign.bundle \
-              checksums.txt
+            sign_blob checksums.txt
           fi
 
       - name: Attest SLSA provenance
