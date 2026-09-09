@@ -34,6 +34,12 @@ jobs:
               if [[ $PUSH_BEFORE_SHA =~ ^[0-9a-f]{40}$ &&
                     $PUSH_BEFORE_SHA != 0000000000000000000000000000000000000000 ]]; then
                 base=$PUSH_BEFORE_SHA
+                # A force-push can remove the previous commit from every
+                # advertised ref. Fetch that exact event identity, then let
+                # the classifier verify it; unavailable identities still fail.
+                if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+                  timeout --kill-after=5s 60s git fetch --no-tags --no-recurse-submodules origin "$base"
+                fi
               elif git show-ref --verify --quiet refs/remotes/origin/main; then
                 base=$(git merge-base "$GITHUB_SHA" refs/remotes/origin/main)
               fi

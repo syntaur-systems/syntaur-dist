@@ -86,6 +86,57 @@ test ! -s "$temporary/output"
 cases=$((cases + 1))
 printf 'PASS unknown-commit-fails-closed\n'
 
+# A failed diff must never classify its partial output as a narrow scope.
+mkdir "$temporary/failing-git"
+cat >"$temporary/failing-git/git" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $1 == diff ]]; then
+  printf 'install.sh\0'
+  exit 1
+fi
+exec "$SCOPE_FIXTURE_GIT" "$@"
+STUB
+chmod +x "$temporary/failing-git/git"
+fixture_git=$(command -v git)
+: >"$temporary/output"
+if PATH="$temporary/failing-git:$PATH" SCOPE_FIXTURE_GIT="$fixture_git" \
+  EVENT_NAME=push PUSH_BEFORE_SHA=$zero_base PR_BASE_SHA='' \
+  GITHUB_SHA=$installer_head GITHUB_OUTPUT="$temporary/output" \
+  bash "$temporary/scope.sh" >"$temporary/partial-diff.log" 2>&1; then
+  echo 'partial failed diff must not admit a narrow scope' >&2
+  exit 1
+fi
+test ! -s "$temporary/output"
+cases=$((cases + 1))
+printf 'PASS partial-diff-failure-is-rejected\n'
+
+# A force-push leaves the old event commit on the server but unreachable from
+# the current advertised branch. A fresh checkout must fetch that exact object.
+git init -q --bare --initial-branch=main "$temporary/origin.git"
+git push -q "$temporary/origin.git" "$ordinary_base:refs/heads/before"
+git push -q "$temporary/origin.git" "$installer_head:refs/heads/main"
+git --git-dir="$temporary/origin.git" update-ref -d refs/heads/before
+git clone -q --no-local --single-branch --branch main \
+  "$temporary/origin.git" "$temporary/force-push-checkout"
+cd "$temporary/force-push-checkout"
+if git cat-file -e "$ordinary_base^{commit}" 2>/dev/null; then
+  echo 'force-push fixture unexpectedly retained the old commit' >&2
+  exit 1
+fi
+check_scope force-push-fetches-exact-base push "$ordinary_base" '' "$installer_head" installer-only
+: >"$temporary/output"
+if EVENT_NAME=push PUSH_BEFORE_SHA=0000000000000000000000000000000000000001 \
+  PR_BASE_SHA='' GITHUB_SHA=$installer_head GITHUB_OUTPUT="$temporary/output" \
+  bash "$temporary/scope.sh" >"$temporary/remote-unknown.log" 2>&1; then
+  echo 'a base absent from the remote must fail closed' >&2
+  exit 1
+fi
+test ! -s "$temporary/output"
+cases=$((cases + 1))
+printf 'PASS unavailable-remote-base-fails-closed\n'
+cd "$temporary/repo"
+
 printf 'new policy\n' >policy.txt
 git add policy.txt
 git commit -qm 'policy and installer change'

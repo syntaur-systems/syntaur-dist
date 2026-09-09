@@ -13,6 +13,12 @@ for commit in "$base" "$head"; do
     git cat-file -e "$commit^{commit}"
 done
 
+# Inspect output only after Git completed successfully. Process substitution
+# would discard a failing diff status and could admit partial narrow output.
+changed_paths=$(mktemp)
+trap 'rm -f -- "$changed_paths"' EXIT
+git diff --name-only -z "$base" "$head" >"$changed_paths"
+
 saw_change=false
 installer_only=true
 product_workflows_only=true
@@ -28,7 +34,7 @@ while IFS= read -r -d '' path; do
         .github/workflows/release-sign.yml | .github/workflows/source-pretag.yml) ;;
         *) product_workflows_only=false ;;
     esac
-done < <(git diff --name-only -z "$base" "$head")
+done <"$changed_paths"
 
 if [[ $saw_change == true && $installer_only == true ]]; then
     printf 'installer-only\n'
