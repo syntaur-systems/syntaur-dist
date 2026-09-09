@@ -13,18 +13,33 @@ for commit in "$base" "$head"; do
     git cat-file -e "$commit^{commit}"
 done
 
+# Inspect output only after Git completed successfully. Process substitution
+# would discard a failing diff status and could admit partial narrow output.
+changed_paths=$(mktemp)
+trap 'rm -f -- "$changed_paths"' EXIT
+git diff --name-only -z "$base" "$head" >"$changed_paths"
+
 saw_change=false
 installer_only=true
+product_workflows_only=true
 while IFS= read -r -d '' path; do
     saw_change=true
     case "$path" in
         install.sh | install.ps1) ;;
         *) installer_only=false ;;
     esac
-done < <(git diff --name-only -z "$base" "$head")
+    # These workflows do not feed the isolated genesis/recovery container
+    # fixture. All workflow/schema checks still run for this scope.
+    case "$path" in
+        .github/workflows/release-sign.yml | .github/workflows/source-pretag.yml) ;;
+        *) product_workflows_only=false ;;
+    esac
+done <"$changed_paths"
 
 if [[ $saw_change == true && $installer_only == true ]]; then
     printf 'installer-only\n'
+elif [[ $saw_change == true && $product_workflows_only == true ]]; then
+    printf 'product-workflows-only\n'
 else
     printf 'full\n'
 fi
