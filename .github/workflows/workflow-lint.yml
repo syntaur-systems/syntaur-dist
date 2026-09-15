@@ -69,6 +69,9 @@ jobs:
         if: steps.scope.outputs.scope != 'installer-only'
         run: bash scripts/test-release-authority-bootstrap.sh
 
+      - name: Verify native Link launchers
+        run: bash scripts/test-link-launchers.sh
+
       - name: Verify POSIX EULA acceptance reuse
         run: bash scripts/test-eula-acceptance.sh
 

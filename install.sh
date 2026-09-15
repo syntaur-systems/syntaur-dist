@@ -905,6 +905,36 @@ EOF
   echo "  Syntaur Link transport configuration installed."
 )
 
+write_app_launcher() {
+  case "$MODE" in server|connect) ;; *) return 1 ;; esac
+  case "$PLATFORM" in linux|macos) ;; *) return 1 ;; esac
+  {
+    printf '#!/bin/sh\nINSTALL_MODE=%s\nAPP_PLATFORM=%s\n' "$MODE" "$PLATFORM"
+    cat <<'LAUNCHER'
+APP_DIR=$(CDPATH= cd -P "$(dirname "$0")" && pwd) || exit 1
+export PATH="$APP_DIR:$PATH"
+# Retired URL and bearer variables cannot select a remote customer path.
+unset SYNTAUR_URL SYNTAUR_OPEN_URL SYNTAUR_SESSION_TOKEN SYNTAUR_TS_AUTHKEY
+if [ "$INSTALL_MODE" = "server" ]; then
+  if [ -x "$APP_DIR/syntaur-engine" ]; then
+    exec "$APP_DIR/syntaur-engine" --url http://127.0.0.1:18789 --width 1440 --height 950
+  fi
+  exec "$APP_DIR/syntaur-viewer" --local-owner
+fi
+if [ "$APP_PLATFORM" = "macos" ]; then
+  LINK_PROFILE="$HOME/Library/Application Support/Syntaur/link-profile.json"
+else
+  LINK_PROFILE="${XDG_CONFIG_HOME-$HOME/.config}/syntaur/link-profile.json"
+fi
+if [ -f "$LINK_PROFILE" ] && [ -x "$APP_DIR/syntaur-engine" ]; then
+  exec "$APP_DIR/syntaur-engine" --link --width 1440 --height 950
+fi
+exec "$APP_DIR/syntaur-viewer"
+LAUNCHER
+  } > "$APP_LAUNCHER"
+  chmod +x "$APP_LAUNCHER"
+}
+
 if [ "${SYNTAUR_INSTALL_TEST_LIBRARY_ONLY:-0}" = "1" ]; then
   # shellcheck disable=SC2317 # direct execution uses exit; tests source and return.
   return 0 2>/dev/null || exit 0
@@ -977,7 +1007,7 @@ echo ""
 
 # Create install directory
 mkdir -p "$INSTALL_DIR"
-DASHBOARD_URL="${SYNTAUR_URL:-http://localhost:18789}"
+DASHBOARD_URL="http://127.0.0.1:18789"
 
 APP_LAUNCHER="$INSTALL_DIR/syntaur-open"
 if [ "$MANAGED_RUNTIME" = "1" ]; then
@@ -1086,10 +1116,6 @@ if [ "$MANAGED_RUNTIME" = "1" ]; then
     if "$RUNTIME_BOOTSTRAP" install-release "$RUNTIME_STAGE" "$MODE" "$DASHBOARD_URL"; then
       RUNTIME_INSTALL_OK=1
     fi
-  elif [ -n "${SYNTAUR_URL:-}" ]; then
-    if "$RUNTIME_BOOTSTRAP" install-release "$RUNTIME_STAGE" "$MODE" "$SYNTAUR_URL"; then
-      RUNTIME_INSTALL_OK=1
-    fi
   else
     if "$RUNTIME_BOOTSTRAP" install-release "$RUNTIME_STAGE" "$MODE"; then
       RUNTIME_INSTALL_OK=1
@@ -1131,30 +1157,14 @@ else
 
   VIEWER_BINARY="syntaur-viewer"
   VIEWER_URL="${REPO_URL}/releases/download/v${VERSION}/syntaur-viewer-${PLATFORM}-${ARCH}"
-  download_optional_verified "dashboard viewer" "$VIEWER_URL" "$INSTALL_DIR/$VIEWER_BINARY" || true
+  download_verified "$VIEWER_URL" "$INSTALL_DIR/$VIEWER_BINARY" || exit 1
 
   for LINK_BINARY in syntaur-link-client-tor syntaur-link-probe syntaur-snowflake-client; do
     download_verified "${REPO_URL}/releases/download/v${VERSION}/${LINK_BINARY}-${PLATFORM}-${ARCH}" \
       "$INSTALL_DIR/$LINK_BINARY" || exit 1
   done
 
-  cat > "$APP_LAUNCHER" << LAUNCHER
-#!/bin/sh
-export PATH="$INSTALL_DIR:\$PATH"
-APP_URL="\${SYNTAUR_URL:-$DASHBOARD_URL}"
-if [ -x "$INSTALL_DIR/syntaur-engine" ]; then
-  exec "$INSTALL_DIR/syntaur-engine" --url "\$APP_URL" --width 1440 --height 950
-elif [ -x "$INSTALL_DIR/syntaur-viewer" ]; then
-  SYNTAUR_URL="\$APP_URL" exec "$INSTALL_DIR/syntaur-viewer"
-elif command -v xdg-open >/dev/null 2>&1; then
-  exec xdg-open "\$APP_URL"
-elif command -v open >/dev/null 2>&1; then
-  exec open "\$APP_URL"
-else
-  printf '%s\n' "\$APP_URL"
-fi
-LAUNCHER
-  chmod +x "$APP_LAUNCHER"
+  write_app_launcher || exit 1
 fi
 
 configure_link_transport || {
@@ -1435,7 +1445,7 @@ fi
 
 if [ "$PLATFORM" = "macos" ]; then
   # Create a lightweight .app that launches the bundled Syntaur browser,
-  # falling back to the viewer or system browser through syntaur-open.
+  # using the existing local-setup or enrolled Link launch path.
   APP_PATH="$HOME/Applications/Syntaur.app"
   mkdir -p "$APP_PATH/Contents/MacOS"
   mkdir -p "$APP_PATH/Contents/Resources"
@@ -1503,73 +1513,21 @@ LAUNCHER
 ICON
 
   echo "  Application shortcut installed (find 'Syntaur' in ~/Applications or Spotlight)"
-
-  # Desktop .webloc — double-click opens in default browser. Only
-  # created when SYNTAUR_URL is set (remote gateway case); for
-  # local-only installs the Applications bundle is enough.
-  if [ -n "${SYNTAUR_URL:-}" ] && [ -d "$HOME/Desktop" ]; then
-    cat > "$HOME/Desktop/Syntaur.webloc" << WEBLOC
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>URL</key>
-  <string>${SYNTAUR_URL}</string>
-</dict>
-</plist>
-WEBLOC
-    echo "  Desktop shortcut created (Syntaur.webloc)"
-  fi
-fi
-
-# ── Tailscale auto-setup (Tier 2 onboarding) ────────────────────────────────
-#
-# If the caller passed a Tailscale pre-auth key via SYNTAUR_TS_AUTHKEY
-# (the personalized-invite path mints one and bakes it into the install
-# command you send to a family member), bring Tailscale up to the
-# household tailnet so the viewer reaches the remote gateway the moment
-# it launches. Silently skipped when the key is absent — local-only
-# installs don't need it.
-#
-# Uses the official Tailscale installer. We never ship the daemon
-# ourselves. Users who already have Tailscale just get the `up` call.
-
-if [ -n "${SYNTAUR_TS_AUTHKEY:-}" ]; then
-  echo ""
-  echo "  Setting up Tailscale…"
-
-  if ! command -v tailscale >/dev/null 2>&1; then
-    if [ "$PLATFORM" = "macos" ]; then
-      # Mac installer is a signed .pkg — needs a user click-through.
-      echo "  Tailscale isn't installed yet. Opening the download page…"
-      open "https://tailscale.com/download/mac" 2>/dev/null || true
-      echo ""
-      echo "  When Tailscale finishes installing (icon appears in the menu bar),"
-      echo "  run this command to finish joining the household network:"
-      echo ""
-      echo "    /Applications/Tailscale.app/Contents/MacOS/Tailscale up \\"
-      echo "      --authkey=\"\$SYNTAUR_TS_AUTHKEY\" --accept-routes"
-    elif [ "$PLATFORM" = "linux" ]; then
-      echo "  Installing Tailscale…"
-      if command -v curl >/dev/null 2>&1; then
-        curl -fsSL https://tailscale.com/install.sh | sh
-      else
-        echo "  ! curl required for Tailscale install; please install curl and re-run."
-      fi
+  # Earlier installers created this browser shortcut for the retired URL.
+  # Replace only that regular Syntaur shortcut after the native app exists.
+  LEGACY_WEBLOC="$HOME/Desktop/Syntaur.webloc"
+  if [ -f "$LEGACY_WEBLOC" ] && [ ! -L "$LEGACY_WEBLOC" ] \
+     && /usr/bin/grep -q '<key>URL</key>' "$LEGACY_WEBLOC"; then
+    rm -f -- "$LEGACY_WEBLOC"
+    if [ ! -e "$HOME/Desktop/Syntaur.app" ] && [ ! -L "$HOME/Desktop/Syntaur.app" ]; then
+      ln -s "$APP_PATH" "$HOME/Desktop/Syntaur.app"
     fi
   fi
 
-  if command -v tailscale >/dev/null 2>&1; then
-    if [ "$PLATFORM" = "linux" ] && [ "$(id -u)" != "0" ]; then
-      sudo tailscale up --authkey="$SYNTAUR_TS_AUTHKEY" --accept-routes \
-        || echo "  ! tailscale up failed — retry after checking the supplied auth key."
-    else
-      tailscale up --authkey="$SYNTAUR_TS_AUTHKEY" --accept-routes \
-        || echo "  ! tailscale up failed — retry after checking the supplied auth key."
-    fi
-    echo "  ✓ Tailscale connected to your household tailnet"
-  fi
+
+
 fi
+
 
 echo ""
 if [ "$MODE" = "server" ]; then
@@ -1585,14 +1543,11 @@ if [ "$MODE" = "server" ]; then
   echo "  Open Syntaur from your app launcher or go to:"
   echo "    $DASHBOARD_URL"
   echo ""
-  echo "  To access from your phone or other computers:"
-  echo "    1. Install Tailscale on this computer and your other devices"
-  echo "    2. Open the Tailscale URL shown in the Syntaur dashboard"
-  echo "    3. Or use the local network address shown after setup"
+  echo "  Install Syntaur on your other devices and choose Connect."
 else
   echo "  ✓ $BRAND client installed"
   echo ""
   echo "  Open Syntaur from your app launcher to connect to your server."
-  echo "  The setup wizard will ask for your server address."
+  echo "  Syntaur will guide you through pairing with your household."
 fi
 echo ""

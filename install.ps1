@@ -595,14 +595,10 @@ try {
     Write-Host "  Launcher icon not available - shortcut will use the app default" -ForegroundColor Yellow
 }
 
-# Determine shortcut target: use viewer if available, otherwise URL
-if (Test-Path $ViewerPath) {
-    $ShortcutTarget = $ViewerPath
-    $ShortcutWorkDir = $InstallDir
-} else {
-    $ShortcutTarget = $DashboardUrl
-    $ShortcutWorkDir = ""
-}
+# The verified native client owns local setup and device pairing.
+$ShortcutTarget = $ViewerPath
+$ShortcutWorkDir = $InstallDir
+$ShortcutArguments = if ($Mode -eq "server") { "--local-owner" } else { "" }
 
 if (Test-Path $IconPath) {
     $ShortcutIcon = $IconPath
@@ -630,6 +626,7 @@ $WshShell = New-Object -ComObject WScript.Shell
 
 $Shortcut = $WshShell.CreateShortcut($StartMenuShortcut)
 $Shortcut.TargetPath = $ShortcutTarget
+$Shortcut.Arguments = $ShortcutArguments
 if ($ShortcutWorkDir) { $Shortcut.WorkingDirectory = $ShortcutWorkDir }
 if ($ShortcutIcon) { $Shortcut.IconLocation = $ShortcutIcon }
 $Shortcut.Description = "Syntaur - Your personal AI platform"
@@ -642,73 +639,26 @@ $DesktopShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "Syntaur.
 
 $Shortcut = $WshShell.CreateShortcut($DesktopShortcut)
 $Shortcut.TargetPath = $ShortcutTarget
+$Shortcut.Arguments = $ShortcutArguments
 if ($ShortcutWorkDir) { $Shortcut.WorkingDirectory = $ShortcutWorkDir }
 if ($ShortcutIcon) { $Shortcut.IconLocation = $ShortcutIcon }
 $Shortcut.Description = "Syntaur - Your personal AI platform"
 $Shortcut.Save()
 
 Write-Host "  Desktop shortcut installed"
-
-# --- URL shortcut on Desktop (opens in default browser) ---
-# Parallel to the .lnk above but triggers the system browser instead of the
-# viewer app. Users who prefer their real browser (saved logins, extensions)
-# double-click this one. Only created when SYNTAUR_URL is set (remote
-# gateway case); local installs don't need it.
-if ($env:SYNTAUR_URL) {
-    $UrlShortcutPath = Join-Path ([Environment]::GetFolderPath("Desktop")) "Syntaur (Browser).url"
-    @"
-[InternetShortcut]
-URL=$env:SYNTAUR_URL
-IconIndex=0
-"@ | Out-File -FilePath $UrlShortcutPath -Encoding ASCII
-    Write-Host "  Browser shortcut on Desktop: Syntaur (Browser).url"
-}
-
-# --- Tailscale auto-setup (Tier 2 onboarding) ---
-# If the caller passed a Tailscale pre-auth key via SYNTAUR_TS_AUTHKEY
-# (the personalized-invite path mints one and bakes it into the command
-# you send to a family member), bring Tailscale up on this machine so the
-# viewer can reach the household gateway the moment it launches.
-if ($env:SYNTAUR_TS_AUTHKEY) {
-    Write-Host ""
-    Write-Host "  Setting up Tailscale..."
-
-    $TailscaleInstalled = $false
-    $TsPath = "${env:ProgramFiles}\Tailscale\tailscale.exe"
-    if (Test-Path $TsPath) {
-        $TailscaleInstalled = $true
-    } else {
-        # Use Tailscale's official MSI installer. Silent install requires
-        # admin - if the user isn't admin, fall back to opening the
-        # download page and leave the join step for the viewer's
-        # onboarding screen to detect.
-        $TsMsiUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.msi"
-        $TsMsiPath = Join-Path $env:TEMP "tailscale-setup.msi"
-        Write-Host "  Downloading Tailscale installer..."
-        try {
-            Invoke-WebRequest -Uri $TsMsiUrl -OutFile $TsMsiPath -UseBasicParsing
-            # /qb = basic UI (progress bar only). Users without admin rights
-            # will see UAC prompt here; that's unavoidable for any Windows
-            # system install.
-            $msi = Start-Process msiexec.exe -ArgumentList "/i `"$TsMsiPath`" /qb" -Wait -PassThru
-            if ($msi.ExitCode -eq 0 -and (Test-Path $TsPath)) {
-                $TailscaleInstalled = $true
-            }
-        } catch {
-            Write-Host "  ! Tailscale install failed. Open https://tailscale.com/download/windows to install manually." -ForegroundColor Yellow
-        }
-    }
-
-    if ($TailscaleInstalled) {
-        try {
-            & $TsPath up --authkey="$env:SYNTAUR_TS_AUTHKEY" --accept-routes
-            Write-Host "  $([char]0x2713) Tailscale connected to your household tailnet" -ForegroundColor Green
-        } catch {
-            Write-Host "  ! tailscale up failed. You can retry:" -ForegroundColor Yellow
-            Write-Host "    `"$TsPath`" up --authkey=`$env:SYNTAUR_TS_AUTHKEY --accept-routes"
+# Earlier installers also created a browser URL beside the native shortcut.
+# Do not follow reparse points or remove a different kind of user document.
+$LegacyBrowserShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "Syntaur (Browser).url"
+if (Test-Path -LiteralPath $LegacyBrowserShortcut -PathType Leaf) {
+    $LegacyItem = Get-Item -LiteralPath $LegacyBrowserShortcut -Force
+    if (($LegacyItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+        $LegacyText = [IO.File]::ReadAllText($LegacyBrowserShortcut)
+        if ($LegacyText -match '(?m)^\[InternetShortcut\]\r?$' -and $LegacyText -match '(?m)^URL=https?://') {
+            Remove-Item -LiteralPath $LegacyBrowserShortcut -Force -ErrorAction Stop
         }
     }
 }
+
 
 # --- Auto-start via Startup folder (server mode only) ---
 if ($Mode -eq "server") {
@@ -738,13 +688,11 @@ if ($Mode -eq "server") {
     Write-Host "  Open Syntaur from the Start Menu or Desktop shortcut, or go to:"
     Write-Host "    $DashboardUrl"
     Write-Host ""
-    Write-Host "  To access from your phone or other computers:"
-    Write-Host "    1. Install Tailscale on this computer and your other devices"
-    Write-Host "    2. Open the Tailscale URL shown in the Syntaur dashboard"
+    Write-Host "  Install Syntaur on your other devices and choose Connect."
 } else {
     Write-Host "  $([char]0x2713) $Brand viewer installed" -ForegroundColor Green
     Write-Host ""
     Write-Host "  Open Syntaur from the Start Menu to connect to your server."
-    Write-Host "  The setup wizard will ask for your server address."
+    Write-Host "  Syntaur will guide you through pairing with your household."
 }
 Write-Host ""
