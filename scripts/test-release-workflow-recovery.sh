@@ -220,6 +220,9 @@ cp "$repository/install.sh" "$repository/install.ps1" "$stage_case/"
 cp "$repository/EULA.md" "$stage_case/EULA.md"
 printf 'runtime payload\n' >"$stage_case/dist/syntaur-runtime-linux-x86_64"
 printf 'process inspector payload\n' >"$stage_case/dist/syntaur-process-inspector-linux-x86_64"
+for asset in syntaur-gateway syntaur-viewer syntaur-link-client-tor syntaur-link-probe syntaur-snowflake-client; do
+  printf '%s fixture payload\n' "$asset" >"$stage_case/dist/$asset-windows-x86_64.exe"
+done
 (
   cd "$stage_case"
   env REL_VERSION="$version" DIST_COMMIT="$dist_commit" bash "$stage_installers_step" >/dev/null
@@ -230,6 +233,64 @@ grep -Fxq \
   "PROCESS_INSPECTOR_SHA256=\"$(sha256sum "$stage_case/dist/syntaur-process-inspector-linux-x86_64" | awk '{print $1}')\"" \
   "$stage_case/dist/install.sh"
 sh -n "$stage_case/dist/install.sh"
+while read -r variable asset; do
+  digest=$(sha256sum "$stage_case/dist/$asset-windows-x86_64.exe" | awk '{print $1}')
+  grep -Fxq "\$$variable = \"$digest\"" "$stage_case/dist/install.ps1"
+done <<'WINDOWS_PINS'
+GatewaySha256 syntaur-gateway
+ViewerSha256 syntaur-viewer
+LinkClientTorSha256 syntaur-link-client-tor
+LinkProbeSha256 syntaur-link-probe
+SnowflakeClientSha256 syntaur-snowflake-client
+WINDOWS_PINS
+
+# Exercise the shipped configuration writer itself, with no network or UI.
+python3 - "$repository/install.sh" "$temporary/link-config" <<'LINK_CONFIG_TEST'
+import hashlib, json, os, pathlib, stat, subprocess, sys
+installer, root = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+root.mkdir(mode=0o700)
+home = root / 'home "quoted" \\path'
+home.mkdir(mode=0o700)
+env = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(home / ".config"),
+           SYNTAUR_INSTALL_TEST_LIBRARY_ONLY="1")
+def configure(ok=True, platform="linux"):
+    result = subprocess.run(["sh", "-c", '. "$1"; PLATFORM="$2"; configure_link_transport',
+                             "_", str(installer), platform],
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert (result.returncode == 0) == ok, result.stderr.decode()
+configure()
+config = home / ".config/syntaur/link-tor/client.json"
+data = json.loads(config.read_text())
+assert data["schema"] == 2 and data["bundled_transport"] is True
+assert data["state_dir"] == str(config.parent / "state")
+assert data["transport_binary"] == str(home / ".local/bin/syntaur-snowflake-client")
+for directory in [config.parent, config.parent / "state", config.parent / "cache"]:
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+assert stat.S_IMODE(config.stat().st_mode) == 0o600
+data["bundled_transport"] = False
+data["transport_binary"] = "/custom/bridge-client"
+config.write_text(json.dumps(data))
+before = config.read_bytes()
+configure()
+assert config.read_bytes() == before, "repeat install overwrote a custom bridge"
+config.chmod(0o660)
+configure(False)
+assert config.read_bytes() == before
+config.chmod(0o600)
+config.unlink()
+victim = root / "unrelated"
+victim.write_text("unchanged")
+config.symlink_to(victim)
+configure(False)
+assert victim.read_text() == "unchanged"
+config.unlink()
+config.write_text("")
+configure(False)
+configure(platform="macos")
+mac_config = home / "Library/Application Support/Syntaur/link-tor/client.json"
+assert json.loads(mac_config.read_text())["state_dir"] == str(mac_config.parent / "state")
+print("Link installer configuration and preservation tests passed")
+LINK_CONFIG_TEST
 
 installer_case="$temporary/installer-verification"
 mkdir -p "$installer_case/release" "$installer_case/out"
