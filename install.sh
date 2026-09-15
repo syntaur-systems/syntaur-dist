@@ -823,6 +823,88 @@ ensure_eula_acceptance() {
   echo ""
 }
 
+configure_link_transport() (
+  umask 077
+  SNOWFLAKE_HELPER="$INSTALL_DIR/syntaur-snowflake-client"
+
+  if [ "$PLATFORM" = "macos" ]; then
+    LINK_TOR_DIR="$HOME/Library/Application Support/Syntaur/link-tor"
+  else
+    LINK_TOR_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/syntaur/link-tor"
+  fi
+  LINK_TOR_STATE="$LINK_TOR_DIR/state"
+  LINK_TOR_CACHE="$LINK_TOR_DIR/cache"
+  LINK_TOR_CONFIG="$LINK_TOR_DIR/client.json"
+
+  [ ! -L "$(dirname "$LINK_TOR_DIR")" ] || return 1
+
+  # Updates preserve bridge choices and enrollment. Never replace an existing
+  # config, including when two installers race.
+  if [ -e "$LINK_TOR_CONFIG" ] || [ -L "$LINK_TOR_CONFIG" ]; then
+    safe_eula_entry "$LINK_TOR_DIR" directory &&
+      safe_eula_entry "$LINK_TOR_CONFIG" file || return 1
+    CONFIG_SIZE=$(portable_stat_size "$LINK_TOR_CONFIG") || return 1
+    [ "$CONFIG_SIZE" -gt 0 ] && [ "$CONFIG_SIZE" -le 65536 ] || return 1
+    return 0
+  fi
+
+  for DIRECTORY in "$(dirname "$LINK_TOR_DIR")" "$LINK_TOR_DIR" "$LINK_TOR_STATE" "$LINK_TOR_CACHE"; do
+    if [ -L "$DIRECTORY" ] || { [ -e "$DIRECTORY" ] && [ ! -d "$DIRECTORY" ]; }; then
+      echo "  Error: unsafe Syntaur Link configuration path: $DIRECTORY"
+      return 1
+    fi
+    mkdir -p "$DIRECTORY"
+    safe_eula_entry "$DIRECTORY" directory || {
+      echo "  Error: unsafe Syntaur Link directory ownership or permissions"
+      return 1
+    }
+    chmod 700 "$DIRECTORY"
+  done
+
+  for JSON_PATH in "$LINK_TOR_STATE" "$LINK_TOR_CACHE" "$SNOWFLAKE_HELPER"; do
+    case "$JSON_PATH" in /*) ;; *) echo "  Error: Syntaur Link paths must be absolute"; return 1 ;; esac
+    CLEAN_PATH=$(printf '%s' "$JSON_PATH" | LC_ALL=C tr -d '[:cntrl:]')
+    if [ "$CLEAN_PATH" != "$JSON_PATH" ]; then
+      echo "  Error: Syntaur Link paths may not contain control characters"
+      return 1
+    fi
+  done
+  json_escape() {
+    LC_ALL=C sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+  }
+  STATE_JSON=$(printf '%s' "$LINK_TOR_STATE" | json_escape)
+  CACHE_JSON=$(printf '%s' "$LINK_TOR_CACHE" | json_escape)
+  SNOWFLAKE_JSON=$(printf '%s' "$SNOWFLAKE_HELPER" | json_escape)
+
+  TEMP_CONFIG=$(mktemp "$LINK_TOR_DIR/.client.json.XXXXXX") || return 1
+  trap 'rm -f "$TEMP_CONFIG"' EXIT HUP INT TERM
+  cat > "$TEMP_CONFIG" <<EOF
+{
+  "schema": 2,
+  "state_dir": "$STATE_JSON",
+  "cache_dir": "$CACHE_JSON",
+  "bridge_bundle": {
+    "schema": 1,
+    "transport": "snowflake",
+    "bridge_lines": [
+      "Bridge snowflake 192.0.2.4:80 8838024498816A039FCBBAB14E6F40A0843051FA fingerprint=8838024498816A039FCBBAB14E6F40A0843051FA url=https://1098762253.rsc.cdn77.org/ fronts=www.cdn77.com,www.phpmyadmin.net ice=stun:stun.antisip.com:3478,stun:stun.epygi.com:3478,stun:stun.uls.co.za:3478,stun:stun.voipgate.com:3478,stun:stun.mixvoip.com:3478,stun:stun.nextcloud.com:3478,stun:stun.bethesda.net:3478,stun:stun.nextcloud.com:443 utls-imitate=hellorandomizedalpn",
+      "Bridge snowflake 192.0.2.3:80 2B280B23E1107BB62ABFC40DDCC8824814F80A72 fingerprint=2B280B23E1107BB62ABFC40DDCC8824814F80A72 url=https://1098762253.rsc.cdn77.org/ fronts=www.cdn77.com,www.phpmyadmin.net ice=stun:stun.antisip.com:3478,stun:stun.epygi.com:3478,stun:stun.uls.co.za:3478,stun:stun.voipgate.com:3478,stun:stun.mixvoip.com:3478,stun:stun.nextcloud.com:3478,stun:stun.bethesda.net:3478,stun:stun.nextcloud.com:443 utls-imitate=hellorandomizedalpn"
+    ]
+  },
+  "transport_binary": "$SNOWFLAKE_JSON",
+  "bundled_transport": true
+}
+EOF
+  chmod 600 "$TEMP_CONFIG"
+  if ! ln "$TEMP_CONFIG" "$LINK_TOR_CONFIG" 2>/dev/null; then
+    safe_eula_entry "$LINK_TOR_CONFIG" file || return 1
+  fi
+  safe_eula_entry "$LINK_TOR_CONFIG" file || return 1
+  rm -f "$TEMP_CONFIG"
+  trap - EXIT HUP INT TERM
+  echo "  Syntaur Link transport configuration installed."
+)
+
 if [ "${SYNTAUR_INSTALL_TEST_LIBRARY_ONLY:-0}" = "1" ]; then
   # shellcheck disable=SC2317 # direct execution uses exit; tests source and return.
   return 0 2>/dev/null || exit 0
@@ -1051,6 +1133,11 @@ else
   VIEWER_URL="${REPO_URL}/releases/download/v${VERSION}/syntaur-viewer-${PLATFORM}-${ARCH}"
   download_optional_verified "dashboard viewer" "$VIEWER_URL" "$INSTALL_DIR/$VIEWER_BINARY" || true
 
+  for LINK_BINARY in syntaur-link-client-tor syntaur-link-probe syntaur-snowflake-client; do
+    download_verified "${REPO_URL}/releases/download/v${VERSION}/${LINK_BINARY}-${PLATFORM}-${ARCH}" \
+      "$INSTALL_DIR/$LINK_BINARY" || exit 1
+  done
+
   cat > "$APP_LAUNCHER" << LAUNCHER
 #!/bin/sh
 export PATH="$INSTALL_DIR:\$PATH"
@@ -1069,6 +1156,11 @@ fi
 LAUNCHER
   chmod +x "$APP_LAUNCHER"
 fi
+
+configure_link_transport || {
+  echo "  Error: could not safely configure Syntaur Link"
+  exit 1
+}
 
 ICON_PNG="$INSTALL_DIR/syntaur-icon.png"
 ICON_ICNS="$INSTALL_DIR/syntaur-icon.icns"

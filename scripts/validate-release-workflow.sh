@@ -160,8 +160,8 @@ fi
 mapfile -t toolchains < <(
   yq -r '.jobs[].steps[]? | select(.uses == "dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88") | .with.toolchain' "$workflow"
 )
-(( ${#toolchains[@]} == 2 )) || {
-  echo "release workflow must contain exactly two pinned Rust toolchain steps" >&2
+(( ${#toolchains[@]} == 3 )) || {
+  echo "release workflow must contain exactly three pinned Rust toolchain steps" >&2
   exit 1
 }
 for toolchain in "${toolchains[@]}"; do
@@ -174,8 +174,8 @@ done
 mapfile -t rustup_retry_limits < <(
   yq -r '.jobs[].steps[]? | select(.uses == "dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88") | .env.RUSTUP_MAX_RETRIES' "$workflow"
 )
-(( ${#rustup_retry_limits[@]} == 2 )) || {
-  echo "release workflow must contain exactly two bounded Rust retry settings" >&2
+(( ${#rustup_retry_limits[@]} == 3 )) || {
+  echo "release workflow must contain exactly three bounded Rust retry settings" >&2
   exit 1
 }
 for retry_limit in "${rustup_retry_limits[@]}"; do
@@ -190,7 +190,7 @@ product_environment_jobs=$(yq -r '
   select(.value.environment == "product-release-source") |
   .key
 ' "$workflow" | sort)
-[ "$product_environment_jobs" = $'build\nbuild-engine' ] || {
+[ "$product_environment_jobs" = $'build\nbuild-engine\nbuild-link-tor' ] || {
   echo "private product builds must use only the protected product-release-source environment" >&2
   exit 1
 }
@@ -206,7 +206,7 @@ product_engine_key_jobs=$(yq -r '
     contains("secrets.SYNTAUR_PRODUCT_ENGINE_DEPLOY_KEY")) |
   .key
 ' "$workflow" | sort)
-if [ "$product_source_key_jobs" != $'build\nbuild-engine' ] \
+if [ "$product_source_key_jobs" != $'build\nbuild-engine\nbuild-link-tor' ] \
     || [ "$product_engine_key_jobs" != build-engine ]; then
   echo "product deploy keys escaped their protected build jobs" >&2
   exit 1

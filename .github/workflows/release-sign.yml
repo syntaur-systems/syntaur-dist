@@ -543,6 +543,253 @@ jobs:
           path: syntaur-sbom.spdx.json
           retention-days: 7
 
+  build-link-tor:
+    name: Build Link transport and probe ${{ matrix.target }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            platform: linux
+            arch: x86_64
+            executable_suffix: ''
+            build_service: true
+            install_cross_compiler: false
+          - os: ubuntu-24.04
+            target: aarch64-unknown-linux-gnu
+            platform: linux
+            arch: aarch64
+            executable_suffix: ''
+            build_service: true
+            install_cross_compiler: true
+          - os: macos-14
+            target: aarch64-apple-darwin
+            platform: macos
+            arch: arm64
+            executable_suffix: ''
+            build_service: false
+            install_cross_compiler: false
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: macos
+            arch: x86_64
+            executable_suffix: ''
+            build_service: false
+            install_cross_compiler: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows
+            arch: x86_64
+            executable_suffix: '.exe'
+            build_service: false
+            install_cross_compiler: false
+    runs-on: ${{ matrix.os }}
+    environment: product-release-source
+    timeout-minutes: 120
+    env:
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+    steps:
+      - name: Checkout private source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          repository: buddyholly007/syntaur
+          ref: ${{ env.SRC_COMMIT }}
+          ssh-key: ${{ secrets.SYNTAUR_PRODUCT_SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - name: Verify exact application source checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SRC_COMMIT"
+
+      - name: Install Rust
+        env:
+          RUSTUP_MAX_RETRIES: "10"
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
+        with:
+          toolchain: 1.94.1
+          targets: ${{ matrix.target }}
+
+      - name: Cache Link transport build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: |
+            crates/syntaur-link-tor
+            crates/syntaur-link-probe
+          key: release-link-tor-${{ matrix.target }}
+
+      - name: Install Linux ARM64 cross compiler
+        if: matrix.install_cross_compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends gcc-aarch64-linux-gnu
+
+      - name: Build client transport
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: |
+          set -euo pipefail
+          cargo build \
+            --manifest-path crates/syntaur-link-tor/Cargo.toml \
+            --locked \
+            --release \
+            --target "${{ matrix.target }}" \
+            --no-default-features \
+            --bin syntaur-link-client-tor
+
+      - name: Build gateway onion service
+        if: matrix.build_service
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build \
+            --manifest-path crates/syntaur-link-tor/Cargo.toml \
+            --locked \
+            --release \
+            --target "${{ matrix.target }}" \
+            --bin syntaur-link-tor
+
+      - name: Build authenticated Link release probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build \
+            --manifest-path crates/syntaur-link-probe/Cargo.toml \
+            --locked \
+            --release \
+            --target "${{ matrix.target }}"
+
+      - name: Stage Link transport artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp \
+            "crates/syntaur-link-tor/target/${{ matrix.target }}/release/syntaur-link-client-tor${{ matrix.executable_suffix }}" \
+            "dist/syntaur-link-client-tor-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.executable_suffix }}"
+          cp \
+            "crates/syntaur-link-probe/target/${{ matrix.target }}/release/syntaur-link-probe${{ matrix.executable_suffix }}" \
+            "dist/syntaur-link-probe-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.executable_suffix }}"
+          if [ "${{ matrix.build_service }}" = true ]; then
+            cp \
+              "crates/syntaur-link-tor/target/${{ matrix.target }}/release/syntaur-link-tor" \
+              "dist/syntaur-link-tor-${{ matrix.platform }}-${{ matrix.arch }}"
+          fi
+
+      - name: Upload Link transport artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: syntaur-link-transport-${{ matrix.target }}
+          path: dist/*
+          retention-days: 7
+
+  build-snowflake:
+    name: Build pinned Snowflake client ${{ matrix.goos }}-${{ matrix.goarch }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            platform: linux
+            arch: x86_64
+            executable_suffix: ''
+            publish_source: true
+          - goos: linux
+            goarch: arm64
+            platform: linux
+            arch: aarch64
+            executable_suffix: ''
+            publish_source: false
+          - goos: darwin
+            goarch: arm64
+            platform: macos
+            arch: arm64
+            executable_suffix: ''
+            publish_source: false
+          - goos: darwin
+            goarch: amd64
+            platform: macos
+            arch: x86_64
+            executable_suffix: ''
+            publish_source: false
+          - goos: windows
+            goarch: amd64
+            platform: windows
+            arch: x86_64
+            executable_suffix: '.exe'
+            publish_source: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Install Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5
+        with:
+          go-version: '1.24.0'
+          cache: false
+
+      - name: Fetch and verify official Tor Project Snowflake source
+        shell: bash
+        env:
+          SNOWFLAKE_VERSION: v2.14.1
+          SNOWFLAKE_ARCHIVE_SHA256: 39aa853c9bf966ac606456b4f357631470b4bee970e256a20eab54cba8a55d2f
+        run: |
+          set -euo pipefail
+          archive=snowflake.tar.gz
+          curl --fail --show-error --silent --location \
+            "https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/-/archive/${SNOWFLAKE_VERSION}/snowflake-${SNOWFLAKE_VERSION}.tar.gz" \
+            --output "$archive"
+          printf '%s  %s\n' "$SNOWFLAKE_ARCHIVE_SHA256" "$archive" | sha256sum --check --strict
+          mkdir source
+          tar --extract --gzip --file "$archive" --directory source --strip-components=1
+          test "$(sed -n 's/^module //p' source/go.mod)" = "gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2"
+
+      - name: Build Snowflake client
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+          GOFLAGS: '-mod=readonly'
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd source
+          go build \
+            -buildvcs=false \
+            -trimpath \
+            -ldflags='-s -w -buildid=' \
+            -o "../dist/syntaur-snowflake-client-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.executable_suffix }}" \
+            ./client
+
+      - name: Record Snowflake source and license
+        if: matrix.publish_source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp source/LICENSE dist/syntaur-snowflake-LICENSE.txt
+          {
+            echo 'component: Tor Project Snowflake client'
+            echo 'version: v2.14.1'
+            echo 'commit: cd33fc638ac03343197eb944a611df29f554be88'
+            echo 'archive_sha256: 39aa853c9bf966ac606456b4f357631470b4bee970e256a20eab54cba8a55d2f'
+            echo 'source: https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake'
+          } > dist/syntaur-snowflake-source.txt
+
+      - name: Upload Snowflake artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: syntaur-snowflake-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          retention-days: 7
+
   build-engine:
     name: Build native browser engine ${{ matrix.target }}
     needs: validate
@@ -725,7 +972,7 @@ jobs:
 
   sign-and-release:
     name: Sign + stage draft release
-    needs: [build, build-engine]
+    needs: [build, build-link-tor, build-snowflake, build-engine]
     if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-24.04
     steps:
@@ -766,6 +1013,16 @@ jobs:
           sed -i -E "s/^(VERSION=\")[^\"]+(\")/\1${REL_VERSION}\2/" install.sh
           sed -i -E "s/^(\\\$Version[[:space:]]*=[[:space:]]*\")[^\"]+(\")/\1${REL_VERSION}\2/" install.ps1
           sed -i -E "s/^(\\\$DistWorkflowCommit[[:space:]]*=[[:space:]]*\")[^\"]+(\")/\1${DIST_COMMIT}\2/" install.ps1
+          windows_gateway_sha256=$(sha256sum dist/syntaur-gateway-windows-x86_64.exe | awk '{print $1}')
+          sed -i -E "s/^(\\\$GatewaySha256[[:space:]]*=[[:space:]]*\")[^\"]*(\")/\1${windows_gateway_sha256}\2/" install.ps1
+          windows_viewer_sha256=$(sha256sum dist/syntaur-viewer-windows-x86_64.exe | awk '{print $1}')
+          sed -i -E "s/^(\\\$ViewerSha256[[:space:]]*=[[:space:]]*\")[^\"]*(\")/\1${windows_viewer_sha256}\2/" install.ps1
+          windows_link_tor_sha256=$(sha256sum dist/syntaur-link-client-tor-windows-x86_64.exe | awk '{print $1}')
+          sed -i -E "s/^(\\\$LinkClientTorSha256[[:space:]]*=[[:space:]]*\")[^\"]*(\")/\1${windows_link_tor_sha256}\2/" install.ps1
+          windows_snowflake_sha256=$(sha256sum dist/syntaur-snowflake-client-windows-x86_64.exe | awk '{print $1}')
+          sed -i -E "s/^(\\\$SnowflakeClientSha256[[:space:]]*=[[:space:]]*\")[^\"]*(\")/\1${windows_snowflake_sha256}\2/" install.ps1
+          windows_link_probe_sha256=$(sha256sum dist/syntaur-link-probe-windows-x86_64.exe | awk '{print $1}')
+          sed -i -E "s/^(\\\$LinkProbeSha256[[:space:]]*=[[:space:]]*\")[^\"]*(\")/\1${windows_link_probe_sha256}\2/" install.ps1
           runtime_sha256=$(sha256sum dist/syntaur-runtime-linux-x86_64 | awk '{print $1}')
           process_inspector_sha256=$(sha256sum dist/syntaur-process-inspector-linux-x86_64 | awk '{print $1}')
           sed -i -E "s/^(RUNTIME_BOOTSTRAP_SHA256=\")[^\"]*(\")/\1${runtime_sha256}\2/" install.sh
@@ -779,6 +1036,11 @@ jobs:
           grep -qE "^RUNTIME_BOOTSTRAP_SHA256=\"[0-9a-f]{64}\"$" install.sh || { echo "::error::install.sh runtime bootstrap hash was not stamped"; exit 1; }
           grep -qE "^PROCESS_INSPECTOR_SHA256=\"[0-9a-f]{64}\"$" install.sh || { echo "::error::install.sh process inspector hash was not stamped"; exit 1; }
           grep -qE "^DIST_WORKFLOW_COMMIT=\"${DIST_COMMIT}\"$" install.sh || { echo "::error::install.sh workflow commit was not stamped"; exit 1; }
+          grep -qE "^\\\$GatewaySha256[[:space:]]*=[[:space:]]*\"${windows_gateway_sha256}\"$" install.ps1 || { echo "::error::install.ps1 gateway hash was not stamped"; exit 1; }
+          grep -qE "^\\\$ViewerSha256[[:space:]]*=[[:space:]]*\"${windows_viewer_sha256}\"$" install.ps1 || { echo "::error::install.ps1 viewer hash was not stamped"; exit 1; }
+          grep -qE "^\\\$LinkClientTorSha256[[:space:]]*=[[:space:]]*\"${windows_link_tor_sha256}\"$" install.ps1 || { echo "::error::install.ps1 Link Tor hash was not stamped"; exit 1; }
+          grep -qE "^\\\$SnowflakeClientSha256[[:space:]]*=[[:space:]]*\"${windows_snowflake_sha256}\"$" install.ps1 || { echo "::error::install.ps1 Snowflake hash was not stamped"; exit 1; }
+          grep -qE "^\\\$LinkProbeSha256[[:space:]]*=[[:space:]]*\"${windows_link_probe_sha256}\"$" install.ps1 || { echo "::error::install.ps1 Link Tor hash was not stamped"; exit 1; }
           eula_sha256=$(sha256sum EULA.md | awk '{print $1}')
           grep -qE "^EULA_SHA256=\"${eula_sha256}\"$" install.sh || { echo "::error::install.sh EULA hash is stale"; exit 1; }
           grep -qE "^\\\$EulaSha256[[:space:]]*=[[:space:]]*\"${eula_sha256}\"$" install.ps1 || { echo "::error::install.ps1 EULA hash is stale"; exit 1; }
@@ -822,6 +1084,25 @@ jobs:
             syntaur-clip-write-linux-x86_64
             syntaur-clip-write-macos-arm64
             syntaur-clip-write-macos-x86_64
+            syntaur-link-client-tor-linux-x86_64
+            syntaur-link-probe-linux-x86_64
+            syntaur-snowflake-client-linux-x86_64
+            syntaur-link-tor-linux-x86_64
+            syntaur-link-client-tor-linux-aarch64
+            syntaur-link-probe-linux-aarch64
+            syntaur-snowflake-client-linux-aarch64
+            syntaur-link-tor-linux-aarch64
+            syntaur-link-client-tor-macos-arm64
+            syntaur-link-probe-macos-arm64
+            syntaur-snowflake-client-macos-arm64
+            syntaur-link-client-tor-macos-x86_64
+            syntaur-link-probe-macos-x86_64
+            syntaur-snowflake-client-macos-x86_64
+            syntaur-link-client-tor-windows-x86_64.exe
+            syntaur-link-probe-windows-x86_64.exe
+            syntaur-snowflake-client-windows-x86_64.exe
+            syntaur-snowflake-LICENSE.txt
+            syntaur-snowflake-source.txt
             syntaur-source-commit.txt
             syntaur-engine-source-commit.txt
             syntaur-icon.png
@@ -865,6 +1146,25 @@ jobs:
             syntaur-clip-write-linux-x86_64 \
             syntaur-clip-write-macos-arm64 \
             syntaur-clip-write-macos-x86_64 \
+            syntaur-link-client-tor-linux-x86_64 \
+            syntaur-link-probe-linux-x86_64 \
+            syntaur-snowflake-client-linux-x86_64 \
+            syntaur-link-tor-linux-x86_64 \
+            syntaur-link-client-tor-linux-aarch64 \
+            syntaur-link-probe-linux-aarch64 \
+            syntaur-snowflake-client-linux-aarch64 \
+            syntaur-link-tor-linux-aarch64 \
+            syntaur-link-client-tor-macos-arm64 \
+            syntaur-link-probe-macos-arm64 \
+            syntaur-snowflake-client-macos-arm64 \
+            syntaur-link-client-tor-macos-x86_64 \
+            syntaur-link-probe-macos-x86_64 \
+            syntaur-snowflake-client-macos-x86_64 \
+            syntaur-link-client-tor-windows-x86_64.exe \
+            syntaur-link-probe-windows-x86_64.exe \
+            syntaur-snowflake-client-windows-x86_64.exe \
+            syntaur-snowflake-LICENSE.txt \
+            syntaur-snowflake-source.txt \
             syntaur-engine-linux-x86_64 \
             syntaur-engine-macos-arm64 \
             syntaur-engine-macos-x86_64 \
@@ -1276,6 +1576,25 @@ jobs:
             syntaur-clip-write-linux-x86_64
             syntaur-clip-write-macos-arm64
             syntaur-clip-write-macos-x86_64
+            syntaur-link-client-tor-linux-x86_64
+            syntaur-link-probe-linux-x86_64
+            syntaur-snowflake-client-linux-x86_64
+            syntaur-link-tor-linux-x86_64
+            syntaur-link-client-tor-linux-aarch64
+            syntaur-link-probe-linux-aarch64
+            syntaur-snowflake-client-linux-aarch64
+            syntaur-link-tor-linux-aarch64
+            syntaur-link-client-tor-macos-arm64
+            syntaur-link-probe-macos-arm64
+            syntaur-snowflake-client-macos-arm64
+            syntaur-link-client-tor-macos-x86_64
+            syntaur-link-probe-macos-x86_64
+            syntaur-snowflake-client-macos-x86_64
+            syntaur-link-client-tor-windows-x86_64.exe
+            syntaur-link-probe-windows-x86_64.exe
+            syntaur-snowflake-client-windows-x86_64.exe
+            syntaur-snowflake-LICENSE.txt
+            syntaur-snowflake-source.txt
             syntaur-engine-linux-x86_64
             syntaur-engine-macos-arm64
             syntaur-engine-macos-x86_64

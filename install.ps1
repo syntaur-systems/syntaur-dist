@@ -20,6 +20,11 @@ $DistWorkflowCommit = "96f49b0cfcfb55a83ea195b41d718c4300a403d6"
 $EulaSourceCommit = "8811aa006673caa5082a7c9343e83c0b7ac51d16"
 $Binary = "syntaur.exe"
 $InstallDir = "$env:LOCALAPPDATA\Syntaur"
+$GatewaySha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+$ViewerSha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+$LinkClientTorSha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+$LinkProbeSha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+$SnowflakeClientSha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 $DashboardUrl = "http://localhost:18789"
 $EulaVersion = "1.0"
 $EulaUrl = "https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/$EulaSourceCommit/EULA.md"
@@ -62,6 +67,133 @@ function Test-SupportedExistingPrivateRoot {
     }
 }
 
+function Install-PinnedReleaseAsset {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$LiteralPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedSha256,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+    if ($ExpectedSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $ExpectedSha256 -ceq ('0' * 64)) {
+        throw "the installer has no valid pinned hash for $Label"
+    }
+    $Directory = Split-Path -Parent $LiteralPath
+    $Temporary = Join-Path $Directory ((Split-Path -Leaf $LiteralPath) + ".part." + [Guid]::NewGuid().ToString("N"))
+    $Backup = $null
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile $Temporary -UseBasicParsing
+        $Item = Get-Item -LiteralPath $Temporary -Force
+        if (-not [bool]$Item.PSIsContainer -and $Item.Length -gt 0 -and $Item.Length -le 1073741824) {
+            $ActualSha256 = (Get-FileHash -LiteralPath $Temporary -Algorithm SHA256).Hash.ToLowerInvariant()
+        } else {
+            throw "$Label download is empty or exceeds its size bound"
+        }
+        if ($ActualSha256 -cne $ExpectedSha256) {
+            throw "$Label did not match the hash pinned into this signed installer"
+        }
+        if (Test-Path -LiteralPath $LiteralPath) {
+            $Existing = Get-Item -LiteralPath $LiteralPath -Force
+            if ([bool]$Existing.PSIsContainer -or
+                ($Existing.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                -not (Test-SafeInstallEntry -LiteralPath $LiteralPath -Container $false)) {
+                throw "the existing $Label path is unsafe"
+            }
+            $Backup = Join-Path $Directory ((Split-Path -Leaf $LiteralPath) + ".backup." + [Guid]::NewGuid().ToString("N"))
+            [IO.File]::Replace($Temporary, $LiteralPath, $Backup, $true)
+            Remove-Item -LiteralPath $Backup -Force -ErrorAction Stop
+            $Backup = $null
+        } else {
+            [IO.File]::Move($Temporary, $LiteralPath)
+        }
+        if (-not (Test-SafeInstallEntry -LiteralPath $LiteralPath -Container $false)) {
+            throw "the installed $Label path has unsafe authority"
+        }
+    } finally {
+        if (Test-Path -LiteralPath $Temporary) {
+            Remove-Item -LiteralPath $Temporary -Force -ErrorAction SilentlyContinue
+        }
+        if ($Backup -and (Test-Path -LiteralPath $Backup)) {
+            Remove-Item -LiteralPath $Backup -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Assert-PrivateInstallDirectory {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+    if (-not (Test-Path -LiteralPath $LiteralPath)) {
+        New-Item -ItemType Directory -Path $LiteralPath | Out-Null
+    }
+    if (-not (Test-SafeInstallEntry -LiteralPath $LiteralPath -Container $true)) {
+        throw "unsafe Syntaur Link directory: $LiteralPath"
+    }
+}
+
+function Save-LinkTorConfiguration {
+    param(
+        [Parameter(Mandatory = $true)][string]$TorDirectory,
+        [Parameter(Mandatory = $true)][string]$TransportBinary
+    )
+    $StateDirectory = Join-Path $TorDirectory "state"
+    $CacheDirectory = Join-Path $TorDirectory "cache"
+    Assert-PrivateInstallDirectory -LiteralPath $TorDirectory
+    Assert-PrivateInstallDirectory -LiteralPath $StateDirectory
+    Assert-PrivateInstallDirectory -LiteralPath $CacheDirectory
+    $ConfigPath = Join-Path $TorDirectory "client.json"
+    if (Test-Path -LiteralPath $ConfigPath) {
+        $Existing = Get-Item -LiteralPath $ConfigPath -Force
+        if ([bool]$Existing.PSIsContainer -or
+            ($Existing.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            -not (Test-SafeInstallEntry -LiteralPath $ConfigPath -Container $false)) {
+            throw "the existing Syntaur Link transport configuration is unsafe"
+        }
+        if ($Existing.Length -le 0 -or $Existing.Length -gt 65536) {
+            throw "the existing Syntaur Link transport configuration exceeds its bounds"
+        }
+        # Keep existing bridges and paths during ordinary updates.
+        return
+    }
+    $BridgeLines = @(
+        "Bridge snowflake 192.0.2.4:80 8838024498816A039FCBBAB14E6F40A0843051FA fingerprint=8838024498816A039FCBBAB14E6F40A0843051FA url=https://1098762253.rsc.cdn77.org/ fronts=www.cdn77.com,www.phpmyadmin.net ice=stun:stun.antisip.com:3478,stun:stun.epygi.com:3478,stun:stun.uls.co.za:3478,stun:stun.voipgate.com:3478,stun:stun.mixvoip.com:3478,stun:stun.nextcloud.com:3478,stun:stun.bethesda.net:3478,stun:stun.nextcloud.com:443 utls-imitate=hellorandomizedalpn",
+        "Bridge snowflake 192.0.2.3:80 2B280B23E1107BB62ABFC40DDCC8824814F80A72 fingerprint=2B280B23E1107BB62ABFC40DDCC8824814F80A72 url=https://1098762253.rsc.cdn77.org/ fronts=www.cdn77.com,www.phpmyadmin.net ice=stun:stun.antisip.com:3478,stun:stun.epygi.com:3478,stun:stun.uls.co.za:3478,stun:stun.voipgate.com:3478,stun:stun.mixvoip.com:3478,stun:stun.nextcloud.com:3478,stun:stun.bethesda.net:3478,stun:stun.nextcloud.com:443 utls-imitate=hellorandomizedalpn"
+    )
+    $Configuration = [ordered]@{
+        schema = 2
+        state_dir = $StateDirectory
+        cache_dir = $CacheDirectory
+        bridge_bundle = [ordered]@{
+            schema = 1
+            transport = "snowflake"
+            bridge_lines = $BridgeLines
+        }
+        transport_binary = $TransportBinary
+        bundled_transport = $true
+    }
+    $Temporary = Join-Path $TorDirectory (".client.json." + [Guid]::NewGuid().ToString("N"))
+    $Backup = $null
+    try {
+        $Utf8 = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
+        [IO.File]::WriteAllText($Temporary, ($Configuration | ConvertTo-Json -Depth 5), $Utf8)
+        try {
+            [IO.File]::Move($Temporary, $ConfigPath)
+        } catch [IO.IOException] {
+            if (-not (Test-SafeInstallEntry -LiteralPath $ConfigPath -Container $false)) {
+                throw
+            }
+        }
+        if (-not (Test-SafeInstallEntry -LiteralPath $ConfigPath -Container $false)) {
+            throw "the Syntaur Link transport configuration has unsafe authority"
+        }
+    } finally {
+        if (Test-Path -LiteralPath $Temporary) {
+            Remove-Item -LiteralPath $Temporary -Force -ErrorAction SilentlyContinue
+        }
+        if ($Backup -and (Test-Path -LiteralPath $Backup)) {
+            Remove-Item -LiteralPath $Backup -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Get-OwnerSid {
     param([Parameter(Mandatory = $true)][string]$LiteralPath)
     $Owner = (Get-Acl -LiteralPath $LiteralPath).Owner
@@ -76,7 +208,8 @@ function Get-OwnerSid {
 function Test-SafeEulaDacl {
     param(
         [Parameter(Mandatory = $true)]$Acl,
-        [Parameter(Mandatory = $true)][Security.Principal.SecurityIdentifier]$CurrentSid
+        [Parameter(Mandatory = $true)][Security.Principal.SecurityIdentifier]$CurrentSid,
+        [bool]$IncludeInheritedChildren = $false
     )
     $TrustedSids = @(
         $CurrentSid.Value,
@@ -95,7 +228,8 @@ function Test-SafeEulaDacl {
         if ($Rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {
             continue
         }
-        if (($Rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) {
+        if (-not $IncludeInheritedChildren -and
+            ($Rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) {
             continue
         }
         if (([int64]$Rule.FileSystemRights -band $MutatingMask) -eq 0) {
@@ -113,6 +247,31 @@ function Test-SafeEulaDacl {
         }
     }
     return $true
+}
+
+function Test-SafeInstallEntry {
+    param(
+        [Parameter(Mandatory = $true)][string]$LiteralPath,
+        [Parameter(Mandatory = $true)][bool]$Container
+    )
+    try {
+        $Item = Get-Item -LiteralPath $LiteralPath -Force
+        if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            [bool]$Item.PSIsContainer -ne $Container) {
+            return $false
+        }
+        $CurrentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        if ($null -eq $CurrentSid -or
+            (Get-OwnerSid -LiteralPath $LiteralPath).Value -cne $CurrentSid.Value) {
+            return $false
+        }
+        return Test-SafeEulaDacl `
+            -Acl (Get-Acl -LiteralPath $LiteralPath) `
+            -CurrentSid $CurrentSid `
+            -IncludeInheritedChildren $Container
+    } catch {
+        return $false
+    }
 }
 
 function Test-SafeEulaEntry {
@@ -403,35 +562,28 @@ if (-not (Test-Path $InstallDir)) {
 
 $BinaryPath = Join-Path $InstallDir $Binary
 
-# Download gateway binary (server mode only)
+# Executable pins are stamped into this signed installer by release-sign.yml.
+Assert-PrivateInstallDirectory -LiteralPath $InstallDir
+$ReleaseBase = "https://github.com/syntaur-systems/syntaur-dist/releases/download/v$Version"
 if ($Mode -eq "server") {
-    $DownloadUrl = "https://github.com/syntaur-systems/syntaur-dist/releases/download/v$Version/syntaur-gateway-windows-$Arch.exe"
-    Write-Host "  Downloading $Brand server..."
-    try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -Uri $DownloadUrl -OutFile $BinaryPath -UseBasicParsing
-    } catch {
-        Write-Host ""
-        Write-Host "  Note: Download server not yet available." -ForegroundColor Yellow
-        Write-Host "  For now, copy the binary manually to $BinaryPath"
-        Write-Host "  Then run: $Binary"
-        Write-Host ""
-        exit 0
-    }
+    Install-PinnedReleaseAsset -Url "$ReleaseBase/syntaur-gateway-windows-$Arch.exe" `
+        -LiteralPath $BinaryPath -ExpectedSha256 $GatewaySha256 -Label "Syntaur server"
 }
-
-# Download viewer (lightweight dashboard window — no full browser needed)
 $ViewerBinary = "syntaur-viewer.exe"
 $ViewerPath = Join-Path $InstallDir $ViewerBinary
-$ViewerUrl = "https://github.com/syntaur-systems/syntaur-dist/releases/download/v$Version/syntaur-viewer-windows-$Arch.exe"
-
-Write-Host "  Downloading dashboard viewer..."
-try {
-    Invoke-WebRequest -Uri $ViewerUrl -OutFile $ViewerPath -UseBasicParsing
-    Write-Host "  Viewer installed"
-} catch {
-    Write-Host "  Viewer download not available — shortcuts will open in browser" -ForegroundColor Yellow
+Install-PinnedReleaseAsset -Url "$ReleaseBase/syntaur-viewer-windows-$Arch.exe" `
+    -LiteralPath $ViewerPath -ExpectedSha256 $ViewerSha256 -Label "dashboard viewer"
+foreach ($Helper in @(
+    @{ Name = "syntaur-link-client-tor"; Hash = $LinkClientTorSha256 },
+    @{ Name = "syntaur-link-probe"; Hash = $LinkProbeSha256 },
+    @{ Name = "syntaur-snowflake-client"; Hash = $SnowflakeClientSha256 }
+)) {
+    Install-PinnedReleaseAsset -Url "$ReleaseBase/$($Helper.Name)-windows-$Arch.exe" `
+        -LiteralPath (Join-Path $InstallDir "$($Helper.Name).exe") `
+        -ExpectedSha256 $Helper.Hash -Label $Helper.Name
 }
+Save-LinkTorConfiguration -TorDirectory (Join-Path $InstallDir "link-tor") `
+    -TransportBinary (Join-Path $InstallDir "syntaur-snowflake-client.exe")
 
 $IconPath = Join-Path $InstallDir "syntaur-icon.ico"
 $IconUrl = "https://github.com/syntaur-systems/syntaur-dist/releases/download/v$Version/syntaur-icon.ico"
