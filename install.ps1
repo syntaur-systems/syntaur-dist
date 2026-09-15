@@ -646,6 +646,19 @@ $Shortcut.Description = "Syntaur - Your personal AI platform"
 $Shortcut.Save()
 
 Write-Host "  Desktop shortcut installed"
+# Earlier installers also created a browser URL beside the native shortcut.
+# Do not follow reparse points or remove a different kind of user document.
+$LegacyBrowserShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "Syntaur (Browser).url"
+if (Test-Path -LiteralPath $LegacyBrowserShortcut -PathType Leaf) {
+    $LegacyItem = Get-Item -LiteralPath $LegacyBrowserShortcut -Force
+    if (($LegacyItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+        $LegacyText = [IO.File]::ReadAllText($LegacyBrowserShortcut)
+        if ($LegacyText -match '(?m)^\[InternetShortcut\]\r?$' -and $LegacyText -match '(?m)^URL=https?://') {
+            Remove-Item -LiteralPath $LegacyBrowserShortcut -Force -ErrorAction Stop
+        }
+    }
+}
+
 
 # --- Auto-start via Startup folder (server mode only) ---
 if ($Mode -eq "server") {

@@ -1513,6 +1513,17 @@ LAUNCHER
 ICON
 
   echo "  Application shortcut installed (find 'Syntaur' in ~/Applications or Spotlight)"
+  # Earlier installers created this browser shortcut for the retired URL.
+  # Replace only that regular Syntaur shortcut after the native app exists.
+  LEGACY_WEBLOC="$HOME/Desktop/Syntaur.webloc"
+  if [ -f "$LEGACY_WEBLOC" ] && [ ! -L "$LEGACY_WEBLOC" ] \
+     && /usr/bin/grep -q '<key>URL</key>' "$LEGACY_WEBLOC"; then
+    rm -f -- "$LEGACY_WEBLOC"
+    if [ ! -e "$HOME/Desktop/Syntaur.app" ] && [ ! -L "$HOME/Desktop/Syntaur.app" ]; then
+      ln -s "$APP_PATH" "$HOME/Desktop/Syntaur.app"
+    fi
+  fi
+
 
 
 fi
