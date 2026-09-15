@@ -1,8 +1,8 @@
-# Syntaur installer for Windows — https://syntaur.app
+# Syntaur installer for Windows - https://syntaur.app
 # Usage:
 #   irm https://github.com/syntaur-systems/syntaur-dist/releases/latest/download/install.ps1 | iex   # interactive
 #
-# To pass flags (piped iex cannot receive them — it never populates $args):
+# To pass flags (piped iex cannot receive them - it never populates $args):
 #   & ([scriptblock]::Create((irm https://github.com/syntaur-systems/syntaur-dist/releases/latest/download/install.ps1))) --server
 #   & ([scriptblock]::Create((irm https://github.com/syntaur-systems/syntaur-dist/releases/latest/download/install.ps1))) --connect
 #
@@ -592,7 +592,7 @@ try {
     Invoke-WebRequest -Uri $IconUrl -OutFile $IconPath -UseBasicParsing
     Write-Host "  Launcher icon installed"
 } catch {
-    Write-Host "  Launcher icon not available — shortcut will use the app default" -ForegroundColor Yellow
+    Write-Host "  Launcher icon not available - shortcut will use the app default" -ForegroundColor Yellow
 }
 
 # Determine shortcut target: use viewer if available, otherwise URL
@@ -679,7 +679,7 @@ if ($env:SYNTAUR_TS_AUTHKEY) {
         $TailscaleInstalled = $true
     } else {
         # Use Tailscale's official MSI installer. Silent install requires
-        # admin — if the user isn't admin, fall back to opening the
+        # admin - if the user isn't admin, fall back to opening the
         # download page and leave the join step for the viewer's
         # onboarding screen to detect.
         $TsMsiUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.msi"
