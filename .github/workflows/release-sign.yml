@@ -657,6 +657,8 @@ jobs:
 
       - name: Build authenticated Link release probe
         shell: bash
+        env:
+          SYNTAUR_LINK_PROBE_SOURCE_COMMIT: ${{ env.SRC_COMMIT }}
         run: |
           set -euo pipefail
           cargo build \

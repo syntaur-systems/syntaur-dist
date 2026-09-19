@@ -49,6 +49,10 @@ correlation=$(
 test "$(yq -r '.jobs.build.steps[] | select(.name == "Build release") | .env.SYNTAUR_SOURCE_COMMIT' "$workflow")" = \
   '${{ env.SRC_COMMIT }}'
 
+# Link release probes must attest that same validated application checkout.
+test "$(yq -r '.jobs["build-link-tor"].steps[] | select(.name == "Build authenticated Link release probe") | .env.SYNTAUR_LINK_PROBE_SOURCE_COMMIT' "$workflow")" = \
+  '${{ env.SRC_COMMIT }}'
+
 run_validate() {
   env \
     REL_VERSION_IN="$version" \
