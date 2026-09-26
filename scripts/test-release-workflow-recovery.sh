@@ -974,4 +974,32 @@ if run_publish >/dev/null 2>&1; then
   exit 1
 fi
 
+# The supported platform matrix plus per-file signatures exceeds 64 assets.
+# Exercise the actual allowlisted names, preserving the operation/checksum rules.
+while IFS= read -r asset; do
+  if [ ! -e "$publish_dist/$asset" ]; then
+    printf '%s fixture\n' "$asset" >"$publish_dist/$asset"
+    printf '%s bundle fixture\n' "$asset" >"$publish_dist/$asset.cosign.bundle"
+  fi
+done </tmp/allowed-recovery-primary-assets
+(
+  cd "$publish_dist"
+  find . -maxdepth 1 -type f ! -name '*.cosign.bundle' ! -name checksums.txt \
+    -printf '%f\n' | sort | xargs sha256sum >checksums.txt
+)
+large_state="$publish_case/large-platform-matrix"
+mkdir -p "$large_state/assets"
+test "$(find "$publish_dist" -maxdepth 1 -type f | wc -l)" -gt 64
+run_publish "$large_state" >/dev/null
+detach_state_assets "$large_state"
+for asset in "$publish_dist"/*; do
+  cmp --silent "$asset" "$large_state/assets/$(basename "$asset")"
+done
+# Reconcile the same full draft without another create or upload.
+create_count=$(cat "$large_state/create-count")
+upload_count=$(cat "$large_state/upload-count")
+run_publish "$large_state" >/dev/null
+test "$(cat "$large_state/create-count")" = "$create_count"
+test "$(cat "$large_state/upload-count")" = "$upload_count"
+
 printf 'release workflow recovery tests passed\n'

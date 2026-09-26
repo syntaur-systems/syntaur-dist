@@ -1423,11 +1423,9 @@ jobs:
           }
 
           validate_existing_asset_metadata() {
-            local count asset_id asset_name reported state primary maximum
+            local asset_id asset_name reported state primary maximum
             require_bounded_json_file "$release_json" "release metadata"
             jq -e '.assets | type == "array"' "$release_json" >/dev/null
-            count=$(jq '.assets | length' "$release_json")
-            (( count <= 64 )) || { echo "::error::existing release has too many assets"; exit 1; }
             duplicates=$(jq -r '.assets[].name' "$release_json" | sort | uniq -d)
             [ -z "$duplicates" ] || {
               echo "::error::existing release contains duplicate asset names: $duplicates"
@@ -2220,13 +2218,11 @@ jobs:
           }
 
           validate_release() {
-            local count asset_id asset_name reported state maximum release_id upload_url
+            local asset_id asset_name reported state maximum release_id upload_url
             local exact_json=/tmp/syntaur-publish-exact-public-release.json
             local exact_error=/tmp/syntaur-publish-exact-public-release.error
             require_bounded_json_file "$release_json" "release metadata"
             jq -e '.assets | type == "array"' "$release_json" >/dev/null
-            count=$(jq '.assets | length' "$release_json")
-            (( count <= 64 )) || { echo "::error::release has too many assets"; exit 1; }
             test "$(jq -r '.tag_name' "$release_json")" = "$TAG"
             test "$(jq -r '.target_commitish' "$release_json")" = "$DIST_COMMIT"
             test "$(jq -r '.prerelease' "$release_json")" = false
