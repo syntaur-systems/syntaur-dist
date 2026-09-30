@@ -86,6 +86,57 @@ test ! -s "$temporary/output"
 cases=$((cases + 1))
 printf 'PASS unknown-commit-fails-closed\n'
 
+# A failed diff must never classify its partial output as a narrow scope.
+mkdir "$temporary/failing-git"
+cat >"$temporary/failing-git/git" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $1 == diff ]]; then
+  printf 'install.sh\0'
+  exit 1
+fi
+exec "$SCOPE_FIXTURE_GIT" "$@"
+STUB
+chmod +x "$temporary/failing-git/git"
+fixture_git=$(command -v git)
+: >"$temporary/output"
+if PATH="$temporary/failing-git:$PATH" SCOPE_FIXTURE_GIT="$fixture_git" \
+  EVENT_NAME=push PUSH_BEFORE_SHA=$zero_base PR_BASE_SHA='' \
+  GITHUB_SHA=$installer_head GITHUB_OUTPUT="$temporary/output" \
+  bash "$temporary/scope.sh" >"$temporary/partial-diff.log" 2>&1; then
+  echo 'partial failed diff must not admit a narrow scope' >&2
+  exit 1
+fi
+test ! -s "$temporary/output"
+cases=$((cases + 1))
+printf 'PASS partial-diff-failure-is-rejected\n'
+
+# A force-push leaves the old event commit on the server but unreachable from
+# the current advertised branch. A fresh checkout must fetch that exact object.
+git init -q --bare --initial-branch=main "$temporary/origin.git"
+git push -q "$temporary/origin.git" "$ordinary_base:refs/heads/before"
+git push -q "$temporary/origin.git" "$installer_head:refs/heads/main"
+git --git-dir="$temporary/origin.git" update-ref -d refs/heads/before
+git clone -q --no-local --single-branch --branch main \
+  "$temporary/origin.git" "$temporary/force-push-checkout"
+cd "$temporary/force-push-checkout"
+if git cat-file -e "$ordinary_base^{commit}" 2>/dev/null; then
+  echo 'force-push fixture unexpectedly retained the old commit' >&2
+  exit 1
+fi
+check_scope force-push-fetches-exact-base push "$ordinary_base" '' "$installer_head" installer-only
+: >"$temporary/output"
+if EVENT_NAME=push PUSH_BEFORE_SHA=0000000000000000000000000000000000000001 \
+  PR_BASE_SHA='' GITHUB_SHA=$installer_head GITHUB_OUTPUT="$temporary/output" \
+  bash "$temporary/scope.sh" >"$temporary/remote-unknown.log" 2>&1; then
+  echo 'a base absent from the remote must fail closed' >&2
+  exit 1
+fi
+test ! -s "$temporary/output"
+cases=$((cases + 1))
+printf 'PASS unavailable-remote-base-fails-closed\n'
+cd "$temporary/repo"
+
 printf 'new policy\n' >policy.txt
 git add policy.txt
 git commit -qm 'policy and installer change'
@@ -94,4 +145,42 @@ git reset -q --hard "$zero_base"
 git rm -q install.sh
 git commit -qm 'remove installer'
 check_scope installer-deletion push "$zero_base" '' "$(git rev-parse HEAD)" installer-only
+# Product release workflows are not inputs to the isolated legacy bootstrap
+# fixture. Any mixed change must retain full coverage.
+git reset -q --hard "$zero_base"
+mkdir -p .github/workflows
+printf 'release fixture\n' >.github/workflows/release-sign.yml
+git add .github/workflows/release-sign.yml
+git commit -qm 'product release workflow'
+product_base=$(git rev-parse HEAD)
+check_scope product-release-workflow push "$zero_base" '' "$product_base" product-workflows-only
+printf 'pretag fixture\n' >.github/workflows/source-pretag.yml
+git add .github/workflows/source-pretag.yml
+git commit -qm 'source pretag workflow'
+product_head=$(git rev-parse HEAD)
+check_scope source-pretag-workflow push "$product_base" '' "$product_head" product-workflows-only
+check_scope both-product-workflows push "$zero_base" '' "$product_head" product-workflows-only
+check_scope product-workflow-pr pull_request '' "$zero_base" "$product_head" product-workflows-only
+for mixed_path in \
+    install.sh \
+    policy.txt \
+    .github/workflows/workflow-lint.yml \
+    .github/workflows/release-authority.yml \
+    scripts/classify-workflow-change.sh \
+    scripts/test-release-authority-bootstrap.sh \
+    scripts/bootstrap-release-authority-genesis-v2.sh \
+    scripts/fixtures/release_authority_bootstrap.Dockerfile; do
+  git reset -q --hard "$product_head"
+  mkdir -p "$(dirname "$mixed_path")"
+  printf '# mixed change\n' >>"$mixed_path"
+  git add "$mixed_path"
+  git commit -qm 'mixed product and bootstrap dependency'
+  check_scope "product-mixed-$mixed_path" push "$zero_base" '' "$(git rev-parse HEAD)" full
+done
+git reset -q --hard "$product_head"
+git rm -q .github/workflows/source-pretag.yml
+git commit -qm 'remove pretag workflow'
+check_scope product-deletion push "$product_head" '' "$(git rev-parse HEAD)" product-workflows-only
+# Classifying a deletion does not admit a missing required workflow; the
+# mandatory validator rejects it before any scope-dependent fixture step.
 printf 'workflow change-scope cases passed: %s\n' "$cases"
