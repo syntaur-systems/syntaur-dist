@@ -963,6 +963,16 @@ case "$ARCH" in
   *) echo "Error: Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
+# Public macOS releases support Apple Silicon only.
+if [ "$PLATFORM" = "macos" ] && [ "$ARCH" = "x86_64" ]; then
+  if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || true)" = "1" ]; then
+    ARCH="arm64"
+  else
+    echo "Error: Syntaur for macOS requires Apple Silicon (M1 or newer). Intel Macs are unsupported."
+    exit 1
+  fi
+fi
+
 MANAGED_RUNTIME="0"
 if [ "$PLATFORM" = "linux" ] && [ "$ARCH" = "x86_64" ]; then
   MANAGED_RUNTIME="1"

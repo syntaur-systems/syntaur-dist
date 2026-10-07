@@ -215,17 +215,6 @@ jobs:
             package: syntaur-viewer
             binary: syntaur-viewer
             artifact_name: syntaur-viewer-macos-arm64
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            package: syntaur-gateway
-            binary: syntaur-gateway
-            artifact_name: syntaur-gateway-macos-x86_64
-            timeout_minutes: 120
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            package: syntaur-viewer
-            binary: syntaur-viewer
-            artifact_name: syntaur-viewer-macos-x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             package: syntaur-gateway
@@ -238,9 +227,7 @@ jobs:
             artifact_name: syntaur-viewer-windows-x86_64.exe
     runs-on: ${{ matrix.os }}
     environment: product-release-source
-    # Preserve the normal 90 minute cap; allow the measured Intel Gateway build
-    # the same bounded headroom as its source pre-tag gate.
-    timeout-minutes: ${{ matrix.timeout_minutes || 90 }}
+    timeout-minutes: 90
     steps:
       # Check out the PRIVATE application source via the read-only deploy
       # key. Its private half is isolated in the main-only protected
@@ -571,13 +558,6 @@ jobs:
             executable_suffix: ''
             build_service: false
             install_cross_compiler: false
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            platform: macos
-            arch: x86_64
-            executable_suffix: ''
-            build_service: false
-            install_cross_compiler: false
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             platform: windows
@@ -716,12 +696,6 @@ jobs:
             arch: arm64
             executable_suffix: ''
             publish_source: false
-          - goos: darwin
-            goarch: amd64
-            platform: macos
-            arch: x86_64
-            executable_suffix: ''
-            publish_source: false
           - goos: windows
             goarch: amd64
             platform: windows
@@ -809,12 +783,6 @@ jobs:
             target: aarch64-apple-darwin
             platform: macos
             arch: arm64
-            features: gpu-paint
-            smoke_prefix: ''
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            platform: macos
-            arch: x86_64
             features: gpu-paint
             smoke_prefix: ''
     runs-on: ${{ matrix.os }}
@@ -1078,14 +1046,10 @@ jobs:
             syntaur-verify-linux-x86_64
             syntaur-gateway-macos-arm64
             syntaur-viewer-macos-arm64
-            syntaur-gateway-macos-x86_64
-            syntaur-viewer-macos-x86_64
             syntaur-engine-linux-x86_64
             syntaur-engine-macos-arm64
-            syntaur-engine-macos-x86_64
             syntaur-clip-write-linux-x86_64
             syntaur-clip-write-macos-arm64
-            syntaur-clip-write-macos-x86_64
             syntaur-link-client-tor-linux-x86_64
             syntaur-link-probe-linux-x86_64
             syntaur-snowflake-client-linux-x86_64
@@ -1097,9 +1061,6 @@ jobs:
             syntaur-link-client-tor-macos-arm64
             syntaur-link-probe-macos-arm64
             syntaur-snowflake-client-macos-arm64
-            syntaur-link-client-tor-macos-x86_64
-            syntaur-link-probe-macos-x86_64
-            syntaur-snowflake-client-macos-x86_64
             syntaur-link-client-tor-windows-x86_64.exe
             syntaur-link-probe-windows-x86_64.exe
             syntaur-snowflake-client-windows-x86_64.exe
@@ -1147,7 +1108,6 @@ jobs:
             install.sh \
             syntaur-clip-write-linux-x86_64 \
             syntaur-clip-write-macos-arm64 \
-            syntaur-clip-write-macos-x86_64 \
             syntaur-link-client-tor-linux-x86_64 \
             syntaur-link-probe-linux-x86_64 \
             syntaur-snowflake-client-linux-x86_64 \
@@ -1159,9 +1119,6 @@ jobs:
             syntaur-link-client-tor-macos-arm64 \
             syntaur-link-probe-macos-arm64 \
             syntaur-snowflake-client-macos-arm64 \
-            syntaur-link-client-tor-macos-x86_64 \
-            syntaur-link-probe-macos-x86_64 \
-            syntaur-snowflake-client-macos-x86_64 \
             syntaur-link-client-tor-windows-x86_64.exe \
             syntaur-link-probe-windows-x86_64.exe \
             syntaur-snowflake-client-windows-x86_64.exe \
@@ -1169,11 +1126,9 @@ jobs:
             syntaur-snowflake-source.txt \
             syntaur-engine-linux-x86_64 \
             syntaur-engine-macos-arm64 \
-            syntaur-engine-macos-x86_64 \
             syntaur-engine-source-commit.txt \
             syntaur-gateway-linux-x86_64 \
             syntaur-gateway-macos-arm64 \
-            syntaur-gateway-macos-x86_64 \
             syntaur-gateway-managed-linux-x86_64 \
             syntaur-gateway-windows-x86_64.exe \
             syntaur-icon.icns \
@@ -1189,7 +1144,6 @@ jobs:
             syntaur-source-commit.txt \
             syntaur-viewer-linux-x86_64 \
             syntaur-viewer-macos-arm64 \
-            syntaur-viewer-macos-x86_64 \
             syntaur-viewer-windows-x86_64.exe \
             | sort -u >/tmp/allowed-recovery-primary-assets
 
@@ -1575,7 +1529,6 @@ jobs:
             install.sh
             syntaur-clip-write-linux-x86_64
             syntaur-clip-write-macos-arm64
-            syntaur-clip-write-macos-x86_64
             syntaur-link-client-tor-linux-x86_64
             syntaur-link-probe-linux-x86_64
             syntaur-snowflake-client-linux-x86_64
@@ -1587,9 +1540,6 @@ jobs:
             syntaur-link-client-tor-macos-arm64
             syntaur-link-probe-macos-arm64
             syntaur-snowflake-client-macos-arm64
-            syntaur-link-client-tor-macos-x86_64
-            syntaur-link-probe-macos-x86_64
-            syntaur-snowflake-client-macos-x86_64
             syntaur-link-client-tor-windows-x86_64.exe
             syntaur-link-probe-windows-x86_64.exe
             syntaur-snowflake-client-windows-x86_64.exe
@@ -1597,11 +1547,9 @@ jobs:
             syntaur-snowflake-source.txt
             syntaur-engine-linux-x86_64
             syntaur-engine-macos-arm64
-            syntaur-engine-macos-x86_64
             syntaur-engine-source-commit.txt
             syntaur-gateway-linux-x86_64
             syntaur-gateway-macos-arm64
-            syntaur-gateway-macos-x86_64
             syntaur-gateway-managed-linux-x86_64
             syntaur-gateway-windows-x86_64.exe
             syntaur-icon.icns
@@ -1616,7 +1564,6 @@ jobs:
             syntaur-source-commit.txt
             syntaur-viewer-linux-x86_64
             syntaur-viewer-macos-arm64
-            syntaur-viewer-macos-x86_64
             syntaur-viewer-windows-x86_64.exe
           )
           if [ -f syntaur-sbom.spdx.json ]; then

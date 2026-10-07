@@ -15,9 +15,76 @@ eula_source_commit=$(sed -nE 's/^EULA_SOURCE_COMMIT="([0-9a-f]{40})"$/\1/p' "$re
 [ "${#eula_source_commit}" -eq 40 ]
 expected_eula_url="https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/$eula_source_commit/EULA.md"
 historical_eula_url="https://github.com/syntaur-systems/syntaur-dist/blob/main/EULA.md"
+# shellcheck disable=SC2016 # Compare the literal installer expression.
 grep -Fxq 'EULA_URL="https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/$EULA_SOURCE_COMMIT/EULA.md"' "$repository/install.sh"
 pinned_eula_sha=$(git -C "$repository" show "$eula_source_commit:EULA.md" | sha256sum | awk '{print $1}')
 [ "$pinned_eula_sha" = "$expected_eula_sha" ]
+
+# Intel Macs must fail before EULA, downloads, or user-state writes.
+platform_bin="$temporary/platform-bin"
+mkdir -p "$platform_bin"
+cat >"$platform_bin/uname" <<'EOF'
+#!/bin/sh
+case "$1" in
+  -s) printf '%s\n' "$SYNTAUR_TEST_OS" ;;
+  -m)
+    if [ "$SYNTAUR_TEST_ARCH" = rosetta ]; then
+      printf 'x86_64\n'
+    else
+      printf '%s\n' "$SYNTAUR_TEST_ARCH"
+    fi
+    ;;
+  *) exit 1 ;;
+esac
+EOF
+cat >"$platform_bin/sysctl" <<'EOF'
+#!/bin/sh
+[ "$1" = -n ] && [ "$2" = sysctl.proc_translated ] || exit 1
+if [ "$SYNTAUR_TEST_ARCH" = rosetta ]; then
+  printf '1\n'
+elif [ "$SYNTAUR_TEST_ARCH" = amd64 ]; then
+  exit 1
+else
+  printf '0\n'
+fi
+EOF
+for command in mkdir curl wget sudo; do
+  cat >"$platform_bin/$command" <<'EOF'
+#!/bin/sh
+printf 'unexpected platform-side effect\n' >>"$SYNTAUR_TEST_SIDE_EFFECTS"
+exit 99
+EOF
+done
+chmod +x "$platform_bin/"*
+for architecture in x86_64 amd64; do
+  if output=$(env PATH="$platform_bin:$PATH" SYNTAUR_TEST_OS=Darwin \
+      SYNTAUR_TEST_ARCH="$architecture" \
+      SYNTAUR_TEST_SIDE_EFFECTS="$temporary/platform-side-effects" \
+      sh "$repository/install.sh" --server </dev/null 2>&1); then
+    echo 'Intel Mac installer unexpectedly succeeded' >&2
+    exit 1
+  fi
+  printf '%s\n' "$output" | grep -Fq 'Intel Macs are unsupported.'
+  [ ! -e "$temporary/platform-side-effects" ]
+done
+
+# Exercise the same detection code without running the actual installation.
+awk '
+  /^OS=\$\(uname -s/ { copying=1 }
+  copying && /^MANAGED_RUNTIME=/ { exit }
+  copying { print }
+' "$repository/install.sh" >"$temporary/detect-platform.sh"
+cat >>"$temporary/detect-platform.sh" <<'EOF'
+printf '%s-%s\n' "$PLATFORM" "$ARCH"
+EOF
+for mapping in Darwin:arm64:macos-arm64 Darwin:aarch64:macos-arm64 Darwin:rosetta:macos-arm64 \
+    Linux:x86_64:linux-x86_64 Linux:amd64:linux-x86_64 \
+    Linux:arm64:linux-aarch64 Linux:aarch64:linux-aarch64; do
+  IFS=: read -r test_os test_arch expected_platform <<<"$mapping"
+  detected=$(env PATH="$platform_bin:$PATH" SYNTAUR_TEST_OS="$test_os" \
+    SYNTAUR_TEST_ARCH="$test_arch" sh "$temporary/detect-platform.sh")
+  [ "$detected" = "$expected_platform" ]
+done
 
 load_installer_library() {
   export SYNTAUR_INSTALL_TEST_LIBRARY_ONLY=1
