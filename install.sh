@@ -262,6 +262,23 @@ download_bounded() (
   mv "$TMP_FILE" "$OUT"
 )
 
+# The original signed target and signature are carried into the same private
+# stage as the catalog. install-release verifies their independent trust bytes
+# and compatibility before A/B activation; a failed download is never legacy
+# catalog-only authorization.
+download_product_release_target() (
+  PRODUCT_RELEASE_BASE=$1
+  PRODUCT_STAGE=$2
+  PRODUCT_MODE=$3
+  case "$PRODUCT_MODE" in
+    server|connect) ;;
+    *) return 2 ;;
+  esac
+  PRODUCT_TARGET_NAME="syntaur-product-release-target-v2-linux-x86_64-${PRODUCT_MODE}.bin"
+  download_bounded "$PRODUCT_RELEASE_BASE/$PRODUCT_TARGET_NAME" "$PRODUCT_STAGE/$PRODUCT_TARGET_NAME" 16384 || return $?
+  download_bounded "$PRODUCT_RELEASE_BASE/$PRODUCT_TARGET_NAME.sig" "$PRODUCT_STAGE/$PRODUCT_TARGET_NAME.sig" 129 || return $?
+)
+
 download_bounded_exact() (
   URL="$1"
   OUT="$2"
@@ -1047,6 +1064,11 @@ if [ "$MANAGED_RUNTIME" = "1" ]; then
     echo "  Error: the runtime catalog signature is unavailable"
     exit 1
   }
+
+  if ! download_product_release_target "$RELEASE_BASE" "$RUNTIME_STAGE" "$MODE"; then
+    echo "  Error: the signed product update target is unavailable"
+    exit 1
+  fi
 
   # The bootstrap hash is release-stamped into this signed installer and is
   # always enforced, even when --skip-verify was requested for direct assets.

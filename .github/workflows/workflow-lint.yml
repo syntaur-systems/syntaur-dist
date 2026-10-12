@@ -41,6 +41,11 @@ jobs:
           esac
           scope=full
           if [[ $base =~ ^[0-9a-f]{40}$ ]]; then
+            # A rebased push can leave its exact event-before commit outside
+            # checkout history. Fetch only that object; never substitute a base.
+            if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+              timeout 90s git fetch --no-tags --depth=1 origin "$base"
+            fi
             scope=$(bash scripts/classify-workflow-change.sh "$base" "$GITHUB_SHA")
           fi
           printf 'scope=%s\n' "$scope" >>"$GITHUB_OUTPUT"
