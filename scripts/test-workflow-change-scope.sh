@@ -94,4 +94,20 @@ git reset -q --hard "$zero_base"
 git rm -q install.sh
 git commit -qm 'remove installer'
 check_scope installer-deletion push "$zero_base" '' "$(git rev-parse HEAD)" installer-only
+# Rebased push event-before is deliberately outside the new checkout history.
+# Exercise the actual step against a real shallow clone, not a Git stub.
+git init -q --bare "$temporary/remote.git"
+git push -q "$temporary/remote.git" \
+  "$installer_head:refs/heads/main" "$ordinary_base:refs/heads/prior-before"
+git clone -q --no-local --depth=1 --branch main \
+  "$temporary/remote.git" "$temporary/shallow"
+cd "$temporary/shallow"
+if git cat-file -e "$ordinary_base^{commit}" 2>/dev/null; then
+  echo 'fixture unexpectedly already has the event-before commit' >&2
+  exit 1
+fi
+check_scope rebased-push-fetches-exact-before push "$ordinary_base" '' \
+  "$installer_head" installer-only
+git cat-file -e "$ordinary_base^{commit}"
+
 printf 'workflow change-scope cases passed: %s\n' "$cases"
