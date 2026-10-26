@@ -274,6 +274,7 @@ jobs:
             -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
             -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' \
             /etc/apt/sources.list \
+            /etc/apt/apt-mirrors.txt \
             /etc/apt/sources.list.d/*.list \
             /etc/apt/sources.list.d/*.sources \
             2>/dev/null || true
@@ -839,6 +840,7 @@ jobs:
             -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
             -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' \
             /etc/apt/sources.list \
+            /etc/apt/apt-mirrors.txt \
             /etc/apt/sources.list.d/*.list \
             /etc/apt/sources.list.d/*.sources \
             2>/dev/null || true
