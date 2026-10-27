@@ -205,12 +205,12 @@ jobs:
             package: syntaur-verify
             binary: syntaur-verify
             artifact_name: syntaur-verify-linux-x86_64
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             package: syntaur-gateway
             binary: syntaur-gateway
             artifact_name: syntaur-gateway-macos-arm64
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             package: syntaur-viewer
             binary: syntaur-viewer
@@ -552,7 +552,7 @@ jobs:
             executable_suffix: ''
             build_service: true
             install_cross_compiler: true
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             platform: macos
             arch: arm64
@@ -780,7 +780,7 @@ jobs:
             arch: x86_64
             features: gpu-paint
             smoke_prefix: xvfb-run -a
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             platform: macos
             arch: arm64
