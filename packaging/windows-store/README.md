@@ -73,16 +73,21 @@ Cosign verification, the four authenticated release hashes, native C# compilatio
 with warnings treated as errors, and the WiX MSI build passed. The four original
 released executables and the existing installer remain unchanged.
 
-Full installation, upgrade, repair and uninstall acceptance is **not complete**.
-The standard-user background-session tests stopped before file writes when
-Windows Installer could not initialize its embedded preflight process (HRESULT
-0x8007045A). The same compiled preflight runs directly, including with a temporary
-filename. A costing-only action diagnostic reproduces the Installer failure;
-its windowed attempt was deliberately cancelled after the failure. The failing
-DLL and exact launch-context cause are not established. Do not treat the
-negative-install exit codes as proof that the guard rejected those fixtures.
+Focused direct-guard and ACL results remain, but full installation, upgrade,
+repair and uninstall acceptance is **not complete**. Both the unchanged guard
+and the embedded dedicated no-STA/no-GUI entrypoint fail user MSI costing-only
+with HRESULT 0x8007045A. SYSTEM costing-only with the same audit candidate
+launches the managed program and returns ordinary guard exit 1 because SYSTEM
+user != owner is correctly unsupported; this is not install success. Embedded
+managed EXEs are therefore not demonstrated inherently incompatible, and no
+production alternate entrypoint has been adopted.
 
-Preserve the preflight and checked return value. Resolve and verify this boundary
-in a normal supported Windows test session before shipping. No trusted publisher
-signing, Store certification, final screenshots or customer pairing are claimed
-by this prototype.
+The harness authenticates LogonUser type 2 in QGA Session 0, not a Windows
+desktop login. Read-only session inventory found services in Session 0 and
+console session 1, but no logged-in users. The next discriminator is the
+unchanged package in a normal disposable standard-user Windows login; an
+interactive session is not claimed to fix the failure. The failing DLL and exact
+cause remain unproved. No security settings or global desktop ACLs were modified
+and no installer protection was weakened. Negative-install exits are not proof
+that the guard rejected fixtures. Trusted signing, Store certification, final
+screenshots, customer pairing, and full lifecycle acceptance remain unverified.
