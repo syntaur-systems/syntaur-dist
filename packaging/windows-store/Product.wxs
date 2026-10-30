@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="$(var.ProductName)"
+           Manufacturer="SYNTAUR ENTERPRISES LLC"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="$(var.UpgradeCode)"
+           Language="1033"
+           Scope="perUser"
+           Compressed="yes">
+    <SummaryInformation Description="Syntaur Connect per-user Store compatibility package" />
+    <MediaTemplate EmbedCab="yes" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Syntaur Connect is already installed."
+                  AllowDowngrades="no" />
+    <Icon Id="SyntaurIcon" SourceFile="$(var.StagingDirectory)assets\syntaur-icon.ico" />
+    <Binary Id="StoreClientLauncherBinary" SourceFile="$(var.StagingDirectory)SyntaurConnect.exe" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="SyntaurFolder" Name="Syntaur">
+        <Directory Id="StoreContainer" Name="Store">
+          <Directory Id="StoreDataFolder" Name="Syntaur">
+            <Directory Id="INSTALLFOLDER" Name="bin" />
+          </Directory>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="SyntaurConnect" Title="Syntaur Connect" Level="1">
+      <ComponentRef Id="StoreLauncher" />
+      <ComponentRef Id="Viewer" />
+      <ComponentRef Id="LinkClientTor" />
+      <ComponentRef Id="LinkProbe" />
+      <ComponentRef Id="SnowflakeClient" />
+      <ComponentRef Id="SupportFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+
+    <CustomAction Id="StoreClientPreflight"
+                  BinaryRef="StoreClientLauncherBinary"
+                  ExeCommand="--preflight &quot;[INSTALLFOLDER].&quot;"
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="check" />
+    <InstallExecuteSequence>
+      <Custom Action="StoreClientPreflight" Before="InstallValidate" Condition="NOT REMOVE" />
+    </InstallExecuteSequence>
+  </Package>
+
+  <Fragment>
+    <Component Id="StoreLauncher" Directory="INSTALLFOLDER" Guid="4E7F34D4-93D6-5BA3-B55D-4BCFA9D64800">
+      <File Id="StoreClientLauncherExe" Source="$(var.StagingDirectory)SyntaurConnect.exe" />
+      <RegistryValue Root="HKCU" Key="Software\Syntaur\Store\Components" Name="StoreLauncher" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+    <Component Id="Viewer" Directory="INSTALLFOLDER" Guid="4E7F34D4-93D6-5BA3-B55D-4BCFA9D64801">
+      <File Id="ViewerExe" Source="$(var.StagingDirectory)syntaur-viewer.exe" />
+      <RegistryValue Root="HKCU" Key="Software\Syntaur\Store\Components" Name="Viewer" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+    <Component Id="LinkClientTor" Directory="INSTALLFOLDER" Guid="4E7F34D4-93D6-5BA3-B55D-4BCFA9D64802">
+      <File Id="LinkClientTorExe" Source="$(var.StagingDirectory)syntaur-link-client-tor.exe" />
+      <RegistryValue Root="HKCU" Key="Software\Syntaur\Store\Components" Name="LinkClientTor" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+    <Component Id="LinkProbe" Directory="INSTALLFOLDER" Guid="4E7F34D4-93D6-5BA3-B55D-4BCFA9D64803">
+      <File Id="LinkProbeExe" Source="$(var.StagingDirectory)syntaur-link-probe.exe" />
+      <RegistryValue Root="HKCU" Key="Software\Syntaur\Store\Components" Name="LinkProbe" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+    <Component Id="SnowflakeClient" Directory="INSTALLFOLDER" Guid="4E7F34D4-93D6-5BA3-B55D-4BCFA9D64804">
+      <File Id="SnowflakeClientExe" Source="$(var.StagingDirectory)syntaur-snowflake-client.exe" />
+      <RegistryValue Root="HKCU" Key="Software\Syntaur\Store\Components" Name="SnowflakeClient" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+    <Component Id="SupportFiles" Directory="INSTALLFOLDER" Guid="4E7F34D4-93D6-5BA3-B55D-4BCFA9D64805">
+      <File Id="StoreTemplate" Source="$(var.StagingDirectory)store-client-template.json" />
+      <File Id="Eula" Source="$(var.StagingDirectory)EULA.md" />
+      <RemoveFolder Id="RemoveEmptyProgramDirectory" Directory="INSTALLFOLDER" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\Syntaur\Store\Components" Name="SupportFiles" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+    <Component Id="StartMenuShortcut" Directory="INSTALLFOLDER" Guid="4E7F34D4-93D6-5BA3-B55D-4BCFA9D64806">
+      <Shortcut Id="SyntaurConnectShortcut"
+                Directory="ProgramMenuFolder"
+                Name="Syntaur Connect"
+                Target="[#StoreClientLauncherExe]"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="SyntaurIcon" />
+      <RegistryValue Root="HKCU" Key="Software\Syntaur\Store" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+  </Fragment>
+</Wix>
