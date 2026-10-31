@@ -441,6 +441,14 @@ internal static class ServerLauncher
                     throw new LaunchFailure("Another application is using the Syntaur server port.");
                 ProcessStartInfo gatewayInfo = StartInfo(gatewayPath, null, workingDirectory);
                 gatewayInfo.EnvironmentVariables["SYNTAUR_LAUNCHER_OWNS_UI"] = "1";
+                using (WindowsIdentity current = WindowsIdentity.GetCurrent())
+                {
+                    SecurityIdentifier service = (SecurityIdentifier)new NTAccount(
+                        @"NT SERVICE\SyntaurLinkTor").Translate(typeof(SecurityIdentifier));
+                    SetHostEnvironment(gatewayInfo,
+                        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                        current.User, service);
+                }
                 if (clock.RemainingMilliseconds <= 0)
                     throw new LaunchFailure("Syntaur setup activation exceeded its deadline.");
                 Process child = Process.Start(gatewayInfo);
@@ -466,6 +474,34 @@ internal static class ServerLauncher
             if (!Object.ReferenceEquals(gateway, startedGateway) && gateway != null)
                 gateway.Dispose();
         }
+    }
+
+    // The installer provisions this same layout for its selected unelevated
+    // server owner. Only the newly owned child receives these bindings. The
+    // Gateway's existing handle-bound publisher validates the actual shared
+    // directory; translating the service SID is not a readiness check.
+    private static void SetHostEnvironment(ProcessStartInfo child, string programData,
+        SecurityIdentifier gateway, SecurityIdentifier service)
+    {
+        if (gateway == null || service == null || gateway == service ||
+            !service.Value.StartsWith("S-1-5-80-", StringComparison.Ordinal) ||
+            service.Value.Split('-').Length != 9)
+            throw new LaunchFailure("Syntaur could not verify its installed server identities.");
+        if (String.IsNullOrWhiteSpace(programData) || programData.Length < 3 ||
+            !Path.IsPathRooted(programData) || programData[1] != ':' || programData[2] != '\\')
+            throw new LaunchFailure("Syntaur could not locate its installed server data.");
+        string root = Path.GetFullPath(programData);
+        string volume = Path.GetPathRoot(root);
+        if (volume.Length != 3 || volume[1] != ':' || volume[2] != '\\')
+            throw new LaunchFailure("Syntaur server data must be on a local Windows volume.");
+        string pipe = @"\\.\pipe\Syntaur.Link.host." + gateway.Value;
+        if (pipe.Length > 128)
+            throw new LaunchFailure("Syntaur's installed server identity exceeds its bounds.");
+        string pin = Path.Combine(root, "Syntaur", "LinkTor", "shared",
+            gateway.Value, "gateway-pin.json");
+        child.EnvironmentVariables["SYNTAUR_LINK_TOR_SERVICE_SID"] = service.Value;
+        child.EnvironmentVariables["SYNTAUR_LINK_TOR_SOCKET"] = pipe;
+        child.EnvironmentVariables["SYNTAUR_LINK_TOR_GATEWAY_PIN"] = pin;
     }
 
     private static ProcessStartInfo StartInfo(string path, string arguments, string workingDirectory)

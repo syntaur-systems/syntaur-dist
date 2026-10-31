@@ -57,9 +57,28 @@ Gateway continues to create and protect its normal `%USERPROFILE%\.syntaur` data
 
 This remains a **per-user, user-session server**, not a Windows Service Control Manager
 service. It does not run before login or provide a Session 0/desktop bridge. The Tor
-HOST service and Gateway IPC remain Unix-only; their Windows replacement gap is still
-open and is not addressed or validated by this launcher. No TLS, remote-access,
-battery, native-UI, pairing, or full-lifecycle acceptance is claimed.
+HOST has a separate isolated virtual-account service. Its Windows port is saved in
+companion source `abe44b37`; actual native builds and a consent-disabled authenticated
+control exchange passed. That is not a released Windows package or a remote-access test.
+No TLS, battery, native-UI, pairing, or full-lifecycle acceptance is claimed.
+
+New Gateway children receive the existing three HOST bindings. The launcher obtains
+ProgramData from the Windows known folder and derives the local pipe and Gateway pin
+path from the current user's SID. It translates exactly `NT SERVICE\SyntaurLinkTor`
+for the service SID, and overrides inherited values only in that child. Translation
+does not establish service registration or readiness. The existing Gateway publisher
+performs the actual shared-directory ownership, ACL and reparse checks.
+
+The installer must provision the same selected unelevated Gateway owner, using:
+
+- pipe `\\.\pipe\Syntaur.Link.host.<Gateway SID>`;
+- shared pin `%ProgramData%\Syntaur\LinkTor\shared\<Gateway SID>\gateway-pin.json`;
+- service name/account `SyntaurLinkTor` / `NT SERVICE\SyntaurLinkTor`.
+
+These bindings also apply after the existing saved-setup restart. Reusing an existing
+Gateway does not change its environment; it must already have been started with the
+installed bindings. This layout does not automatically grant every Windows login
+ownership of the same server. The launcher neither starts the service nor adds polling.
 
 ## Saved setup activation
 
