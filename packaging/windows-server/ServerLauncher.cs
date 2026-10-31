@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Runtime.InteropServices;
@@ -15,6 +16,8 @@ internal static class ServerLauncher
 {
     private const int Port = 18789;
     private const int OverallTimeoutMs = 30000;
+    private const int ActivationOverallTimeoutMs = 120000;
+    private const int ActivationDrainTimeoutMs = 75000;
     private const int PollMs = 250;
     private const int MaximumHealthBytes = 64 * 1024;
     private const int CleanupExitCode = 3;
@@ -28,6 +31,13 @@ internal static class ServerLauncher
     private const uint NoError = 0;
     private const uint AfInet = 2;
     private const uint TcpTableOwnerPidListener = 3; // SDK TCP_TABLE_OWNER_PID_LISTENER
+    private const uint EventModifyState = 0x0002;
+    private const uint ReadControl = 0x00020000;
+    private const uint EventAccess = EventModifyState | Synchronize | ReadControl;
+    private const uint OwnerSecurityInformation = 0x00000001;
+    private const uint DaclSecurityInformation = 0x00000004;
+    private const uint SeKernelObject = 6;
+    private const ushort SeDaclProtected = 0x1000;
     private static readonly SecurityIdentifier CreatorOwner = new SecurityIdentifier("S-1-3-0");
     private static readonly SecurityIdentifier TrustedInstaller = new SecurityIdentifier(
         "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
@@ -57,6 +67,44 @@ internal static class ServerLauncher
     private static extern uint WaitForSingleObject(SafeProcessHandle handle, uint milliseconds);
 
     [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(SafeWaitHandle handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetProcessTimes(
+        SafeProcessHandle process, out FileTime creation, out FileTime exit,
+        out FileTime kernel, out FileTime user);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(SafeProcessHandle process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool ProcessIdToSessionId(int processId, out uint sessionId);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr OpenEvent(uint desiredAccess, bool inheritHandle, string name);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetEvent(SafeWaitHandle eventHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern uint GetSecurityInfo(
+        SafeWaitHandle handle, uint objectType, uint securityInformation,
+        out IntPtr owner, IntPtr group, out IntPtr dacl, IntPtr sacl, out IntPtr descriptor);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool GetSecurityDescriptorControl(
+        IntPtr descriptor, out ushort control, out uint revision);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool GetAce(IntPtr dacl, uint index, out IntPtr ace);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool EqualSid(IntPtr first, IntPtr second);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr LocalFree(IntPtr memory);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool TerminateProcess(SafeProcessHandle handle, uint exitCode);
 
     [DllImport("advapi32.dll", SetLastError = true)]
@@ -64,6 +112,13 @@ internal static class ServerLauncher
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr handle);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileTime
+    {
+        internal uint Low;
+        internal uint High;
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct TcpRowOwnerPid
@@ -132,11 +187,33 @@ internal static class ServerLauncher
         internal LaunchFailure(string message) : base(message) { }
     }
 
+    /// The existing 30-second startup allowance, capped by the original
+    /// activation operation when this is a saved-setup handoff.
+    private sealed class StartupDeadline
+    {
+        private readonly Stopwatch startup = Stopwatch.StartNew();
+        private readonly Stopwatch activation;
+        internal StartupDeadline(Stopwatch activation) { this.activation = activation; }
+        internal int RemainingMilliseconds
+        {
+            get
+            {
+                long remaining = OverallTimeoutMs - startup.ElapsedMilliseconds;
+                if (activation != null)
+                    remaining = Math.Min(remaining, ActivationOverallTimeoutMs - activation.ElapsedMilliseconds);
+                return (int)Math.Max(0, remaining);
+            }
+        }
+    }
+
     [STAThread]
     private static int Main(string[] args)
     {
         bool background = args.Length == 1 && args[0] == "--background";
-        if (args.Length != 0 && !background)
+        int activationPid;
+        ulong activationCreation;
+        bool afterSetup = TryParseActivationArguments(args, out activationPid, out activationCreation);
+        if (args.Length != 0 && !background && !afterSetup)
         {
             ShowFailure("Syntaur received an unsupported launch request.", false);
             return 2;
@@ -145,32 +222,205 @@ internal static class ServerLauncher
         GatewayProcess startedGateway = null;
         try
         {
-            Run(background, ref startedGateway);
+            if (afterSetup)
+                RunAfterSetup(activationPid, activationCreation, ref startedGateway);
+            else
+                Run(background, ref startedGateway);
             return 0;
         }
         catch (LaunchFailure error)
         {
             if (!StopNewGateway(startedGateway))
             {
-                ShowFailure("Syntaur startup failed, and server cleanup could not be confirmed.", background);
+                ShowFailure("Syntaur startup failed, and server cleanup could not be confirmed.", background || afterSetup);
                 return CleanupExitCode;
             }
-            ShowFailure(error.Message, background);
+            ShowFailure(error.Message, background || afterSetup);
             return 1;
         }
         catch
         {
             if (!StopNewGateway(startedGateway))
             {
-                ShowFailure("Syntaur startup failed, and server cleanup could not be confirmed.", background);
+                ShowFailure("Syntaur startup failed, and server cleanup could not be confirmed.", background || afterSetup);
                 return CleanupExitCode;
             }
-            ShowFailure("Syntaur could not start the local server.", background);
+            ShowFailure("Syntaur could not start the local server.", background || afterSetup);
             return 1;
         }
     }
 
-    private static void Run(bool background, ref GatewayProcess startedGateway)
+    private static bool TryParseActivationArguments(string[] args, out int pid, out ulong creation)
+    {
+        pid = 0;
+        creation = 0;
+        if (args.Length != 3 || args[0] != "--after-setup" ||
+            !Int32.TryParse(args[1], NumberStyles.None, CultureInfo.InvariantCulture, out pid) || pid <= 0 ||
+            args[2].Length != 16 ||
+            !UInt64.TryParse(args[2], NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out creation))
+            return false;
+        return args[2] == creation.ToString("x16", CultureInfo.InvariantCulture);
+    }
+
+    private static void RunAfterSetup(int pid, ulong expectedCreation, ref GatewayProcess startedGateway)
+    {
+        Stopwatch operation = Stopwatch.StartNew();
+        ValidateCurrentUser();
+        string baseDirectory = Path.GetFullPath(AppDomain.CurrentDomain.BaseDirectory);
+        ValidateProgramDirectoryChain(baseDirectory);
+        string gatewayPath = RequireProgramFile(baseDirectory, "syntaur.exe");
+
+        using (GatewayProcess previous = new GatewayProcess(pid))
+        {
+            VerifyActivationProcess(previous, gatewayPath, expectedCreation);
+            string eventName = String.Format(CultureInfo.InvariantCulture,
+                @"Local\Syntaur.Setup.{0}.{1:x16}", pid, expectedCreation);
+            IntPtr rawEvent = OpenEvent(EventModifyState | ReadControl, false, eventName);
+            if (rawEvent == IntPtr.Zero)
+                throw new LaunchFailure("Syntaur could not open the saved-setup activation notification.");
+            using (SafeWaitHandle activation = new SafeWaitHandle(rawEvent, true))
+            {
+                VerifyActivationEvent(activation);
+                VerifyActivationProcess(previous, gatewayPath, expectedCreation);
+                if (operation.ElapsedMilliseconds >= ActivationOverallTimeoutMs)
+                    throw new LaunchFailure("Syntaur setup activation exceeded its deadline.");
+                if (!SetEvent(activation))
+                    throw new LaunchFailure("Syntaur could not request saved-setup activation.");
+
+                long remaining = Math.Min(ActivationDrainTimeoutMs,
+                    ActivationOverallTimeoutMs - operation.ElapsedMilliseconds);
+                if (remaining <= 0)
+                    throw new LaunchFailure("Syntaur setup activation exceeded its deadline.");
+                uint waited = WaitForSingleObject(previous.Handle, (uint)remaining);
+                if (waited != WaitObject0)
+                    throw new LaunchFailure("Syntaur did not finish the saved-setup shutdown cleanly.");
+                uint exitCode;
+                if (!GetExitCodeProcess(previous.Handle, out exitCode) || exitCode != 0)
+                    throw new LaunchFailure("Syntaur did not finish the saved-setup shutdown cleanly.");
+            }
+        }
+
+        if (operation.ElapsedMilliseconds >= ActivationOverallTimeoutMs)
+            throw new LaunchFailure("Syntaur setup activation exceeded its deadline.");
+        Run(true, ref startedGateway, operation);
+    }
+
+    private static void VerifyActivationProcess(
+        GatewayProcess process, string gatewayPath, ulong expectedCreation)
+    {
+        process.RequireAlive();
+        string processPath;
+        if (!TryQueryImagePath(process.Handle, out processPath) ||
+            !String.Equals(processPath, gatewayPath, StringComparison.OrdinalIgnoreCase) ||
+            !ProcessHasCurrentUserSid(process.Handle) || ProcessCreation(process.Handle) != expectedCreation)
+            throw new LaunchFailure("Syntaur could not verify the saved-setup server identity.");
+        uint processSession;
+        uint currentSession;
+        if (!ProcessIdToSessionId(process.Id, out processSession) ||
+            !ProcessIdToSessionId(Process.GetCurrentProcess().Id, out currentSession) ||
+            !SameActivationSession(processSession, currentSession))
+            throw new LaunchFailure("Syntaur could not verify the saved-setup server session.");
+    }
+
+    private static bool SameActivationSession(uint processSession, uint currentSession)
+    {
+        return processSession == currentSession;
+    }
+
+    private static ulong ProcessCreation(SafeProcessHandle process)
+    {
+        FileTime creation;
+        FileTime exit;
+        FileTime kernel;
+        FileTime user;
+        if (!GetProcessTimes(process, out creation, out exit, out kernel, out user))
+            throw new LaunchFailure("Syntaur could not verify the saved-setup server start time.");
+        return ((ulong)creation.High << 32) | creation.Low;
+    }
+
+    private static void VerifyActivationEvent(SafeWaitHandle activation)
+    {
+        IntPtr owner = IntPtr.Zero;
+        IntPtr dacl = IntPtr.Zero;
+        IntPtr descriptor = IntPtr.Zero;
+        IntPtr currentSid = IntPtr.Zero;
+        IntPtr systemSid = IntPtr.Zero;
+        try
+        {
+            uint status = GetSecurityInfo(activation, SeKernelObject,
+                OwnerSecurityInformation | DaclSecurityInformation,
+                out owner, IntPtr.Zero, out dacl, IntPtr.Zero, out descriptor);
+            if (status != NoError || descriptor == IntPtr.Zero || owner == IntPtr.Zero || dacl == IntPtr.Zero)
+                throw new LaunchFailure("Syntaur could not verify the activation notification security.");
+            ushort control;
+            uint revision;
+            if (!GetSecurityDescriptorControl(descriptor, out control, out revision) ||
+                (control & SeDaclProtected) == 0)
+                throw new LaunchFailure("Syntaur activation notification inherits unsafe security.");
+
+            using (WindowsIdentity current = WindowsIdentity.GetCurrent())
+            {
+                if (current.User == null)
+                    throw new LaunchFailure("Syntaur could not verify the activation notification owner.");
+                currentSid = SidPointer(current.User);
+                systemSid = SidPointer(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null));
+                if (!EqualSid(owner, currentSid))
+                    throw new LaunchFailure("Syntaur activation notification has another owner.");
+                int aclBytes = unchecked((ushort)Marshal.ReadInt16(dacl, 2));
+                // ACL layout is Revision/Sbz1/Size/Count/Sbz2. Size is at 2;
+                // the unsigned ACE count is at 4, never the size field.
+                if (Marshal.ReadByte(dacl, 0) != 2 || aclBytes < 8 ||
+                    unchecked((ushort)Marshal.ReadInt16(dacl, 4)) != 2)
+                    throw new LaunchFailure("Syntaur activation notification has unexpected access entries.");
+                bool sawUser = false;
+                bool sawSystem = false;
+                for (uint index = 0; index < 2; index++)
+                {
+                    IntPtr ace;
+                    if (!GetAce(dacl, index, out ace) || ace == IntPtr.Zero)
+                        throw new LaunchFailure("Syntaur could not read an activation access entry.");
+                    long offset = checked(ace.ToInt64() - dacl.ToInt64());
+                    if (offset < 8 || offset > aclBytes - 16)
+                        throw new LaunchFailure("Syntaur activation access entry is outside its ACL.");
+                    int aceBytes = unchecked((ushort)Marshal.ReadInt16(ace, 2));
+                    if (aceBytes < 16 || aceBytes > aclBytes - offset ||
+                        Marshal.ReadByte(ace, 0) != 0 || Marshal.ReadByte(ace, 1) != 0 ||
+                        (uint)Marshal.ReadInt32(ace, 4) != EventAccess)
+                        throw new LaunchFailure("Syntaur activation notification has unexpected access entries.");
+                    IntPtr sid = IntPtr.Add(ace, 8);
+                    int subAuthorities = Marshal.ReadByte(sid, 1);
+                    if (Marshal.ReadByte(sid, 0) != 1 || subAuthorities > 15 ||
+                        8 + 4 * subAuthorities > aceBytes - 8)
+                        throw new LaunchFailure("Syntaur activation access entry has an invalid SID.");
+                    if (EqualSid(sid, currentSid) && !sawUser)
+                        sawUser = true;
+                    else if (EqualSid(sid, systemSid) && !sawSystem)
+                        sawSystem = true;
+                    else
+                        throw new LaunchFailure("Syntaur activation notification grants another principal access.");
+                }
+                if (!sawUser || !sawSystem)
+                    throw new LaunchFailure("Syntaur activation notification lacks its required principals.");
+            }
+        }
+        finally
+        {
+            if (currentSid != IntPtr.Zero) Marshal.FreeHGlobal(currentSid);
+            if (systemSid != IntPtr.Zero) Marshal.FreeHGlobal(systemSid);
+            if (descriptor != IntPtr.Zero) LocalFree(descriptor);
+        }
+    }
+
+    private static IntPtr SidPointer(SecurityIdentifier sid)
+    {
+        byte[] bytes = new byte[sid.BinaryLength];
+        sid.GetBinaryForm(bytes, 0);
+        IntPtr pointer = Marshal.AllocHGlobal(bytes.Length);
+        Marshal.Copy(bytes, 0, pointer, bytes.Length);
+        return pointer;
+    }
+
+    private static void Run(bool background, ref GatewayProcess startedGateway, Stopwatch activation = null)
     {
         ValidateCurrentUser();
         string baseDirectory = Path.GetFullPath(AppDomain.CurrentDomain.BaseDirectory);
@@ -182,7 +432,7 @@ internal static class ServerLauncher
             throw new LaunchFailure("Syntaur could not locate the user profile.");
 
         GatewayProcess gateway = FindOwnedGateway(gatewayPath);
-        Stopwatch clock = Stopwatch.StartNew();
+        StartupDeadline clock = new StartupDeadline(activation);
         try
         {
             if (gateway == null)
@@ -191,6 +441,8 @@ internal static class ServerLauncher
                     throw new LaunchFailure("Another application is using the Syntaur server port.");
                 ProcessStartInfo gatewayInfo = StartInfo(gatewayPath, null, workingDirectory);
                 gatewayInfo.EnvironmentVariables["SYNTAUR_LAUNCHER_OWNS_UI"] = "1";
+                if (clock.RemainingMilliseconds <= 0)
+                    throw new LaunchFailure("Syntaur setup activation exceeded its deadline.");
                 Process child = Process.Start(gatewayInfo);
                 if (child == null)
                     throw new LaunchFailure("Syntaur could not start the server.");
@@ -387,9 +639,9 @@ internal static class ServerLauncher
         }
     }
 
-    private static void WaitUntilHealthy(GatewayProcess gateway, Stopwatch clock)
+    private static void WaitUntilHealthy(GatewayProcess gateway, StartupDeadline clock)
     {
-        while (clock.ElapsedMilliseconds < OverallTimeoutMs)
+        while (clock.RemainingMilliseconds > 0)
         {
             gateway.RequireAlive();
             if (ConfirmOwnedListener(gateway))
@@ -405,7 +657,7 @@ internal static class ServerLauncher
                 if (!ConfirmOwnedListener(gateway))
                     throw new LaunchFailure("The Syntaur server listener disappeared during startup.");
             }
-            int sleepMs = (int)Math.Min(PollMs, Math.Max(1, OverallTimeoutMs - clock.ElapsedMilliseconds));
+            int sleepMs = Math.Min(PollMs, Math.Max(1, clock.RemainingMilliseconds));
             Thread.Sleep(sleepMs);
         }
         throw new LaunchFailure("The Syntaur server did not become ready within 30 seconds.");
@@ -429,9 +681,9 @@ internal static class ServerLauncher
         return found;
     }
 
-    private static bool CheckHealth(Stopwatch clock)
+    private static bool CheckHealth(StartupDeadline clock)
     {
-        int remaining = OverallTimeoutMs - (int)Math.Min(clock.ElapsedMilliseconds, OverallTimeoutMs);
+        int remaining = clock.RemainingMilliseconds;
         if (remaining <= 0)
             throw new LaunchFailure("The Syntaur server did not become ready within 30 seconds.");
         int ioTimeout = Math.Min(1000, remaining);
@@ -454,7 +706,7 @@ internal static class ServerLauncher
                 catch (WebException error)
                 {
                     if (error.Status == WebExceptionStatus.Timeout && error.Response == null &&
-                        clock.ElapsedMilliseconds < OverallTimeoutMs)
+                        clock.RemainingMilliseconds > 0)
                     {
                         request.Abort();
                         return false;
@@ -478,7 +730,7 @@ internal static class ServerLauncher
                         }
                     }
                 }
-                if (clock.ElapsedMilliseconds >= OverallTimeoutMs)
+                if (clock.RemainingMilliseconds <= 0)
                     throw new LaunchFailure("The Syntaur server health check exceeded the launch deadline.");
                 return true;
             }

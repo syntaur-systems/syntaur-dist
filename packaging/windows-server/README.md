@@ -1,7 +1,8 @@
 # Syntaur Windows server launcher
 
-**Status: development source, compiled on Windows with nine isolated functional
-fixtures passing. Not signed, packaged, submitted, or ready for installation.**
+**Status: development source. The original nine launcher fixtures and five later
+setup-activation fixtures passed separately. Not signed, packaged, submitted,
+or ready for installation.**
 The base launcher revision `80ff783` started the published Gateway 0.7.322 in 7.6 seconds in a
 fresh explicit user-owned test home, verified HTTP 200 and the data-directory owner,
 and the test stopped its owned server afterward. No real Viewer was run. The
@@ -22,7 +23,8 @@ Syntaur **server** app. It expects these exact siblings beside the launcher:
 A normal launch reuses or starts the exact same-user sibling Gateway, waits for its
 owned IPv4 loopback listener, accepts only an HTTP 200 `/health`, rechecks the retained
 process and listener, and then opens local owner setup in Viewer. `--background` performs
-only the Gateway readiness path. Other arguments are rejected. Foreground failures show
+only the Gateway readiness path. The native setup handoff below is the sole additional
+argument form. Other arguments are rejected. Foreground failures show
 a short fixed-label message; background failures return 1 without a message box.
 Exit 3 means startup failed and bounded cleanup of the newly started Gateway could not
 be confirmed.
@@ -59,12 +61,35 @@ HOST service and Gateway IPC remain Unix-only; their Windows replacement gap is 
 open and is not addressed or validated by this launcher. No TLS, remote-access,
 battery, native-UI, pairing, or full-lifecycle acceptance is claimed.
 
+## Saved setup activation
+
+The companion Gateway and Viewer source provides a private, navigation-scoped owner
+setup bridge. A complete successful setup response arms one native handoff. The page
+shows recovery codes before an explicit **Continue**, and repeated clicks do not
+submit again. Failure preserves the codes and says activation is unconfirmed.
+
+Viewer launches the sibling with `--after-setup <pid> <raw-creation-filetime>`.
+The launcher retains and verifies that exact same-user, same-session Gateway,
+opens its protected process-specific event, and requests the ordinary graceful
+shutdown. Only confirmed clean exit permits the existing background startup path.
+The old process is never killed to force a handoff. The original 120-second handoff
+deadline caps shutdown and subsequent startup; startup retains its 30-second limit.
+The replacement opens no extra Viewer, and the existing window navigates to sign-in
+only after the helper confirms readiness. No setup token enters script or argv.
+
+Five new Windows fixtures separately passed clean handoff, nonzero shutdown,
+shutdown timeout, PID/creation mismatch, and a wrong-type event. The actual Rust
+event module passed two Windows tests, and the complete Windows Viewer passed
+native compilation with no warnings. These results do not establish the whole
+interactive Gateway/Viewer transition, packaged installation, or server hosting.
+
 The product flow remains one main installation: **Install Syntaur → set up the
-server → add devices from the server.** Before packaging this entry point, integrate
-the existing local-owner setup token privately, prevent the Gateway's automatic
-browser opening from creating a second window, and add server-led device installation
-guidance to the existing pairing flow. No Connect-only product submission should
-be substituted for that main server flow.
+server → add devices from the server.** The companion setup source also includes
+server-led device installation guidance and suppresses the automatic browser when
+the launcher owns the UI. Those components still need packaged integration and
+interactive acceptance. Public Android/iOS app distribution remains unavailable;
+a private pairing QR must not be treated as a public app-download link. No
+Connect-only product submission should replace this main server flow.
 
 ## Framework compilation
 

@@ -1,12 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Runtime.InteropServices;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using Microsoft.Win32.SafeHandles;
@@ -25,6 +27,17 @@ internal static class LauncherFixtures
     private static extern uint WaitForSingleObject(SafeProcessHandle handle, uint milliseconds);
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool TerminateProcess(SafeProcessHandle handle, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetProcessTimes(
+        SafeProcessHandle process, out FileTime creation, out FileTime exit,
+        out FileTime kernel, out FileTime user);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileTime
+    {
+        internal uint Low;
+        internal uint High;
+    }
 
     private sealed class Evidence
     {
@@ -58,7 +71,13 @@ internal static class LauncherFixtures
                 return 0;
             }
             if (role.Equals("LauncherFixtures.exe", StringComparison.OrdinalIgnoreCase))
-                return Driver();
+            {
+                if (args.Length == 1 && args[0] == "--activation-only")
+                    return ActivationDriver();
+                if (args.Length == 0)
+                    return Driver();
+                return 2;
+            }
             if (role.Equals("syntaur.exe", StringComparison.OrdinalIgnoreCase) ||
                 role.Equals("foreign-fixture.exe", StringComparison.OrdinalIgnoreCase))
                 return Gateway(role);
@@ -115,12 +134,16 @@ internal static class LauncherFixtures
         int pid = Process.GetCurrentProcess().Id;
         int requests = 0;
         string mode = File.ReadAllText(Path.Combine(Base, "fixture-mode.txt")).Trim();
+        bool replacement = File.Exists(invocationPath);
         File.WriteAllText(invocationPath, pid.ToString());
+        File.AppendAllText(Path.Combine(Base, prefix + "-invocations.log"), pid + "\n");
         File.WriteAllText(uiFlagPath, Environment.GetEnvironmentVariable("SYNTAUR_LAUNCHER_OWNS_UI") ?? "");
-        TcpListener listener = new TcpListener(IPAddress.Loopback, Port);
-        listener.Start();
         File.WriteAllText(pidPath, pid.ToString());
         File.WriteAllText(logPath, "pid=" + pid + "\nrequests=0\n");
+        if (prefix == "gateway" && mode.StartsWith("activation-", StringComparison.Ordinal) && !replacement)
+            return ActivationGateway(mode, pid);
+        TcpListener listener = new TcpListener(IPAddress.Loopback, Port);
+        listener.Start();
         Stopwatch life = Stopwatch.StartNew();
         listener.Server.ReceiveTimeout = 250;
         try
@@ -170,6 +193,65 @@ internal static class LauncherFixtures
         }
         finally { listener.Stop(); }
         return 0;
+    }
+
+    private static int ActivationGateway(string mode, int pid)
+    {
+        ulong creation;
+        using (Process current = Process.GetCurrentProcess())
+        {
+            FileTime created;
+            FileTime exit;
+            FileTime kernel;
+            FileTime user;
+            if (!GetProcessTimes(current.SafeHandle, out created, out exit, out kernel, out user))
+                return 2;
+            creation = ((ulong)created.High << 32) | created.Low;
+        }
+        string creationText = creation.ToString("x16", CultureInfo.InvariantCulture);
+        File.WriteAllText(Path.Combine(Base, "gateway-creation.txt"), creationText);
+        string name = String.Format(CultureInfo.InvariantCulture,
+            @"Local\Syntaur.Setup.{0}.{1}", pid, creationText);
+        if (mode == "activation-wrong-type")
+        {
+            using (Mutex wrongType = new Mutex(false, name))
+            {
+                File.WriteAllText(Path.Combine(Base, "gateway-activation-ready.marker"), "ready");
+                Thread.Sleep(90000);
+            }
+            return 0;
+        }
+
+        EventWaitHandleSecurity security = new EventWaitHandleSecurity();
+        security.SetAccessRuleProtection(true, false);
+        EventWaitHandleRights rights = EventWaitHandleRights.Modify |
+            EventWaitHandleRights.ReadPermissions | EventWaitHandleRights.Synchronize;
+        using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+        {
+            security.AddAccessRule(new EventWaitHandleAccessRule(
+                identity.User, rights, AccessControlType.Allow));
+            security.AddAccessRule(new EventWaitHandleAccessRule(
+                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                rights, AccessControlType.Allow));
+        }
+        bool createdNew;
+        using (EventWaitHandle activation = new EventWaitHandle(
+            false, EventResetMode.ManualReset, name, out createdNew, security))
+        {
+            if (!createdNew)
+                return 2;
+            File.WriteAllText(Path.Combine(Base, "gateway-activation-ready.marker"), "ready");
+            if (mode == "activation-timeout")
+            {
+                Thread.Sleep(90000);
+                return 0;
+            }
+            if (!activation.WaitOne(45000))
+                return 8;
+            if (mode == "activation-nonzero")
+                return 75;
+            return 0;
+        }
     }
 
     private static string ReadHeaders(Stream stream, Stopwatch life)
@@ -313,6 +395,136 @@ internal static class LauncherFixtures
         return failed ? 1 : 0;
     }
 
+    private static int ActivationDriver()
+    {
+        SuiteClock.Start();
+        try
+        {
+            SetMode("activation-clean"); ClearEvidence("gateway"); Delete("viewer-fixture.pid");
+            Case("activation-clean-drain-one-background-replacement", delegate
+            {
+                Evidence previous = StartActivationFake();
+                Launch launch = RunActivationLauncher(previous.Pid, ActivationCreation());
+                Evidence replacement = TryFake("gateway", "syntaur.exe");
+                Require(launch.ExitCode == 0 && !Alive(previous) && replacement != null &&
+                    Alive(replacement) && replacement.Pid != previous.Pid && ActivationInvocations() == 2 &&
+                    File.ReadAllText(Path.Combine(Base, "gateway-launcher-ui-flag.txt")) == "1" &&
+                    !File.Exists(Path.Combine(Base, "viewer-fixture.pid")),
+                    "clean activation did not produce exactly one background replacement");
+                return Detail(launch) + ",replacementPid=" + replacement.Pid + ",viewer=none";
+            });
+            Cleanup();
+
+            SetMode("activation-nonzero"); ClearEvidence("gateway"); Delete("viewer-fixture.pid");
+            Case("activation-nonzero-drain-has-no-replacement", delegate
+            {
+                Evidence previous = StartActivationFake();
+                Launch launch = RunActivationLauncher(previous.Pid, ActivationCreation());
+                Require(launch.ExitCode == 1 && !Alive(previous) && ActivationInvocations() == 1 &&
+                    !File.Exists(Path.Combine(Base, "viewer-fixture.pid")),
+                    "nonzero drain started a replacement or Viewer");
+                return Detail(launch) + ",invocations=1,viewer=none";
+            });
+            Cleanup();
+
+            SetMode("activation-timeout"); ClearEvidence("gateway"); Delete("viewer-fixture.pid");
+            Case("activation-timed-out-drain-has-no-replacement", delegate
+            {
+                Evidence previous = StartActivationFake();
+                Launch launch = RunActivationLauncher(previous.Pid, ActivationCreation());
+                Require(launch.ExitCode == 1 && Alive(previous) && ActivationInvocations() == 1 &&
+                    launch.Milliseconds >= 70000 && launch.Milliseconds <= 85000 &&
+                    !File.Exists(Path.Combine(Base, "viewer-fixture.pid")),
+                    "timed-out drain started a replacement or Viewer");
+                return Detail(launch) + ",invocations=1,viewer=none";
+            });
+            Cleanup();
+
+            SetMode("activation-clean"); ClearEvidence("gateway"); Delete("viewer-fixture.pid");
+            Case("activation-pid-and-start-mismatch-are-refused", delegate
+            {
+                Evidence previous = StartActivationFake();
+                string creation = ActivationCreation();
+                Launch wrongPid = RunActivationLauncher(previous.Pid + 1, creation);
+                ulong changed = UInt64.Parse(creation, NumberStyles.AllowHexSpecifier,
+                    CultureInfo.InvariantCulture) ^ 1UL;
+                Launch wrongStart = RunActivationLauncher(previous.Pid,
+                    changed.ToString("x16", CultureInfo.InvariantCulture));
+                Require(wrongPid.ExitCode == 1 && wrongStart.ExitCode == 1 && Alive(previous) &&
+                    ActivationInvocations() == 1 && !File.Exists(Path.Combine(Base, "viewer-fixture.pid")),
+                    "PID/start mismatch reached activation");
+                return "pidMismatchExit=" + wrongPid.ExitCode + ",startMismatchExit=" + wrongStart.ExitCode;
+            });
+            Cleanup();
+
+            SetMode("activation-wrong-type"); ClearEvidence("gateway"); Delete("viewer-fixture.pid");
+            Case("activation-wrong-type-event-is-refused", delegate
+            {
+                Evidence previous = StartActivationFake();
+                Launch launch = RunActivationLauncher(previous.Pid, ActivationCreation());
+                Require(launch.ExitCode == 1 && Alive(previous) && ActivationInvocations() == 1 &&
+                    !File.Exists(Path.Combine(Base, "viewer-fixture.pid")),
+                    "wrong-type named object was accepted");
+                return Detail(launch) + ",invocations=1,viewer=none";
+            });
+            Cleanup();
+        }
+        catch (Exception error)
+        {
+            failed = true;
+            Console.WriteLine(Json("activation-driver", "FAIL", error.Message));
+        }
+        finally { Cleanup(); }
+        Console.WriteLine(Json("activation-summary", failed ? "FAIL" : "PASS",
+            "elapsedMs=" + SuiteClock.ElapsedMilliseconds));
+        return failed ? 1 : 0;
+    }
+
+    private static Evidence StartActivationFake()
+    {
+        Start(Path.Combine(Base, "syntaur.exe"), "");
+        Evidence previous = WaitForFake("gateway", "syntaur.exe", 5000);
+        Require(previous != null && Alive(previous), "activation fixture did not start");
+        Stopwatch clock = Stopwatch.StartNew();
+        while (!File.Exists(Path.Combine(Base, "gateway-activation-ready.marker")) && clock.ElapsedMilliseconds < 5000)
+            Thread.Sleep(25);
+        Require(File.Exists(Path.Combine(Base, "gateway-activation-ready.marker")) &&
+            File.Exists(Path.Combine(Base, "gateway-creation.txt")), "activation object was not ready");
+        return previous;
+    }
+
+    private static string ActivationCreation()
+    {
+        return File.ReadAllText(Path.Combine(Base, "gateway-creation.txt")).Trim();
+    }
+
+    private static int ActivationInvocations()
+    {
+        return File.ReadAllLines(Path.Combine(Base, "gateway-invocations.log")).Length;
+    }
+
+    private static Launch RunActivationLauncher(int pid, string creation)
+    {
+        Launch result = new Launch();
+        Stopwatch clock = Stopwatch.StartNew();
+        Process process = Start(Path.Combine(Base, "ServerLauncher.exe"),
+            "--after-setup " + pid.ToString(CultureInfo.InvariantCulture) + " " + creation);
+        while (!process.WaitForExit(25))
+        {
+            if (result.Gateway == null) result.Gateway = TryFake("gateway", "syntaur.exe");
+            if (clock.ElapsedMilliseconds >= 130000)
+            {
+                result.TimedOut = true;
+                Stop(process.SafeHandle);
+                break;
+            }
+        }
+        if (result.Gateway == null) result.Gateway = TryFake("gateway", "syntaur.exe");
+        result.ExitCode = result.TimedOut ? -1 : process.ExitCode;
+        result.Milliseconds = clock.ElapsedMilliseconds;
+        return result;
+    }
+
     private static void RunNewFailureCase(string mode, string name, int bound, bool trickle)
     {
         SetMode(mode); ClearEvidence("gateway");
@@ -376,9 +588,6 @@ internal static class LauncherFixtures
 
     private static Evidence TryFake(string prefix, string image)
     {
-        foreach (Evidence known in Fakes)
-            if (known.Image.Equals(Path.Combine(Base, image), StringComparison.OrdinalIgnoreCase))
-                return known;
         string path = Path.Combine(Base, prefix + "-fixture.pid");
         int pid;
         Process process = null;
@@ -386,6 +595,9 @@ internal static class LauncherFixtures
         try
         {
             if (!File.Exists(path) || !Int32.TryParse(File.ReadAllText(path).Trim(), out pid)) return null;
+            foreach (Evidence known in Fakes)
+                if (known.Pid == pid && known.Image.Equals(Path.Combine(Base, image), StringComparison.OrdinalIgnoreCase))
+                    return known;
             process = Process.GetProcessById(pid);
             Evidence evidence = new Evidence();
             evidence.Process = process;
@@ -504,7 +716,7 @@ internal static class LauncherFixtures
     private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
     private static void SetMode(string mode) { File.WriteAllText(Path.Combine(Base, "fixture-mode.txt"), mode); }
     private static void Delete(string file) { string path = Path.Combine(Base, file); if (File.Exists(path)) File.Delete(path); }
-    private static void ClearEvidence(string prefix) { Delete(prefix + "-fixture.pid"); Delete(prefix + "-fixture.log"); Delete(prefix + "-invocation.marker"); Delete(prefix + "-launcher-ui-flag.txt"); }
+    private static void ClearEvidence(string prefix) { Delete(prefix + "-fixture.pid"); Delete(prefix + "-fixture.log"); Delete(prefix + "-invocation.marker"); Delete(prefix + "-launcher-ui-flag.txt"); Delete(prefix + "-invocations.log"); Delete(prefix + "-creation.txt"); Delete(prefix + "-activation-ready.marker"); }
 
     private static string Json(string name, string status, string detail)
     {
