@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <UI Id="SyntaurServerUI">
+      <TextStyle Id="SyntaurNormal" FaceName="Segoe UI" Size="9" />
+      <TextStyle Id="SyntaurHeading" FaceName="Segoe UI" Size="13" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="SyntaurNormal" />
+      <Dialog Id="ServerWelcome" Width="390" Height="310" Title="Syntaur setup">
+        <Control Id="Heading" Type="Text" X="18" Y="15" Width="350" Height="23" Text="{\SyntaurHeading}Install Syntaur" />
+        <Control Id="Description" Type="Text" X="18" Y="43" Width="350" Height="40"
+                 Text="This computer will be your Syntaur server. Complete owner setup, then use a QR code to connect your phone and other devices." />
+        <Control Id="License" Type="ScrollableText" X="18" Y="87" Width="354" Height="155" Sunken="yes" TabSkip="no">
+          <Text SourceFile="$(var.StagingDirectory)EULA.rtf" />
+        </Control>
+        <Control Id="Accept" Type="CheckBox" X="18" Y="250" Width="354" Height="18"
+                 Property="ACCEPT_EULA" CheckBoxValue="Yes" Text="I accept the Syntaur licence agreement." />
+        <Control Id="Install" Type="PushButton" X="206" Y="280" Width="80" Height="20" Default="yes"
+                 ElevationShield="yes" Text="Install" DisableCondition="ACCEPT_EULA &lt;&gt; &quot;Yes&quot;"
+                 EnableCondition="ACCEPT_EULA = &quot;Yes&quot;">
+          <Publish Event="EndDialog" Value="Return" Condition="ACCEPT_EULA = &quot;Yes&quot;" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="292" Y="280" Width="80" Height="20" Cancel="yes" Text="Cancel">
+          <Publish Event="EndDialog" Value="Exit" />
+        </Control>
+      </Dialog>
+      <Dialog Id="ServerMaintenance" Width="390" Height="180" Title="Syntaur setup">
+        <Control Id="Heading" Type="Text" X="18" Y="16" Width="350" Height="24" Text="{\SyntaurHeading}Manage Syntaur" />
+        <Control Id="Description" Type="Text" X="18" Y="51" Width="350" Height="56"
+                 Text="Close Syntaur in the server owner's Windows session before continuing. Repair restores the application. Remove uninstalls the application and connection service; existing owner data and connection identity are retained." />
+        <Control Id="Repair" Type="PushButton" X="110" Y="139" Width="80" Height="20" Default="yes" Text="Repair" ElevationShield="yes">
+          <Publish Property="REINSTALL" Value="ALL" />
+          <Publish Property="REINSTALLMODE" Value="vamus" />
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+        <Control Id="Remove" Type="PushButton" X="200" Y="139" Width="80" Height="20" Text="Remove" ElevationShield="yes">
+          <Publish Property="REMOVE" Value="ALL" />
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="290" Y="139" Width="80" Height="20" Cancel="yes" Text="Cancel">
+          <Publish Event="EndDialog" Value="Exit" />
+        </Control>
+      </Dialog>
+      <Dialog Id="ServerProgress" Width="390" Height="130" Title="Syntaur setup" Modeless="yes">
+        <Control Id="Heading" Type="Text" X="18" Y="18" Width="354" Height="24" TabSkip="no" Text="{\SyntaurHeading}Setting up Syntaur" />
+        <Control Id="Description" Type="Text" X="18" Y="50" Width="354" Height="24" Text="Please wait while Windows updates the application." />
+        <Control Id="Progress" Type="ProgressBar" X="18" Y="87" Width="354" Height="14" ProgressBlocks="yes">
+          <Subscribe Event="SetProgress" Attribute="Progress" />
+        </Control>
+      </Dialog>
+      <Dialog Id="ServerComplete" Width="390" Height="180" Title="Syntaur setup">
+        <Control Id="Heading" Type="Text" X="18" Y="18" Width="354" Height="24" Text="{\SyntaurHeading}Setup completed" />
+        <Control Id="Description" Type="Text" X="18" Y="54" Width="354" Height="44"
+                 Text="Open Syntaur from the Start menu in the server owner's account to finish setup and connect devices." HideCondition="REMOVE~=&quot;ALL&quot;" />
+        <Control Id="Removed" Type="Text" X="18" Y="54" Width="354" Height="44" Hidden="yes" ShowCondition="REMOVE~=&quot;ALL&quot;"
+                 Text="The application and connection service were removed. Existing owner data and connection identity were retained." />
+        <Control Id="Open" Type="CheckBox" X="18" Y="108" Width="354" Height="20" Property="OPEN_SYNTAUR" CheckBoxValue="1"
+                 Text="Open Syntaur now" HideCondition="Installed OR WIX_UPGRADE_DETECTED OR REMOVE~=&quot;ALL&quot;" />
+        <Control Id="Finish" Type="PushButton" X="292" Y="144" Width="80" Height="20" Default="yes" Cancel="yes" Text="Finish">
+          <Publish Event="DoAction" Value="OpenSyntaur" Condition="OPEN_SYNTAUR = &quot;1&quot; AND NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT REMOVE~=&quot;ALL&quot;" />
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+      <Dialog Id="ServerFailure" Width="390" Height="160" Title="Syntaur setup">
+        <Control Id="Heading" Type="Text" X="18" Y="18" Width="354" Height="24" Text="{\SyntaurHeading}Setup did not complete" />
+        <Control Id="Description" Type="Text" X="18" Y="54" Width="354" Height="52"
+                 Text="Windows could not finish setup. Existing owner data is retained. Close Syntaur in its original Windows session before attempting maintenance." />
+        <Control Id="Close" Type="PushButton" X="292" Y="124" Width="80" Height="20" Default="yes" Cancel="yes" Text="Close">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+      <InstallUISequence>
+        <Show Dialog="ServerWelcome" Before="ServerMaintenance" Condition="NOT Installed" />
+        <Show Dialog="ServerMaintenance" Before="ServerProgress" Condition="Installed" />
+        <Show Dialog="ServerProgress" Before="ExecuteAction" />
+        <Show Dialog="ServerComplete" OnExit="success" />
+        <Show Dialog="ServerFailure" OnExit="error" />
+      </InstallUISequence>
+    </UI>
+  </Fragment>
+</Wix>

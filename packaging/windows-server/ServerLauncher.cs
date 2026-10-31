@@ -210,10 +210,11 @@ internal static class ServerLauncher
     private static int Main(string[] args)
     {
         bool background = args.Length == 1 && args[0] == "--background";
+        bool installerStop = args.Length == 1 && args[0] == "--installer-stop";
         int activationPid;
         ulong activationCreation;
         bool afterSetup = TryParseActivationArguments(args, out activationPid, out activationCreation);
-        if (args.Length != 0 && !background && !afterSetup)
+        if (args.Length != 0 && !background && !afterSetup && !installerStop)
         {
             ShowFailure("Syntaur received an unsupported launch request.", false);
             return 2;
@@ -222,7 +223,9 @@ internal static class ServerLauncher
         GatewayProcess startedGateway = null;
         try
         {
-            if (afterSetup)
+            if (installerStop)
+                RunInstallerStop();
+            else if (afterSetup)
                 RunAfterSetup(activationPid, activationCreation, ref startedGateway);
             else
                 Run(background, ref startedGateway);
@@ -232,21 +235,61 @@ internal static class ServerLauncher
         {
             if (!StopNewGateway(startedGateway))
             {
-                ShowFailure("Syntaur startup failed, and server cleanup could not be confirmed.", background || afterSetup);
+                ShowFailure("Syntaur startup failed, and server cleanup could not be confirmed.", background || afterSetup || installerStop);
                 return CleanupExitCode;
             }
-            ShowFailure(error.Message, background || afterSetup);
+            ShowFailure(error.Message, background || afterSetup || installerStop);
             return 1;
         }
         catch
         {
             if (!StopNewGateway(startedGateway))
             {
-                ShowFailure("Syntaur startup failed, and server cleanup could not be confirmed.", background || afterSetup);
+                ShowFailure("Syntaur startup failed, and server cleanup could not be confirmed.", background || afterSetup || installerStop);
                 return CleanupExitCode;
             }
-            ShowFailure("Syntaur could not start the local server.", background || afterSetup);
+            ShowFailure("Syntaur could not start the local server.", background || afterSetup || installerStop);
             return 1;
+        }
+    }
+
+    // MSI's immediate impersonated preflight runs in the installing user's
+    // session. Never bridge SYSTEM/another session, launch a replacement, or
+    // kill a process to make maintenance succeed. Later MSI cancellation can
+    // leave this server stopped; Windows Installer does not restore its run state.
+    private static void RunInstallerStop()
+    {
+        using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+        {
+            if (identity.User == null || !identity.User.Value.StartsWith("S-1-5-21-", StringComparison.Ordinal))
+                throw new LaunchFailure("Close Syntaur in its original Windows session before continuing setup.");
+        }
+        string programs = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        if (String.IsNullOrEmpty(programs) || programs.Length < 3 || programs[1] != ':' || programs[2] != '\\')
+            throw new LaunchFailure("Syntaur could not verify its installed program location.");
+        string directory = Path.Combine(programs, "Syntaur");
+        string gatewayPath = Path.GetFullPath(Path.Combine(directory, "syntaur.exe"));
+        using (GatewayProcess previous = FindOwnedGateway(gatewayPath, true))
+        {
+            if (previous == null) return;
+            ValidateProgramDirectoryChain(directory);
+            RequireProgramFile(directory, "syntaur.exe");
+            ulong creation = ProcessCreation(previous.Handle);
+            VerifyActivationProcess(previous, gatewayPath, creation);
+            IntPtr raw = OpenEvent(EventModifyState | ReadControl, false,
+                String.Format(CultureInfo.InvariantCulture, @"Local\Syntaur.Setup.{0}.{1:x16}", previous.Id, creation));
+            if (raw == IntPtr.Zero)
+                throw new LaunchFailure("Close Syntaur in its original Windows session before continuing setup.");
+            using (SafeWaitHandle notification = new SafeWaitHandle(raw, true))
+            {
+                VerifyActivationEvent(notification);
+                VerifyActivationProcess(previous, gatewayPath, creation);
+                if (!SetEvent(notification) || WaitForSingleObject(previous.Handle, ActivationDrainTimeoutMs) != WaitObject0)
+                    throw new LaunchFailure("Syntaur did not finish closing before maintenance.");
+                uint exit;
+                if (!GetExitCodeProcess(previous.Handle, out exit) || exit != 0)
+                    throw new LaunchFailure("Syntaur did not finish closing before maintenance.");
+            }
         }
     }
 
@@ -587,7 +630,7 @@ internal static class ServerLauncher
         }
     }
 
-    private static GatewayProcess FindOwnedGateway(string gatewayPath)
+    private static GatewayProcess FindOwnedGateway(string gatewayPath, bool maintenance = false)
     {
         List<GatewayProcess> matches = new List<GatewayProcess>();
         try
@@ -600,15 +643,26 @@ internal static class ServerLauncher
                     try
                     {
                         try { candidate = new GatewayProcess(process.Id); }
-                        catch (InvalidOperationException) { continue; }
+                        catch (InvalidOperationException)
+                        {
+                            if (maintenance) throw new LaunchFailure("Syntaur could not verify that the server has closed.");
+                            continue;
+                        }
                         string processPath;
                         if (!TryQueryImagePath(candidate.Handle, out processPath))
+                        {
+                            if (maintenance && candidate.State() != ProcessState.Exited)
+                                throw new LaunchFailure("Syntaur could not verify that the server has closed.");
                             continue;
+                        }
                         if (!String.Equals(processPath, gatewayPath, StringComparison.OrdinalIgnoreCase))
                             continue;
                         if (!ProcessHasCurrentUserSid(candidate.Handle))
                             throw new LaunchFailure("Syntaur could not verify the running server's owner.");
-                        if (candidate.State() != ProcessState.Alive)
+                        ProcessState state = candidate.State();
+                        if (maintenance && state == ProcessState.Unknown)
+                            throw new LaunchFailure("Syntaur could not verify that the server has closed.");
+                        if (state != ProcessState.Alive)
                             continue;
                         matches.Add(candidate);
                         candidate = null;

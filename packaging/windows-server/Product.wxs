@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Development server package. Existing signed release-asset verification and
+     Authenticode are still required by the release builder before distribution. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="$(var.ProductName)" Manufacturer="SYNTAUR ENTERPRISES LLC"
+           Version="$(var.ProductVersion)" UpgradeCode="$(var.UpgradeCode)"
+           Language="1033" Scope="perMachine" Compressed="yes" ProductCode="$(var.ProductCode)">
+    <SummaryInformation Description="Syntaur main server and device setup" />
+    <MediaTemplate EmbedCab="yes" />
+    <MajorUpgrade Schedule="afterInstallExecute"
+                  DowngradeErrorMessage="A newer version of Syntaur is already installed." />
+    <Launch Condition="VersionNT64" Message="Syntaur requires 64-bit Windows." />
+    <Property Id="ACCEPT_EULA" Secure="yes" />
+    <Property Id="OPEN_SYNTAUR" Value="1" />
+    <Icon Id="SyntaurIcon" SourceFile="$(var.StagingDirectory)assets\syntaur-icon.ico" />
+    <Binary Id="InstallerProvisioner" SourceFile="$(var.StagingDirectory)InstallerProvisioner.exe" />
+    <Binary Id="MaintenanceLauncher" SourceFile="$(var.StagingDirectory)ServerLauncher.exe" />
+
+    <!-- Fixed OS known-folder path; the helper independently verifies it. -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Syntaur" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="SyntaurServer" Title="Syntaur" Level="1">
+      <ComponentRef Id="Launcher" /><ComponentRef Id="Gateway" />
+      <ComponentRef Id="Viewer" /><ComponentRef Id="TorHost" />
+      <ComponentRef Id="ClientTor" /><ComponentRef Id="Probe" />
+      <ComponentRef Id="Snowflake" /><ComponentRef Id="Eula" />
+      <ComponentRef Id="ServerShortcut" />
+    </Feature>
+
+    <!-- This user-session action stops only its verified installed Gateway.
+         It is deliberately not a SYSTEM cross-session process controller. -->
+    <CustomAction Id="QuiesceGateway" BinaryRef="MaintenanceLauncher"
+                  ExeCommand="--installer-stop" Execute="immediate"
+                  Impersonate="yes" Return="check" />
+    <CustomAction Id="RequireEulaAcceptance"
+                  Error="Review the supplied Syntaur EULA and accept it before installing." />
+    <CustomAction Id="OpenSyntaur" FileRef="ServerLauncherExe"
+                  ExeCommand="" Execute="immediate" Impersonate="yes" Return="asyncNoWait" />
+    <CustomAction Id="RollbackRoles" BinaryRef="InstallerProvisioner"
+                  ExeCommand="rollback &quot;[ProductCode]&quot; &quot;[UserSID]&quot;"
+                  Execute="rollback" Impersonate="no" Return="ignore" />
+    <CustomAction Id="PrepareRoles" BinaryRef="InstallerProvisioner"
+                  ExeCommand="prepare &quot;[ProductCode]&quot; &quot;[UserSID]&quot;"
+                  Execute="deferred" Impersonate="no" Return="check" />
+    <CustomAction Id="ConfigureRoles" BinaryRef="InstallerProvisioner"
+                  ExeCommand="configure &quot;[ProductCode]&quot; &quot;[UserSID]&quot;"
+                  Execute="deferred" Impersonate="no" Return="check" />
+    <CustomAction Id="CommitRoles" BinaryRef="InstallerProvisioner"
+                  ExeCommand="commit &quot;[ProductCode]&quot; &quot;[UserSID]&quot;"
+                  Execute="commit" Impersonate="no" Return="check" />
+    <InstallExecuteSequence>
+      <Custom Action="RequireEulaAcceptance" Before="QuiesceGateway"
+              Condition="NOT Installed AND ACCEPT_EULA &lt;&gt; &quot;Yes&quot;" />
+      <Custom Action="QuiesceGateway" Before="InstallValidate"
+              Condition="(Installed OR WIX_UPGRADE_DETECTED) AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="RollbackRoles" Before="PrepareRoles" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="PrepareRoles" Before="CreateFolders" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="ConfigureRoles" After="InstallServices" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+      <Custom Action="CommitRoles" After="ConfigureRoles" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+    </InstallExecuteSequence>
+    <UIRef Id="SyntaurServerUI" />
+  </Package>
+  <Fragment>
+    <Component Id="Launcher" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100001">
+      <File Id="ServerLauncherExe" Source="$(var.StagingDirectory)ServerLauncher.exe" KeyPath="yes" />
+    </Component>
+    <Component Id="Gateway" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100002">
+      <File Id="GatewayExe" Source="$(var.StagingDirectory)syntaur.exe" KeyPath="yes" />
+    </Component>
+    <Component Id="Viewer" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100003">
+      <File Id="ViewerExe" Source="$(var.StagingDirectory)syntaur-viewer.exe" KeyPath="yes" />
+    </Component>
+    <Component Id="TorHost" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100004">
+      <File Id="TorHostExe" Source="$(var.StagingDirectory)syntaur-link-tor.exe" KeyPath="yes" />
+      <ServiceInstall Id="InstallTorHost" Name="SyntaurLinkTor" DisplayName="Syntaur private connection"
+                      Description="Consent-controlled private device connections for the Syntaur server."
+                      Type="ownProcess" Start="auto" ErrorControl="normal" Vital="yes"
+                      Account="NT SERVICE\SyntaurLinkTor"
+                      Arguments="--service --config &quot;[CommonAppDataFolder]SyntaurLinkTor\host.json&quot;" />
+      <ServiceControl Id="ControlTorHost" Name="SyntaurLinkTor" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+    </Component>
+    <Component Id="ClientTor" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100005">
+      <File Id="ClientTorExe" Source="$(var.StagingDirectory)syntaur-link-client-tor.exe" KeyPath="yes" />
+    </Component>
+    <Component Id="Probe" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100006">
+      <File Id="ProbeExe" Source="$(var.StagingDirectory)syntaur-link-probe.exe" KeyPath="yes" />
+    </Component>
+    <Component Id="Snowflake" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100007">
+      <File Id="SnowflakeExe" Source="$(var.StagingDirectory)syntaur-snowflake-client.exe" KeyPath="yes" />
+    </Component>
+    <Component Id="Eula" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100008">
+      <File Id="EulaFile" Source="$(var.StagingDirectory)EULA.md" KeyPath="yes" />
+    </Component>
+    <Component Id="ServerShortcut" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100009">
+      <Shortcut Id="SyntaurShortcut" Directory="ProgramMenuFolder" Name="Syntaur"
+                Target="[#ServerLauncherExe]" WorkingDirectory="INSTALLFOLDER" Icon="SyntaurIcon" />
+      <RegistryValue Root="HKLM" Key="Software\Syntaur\Server" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+  </Fragment>
+</Wix>
