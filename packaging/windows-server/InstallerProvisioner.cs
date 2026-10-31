@@ -218,6 +218,15 @@ internal static class InstallerProvisioner
         if (shared) entries.Add(Ace(service, Execute, true));
         return Sddl(owner, entries.ToArray());
     }
+    // These are distributed program bytes, never configuration or identity data.
+    // Ordinary logins may execute the small --logon selector; only the selected
+    // Gateway can traverse the separately protected ProgramData publication.
+    private static string CodeSecurity(SecurityIdentifier service, SecurityIdentifier gateway, bool directory)
+    {
+        return Sddl(SystemSid, Ace(SystemSid, Full, directory), Ace(AdminSid, Full, directory),
+            Ace(service, Execute, directory), Ace(gateway, Execute, directory),
+            Ace(new SecurityIdentifier("S-1-5-32-545"), Execute, directory));
+    }
     private static string JournalSecurity() { return Sddl(SystemSid, Ace(SystemSid, Full, false), Ace(AdminSid, Full, false)); }
     private static void RequireSecurity(Pin file, string expected, bool allowInheritedFile = false)
     {
@@ -548,9 +557,9 @@ internal static class InstallerProvisioner
                 if (record.ProgramDirectoryIdentity != null)
                 {
                     if (program.Identity != record.ProgramDirectoryIdentity) throw new IOException("installation-retargeted");
-                    RequireSecurity(program, Admin(service, gateway, true));
+                    RequireSecurity(program, CodeSecurity(service, gateway, true));
                 }
-                else program.SetSecurity(Admin(service, gateway, true));
+                else program.SetSecurity(CodeSecurity(service, gateway, true));
                 step = ProvisioningStep.ProgramFiles;
                 foreach (string name in ProgramFiles)
                 {
@@ -561,8 +570,8 @@ internal static class InstallerProvisioner
                         // are newly provisioned. Maintenance preserves admitted
                         // file ACLs, including exact inherited RX entries.
                         if (record.ProgramDirectoryIdentity == null)
-                            pin.SetSecurity(Admin(service, gateway, false));
-                        RequireSecurity(pin, Admin(service, gateway, false), true);
+                            pin.SetSecurity(CodeSecurity(service, gateway, false));
+                        RequireSecurity(pin, CodeSecurity(service, gateway, false), true);
                     }
                 }
                 step = ProvisioningStep.PrivateDirectories;

@@ -21,6 +21,7 @@
       <Directory Id="INSTALLFOLDER" Name="Syntaur" />
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder" />
+    <StandardDirectory Id="StartupFolder" />
 
     <Feature Id="SyntaurServer" Title="Syntaur" Level="1">
       <ComponentRef Id="Launcher" /><ComponentRef Id="Gateway" />
@@ -28,6 +29,7 @@
       <ComponentRef Id="ClientTor" /><ComponentRef Id="Probe" />
       <ComponentRef Id="Snowflake" /><ComponentRef Id="Eula" />
       <ComponentRef Id="ServerShortcut" />
+      <ComponentRef Id="ServerLogonShortcut" />
     </Feature>
 
     <!-- This user-session action stops only its verified installed Gateway.
@@ -98,6 +100,11 @@
       <Shortcut Id="SyntaurShortcut" Directory="ProgramMenuFolder" Name="Syntaur"
                 Target="[#ServerLauncherExe]" WorkingDirectory="INSTALLFOLDER" Icon="SyntaurIcon" />
       <RegistryValue Root="HKLM" Key="Software\Syntaur\Server" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+    <Component Id="ServerLogonShortcut" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100010">
+      <Shortcut Id="SyntaurLogonShortcut" Directory="StartupFolder" Name="Syntaur server"
+                Target="[#ServerLauncherExe]" Arguments="--logon" WorkingDirectory="INSTALLFOLDER" Icon="SyntaurIcon" />
+      <RegistryValue Root="HKLM" Key="Software\Syntaur\Server" Name="LogonShortcut" Type="integer" Value="1" KeyPath="yes" />
     </Component>
   </Fragment>
 </Wix>

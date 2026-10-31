@@ -210,11 +210,12 @@ internal static class ServerLauncher
     private static int Main(string[] args)
     {
         bool background = args.Length == 1 && args[0] == "--background";
+        bool logon = args.Length == 1 && args[0] == "--logon";
         bool installerStop = args.Length == 1 && args[0] == "--installer-stop";
         int activationPid;
         ulong activationCreation;
         bool afterSetup = TryParseActivationArguments(args, out activationPid, out activationCreation);
-        if (args.Length != 0 && !background && !afterSetup && !installerStop)
+        if (args.Length != 0 && !background && !logon && !afterSetup && !installerStop)
         {
             ShowFailure("Syntaur received an unsupported launch request.", false);
             return 2;
@@ -223,33 +224,102 @@ internal static class ServerLauncher
         GatewayProcess startedGateway = null;
         try
         {
+            // A machine Startup shortcut is evaluated at every login. No
+            // process, profile or private file is created for another owner.
+            if (logon && !HasLogonOwner()) return 0;
             if (installerStop)
                 RunInstallerStop();
             else if (afterSetup)
                 RunAfterSetup(activationPid, activationCreation, ref startedGateway);
             else
-                Run(background, ref startedGateway);
+                Run(background || logon, ref startedGateway);
             return 0;
         }
         catch (LaunchFailure error)
         {
             if (!StopNewGateway(startedGateway))
             {
-                ShowFailure("Syntaur startup failed, and server cleanup could not be confirmed.", background || afterSetup || installerStop);
+                ShowFailure("Syntaur startup failed, and server cleanup could not be confirmed.", background || logon || afterSetup || installerStop);
                 return CleanupExitCode;
             }
-            ShowFailure(error.Message, background || afterSetup || installerStop);
+            ShowFailure(error.Message, background || logon || afterSetup || installerStop);
             return 1;
         }
         catch
         {
             if (!StopNewGateway(startedGateway))
             {
-                ShowFailure("Syntaur startup failed, and server cleanup could not be confirmed.", background || afterSetup || installerStop);
+                ShowFailure("Syntaur startup failed, and server cleanup could not be confirmed.", background || logon || afterSetup || installerStop);
                 return CleanupExitCode;
             }
-            ShowFailure("Syntaur could not start the local server.", background || afterSetup || installerStop);
+            ShowFailure("Syntaur could not start the local server.", background || logon || afterSetup || installerStop);
             return 1;
+        }
+    }
+
+    private static bool HasLogonOwner()
+    {
+        ValidateCurrentUser();
+        try
+        {
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+            {
+                string data = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+                if (String.IsNullOrEmpty(data) || data.Length < 3 || data[1] != ':' || data[2] != '\\' ||
+                    !String.Equals(Path.GetFullPath(data), data, StringComparison.OrdinalIgnoreCase))
+                    throw new LaunchFailure("Syntaur could not verify its installed owner scope.");
+                string shared = Path.Combine(data, "Syntaur", "LinkTor", "shared");
+                string leaf = Path.Combine(shared, identity.User.Value);
+                if (!Directory.Exists(leaf)) return false;
+                ValidateProgramDirectoryChain(leaf);
+                SecurityIdentifier service = (SecurityIdentifier)new NTAccount("NT SERVICE", "SyntaurLinkTor")
+                    .Translate(typeof(SecurityIdentifier));
+                string parent = data;
+                foreach (string part in new[] { "Syntaur", "LinkTor", "shared" })
+                {
+                    parent = Path.Combine(parent, part);
+                    ValidateLogonSecurity(new RawSecurityDescriptor(
+                        Directory.GetAccessControl(parent).GetSecurityDescriptorBinaryForm(), 0),
+                        service, identity.User, false);
+                }
+                ValidateLogonSecurity(new RawSecurityDescriptor(
+                    Directory.GetAccessControl(leaf).GetSecurityDescriptorBinaryForm(), 0),
+                    service, identity.User, true);
+                return true;
+            }
+        }
+        catch (UnauthorizedAccessException) { return false; }
+        catch (DirectoryNotFoundException) { return false; }
+        catch (IdentityNotMappedException) { return false; }
+    }
+
+    // Admission is a startup preference, not enrollment or service authority.
+    // Gateway/HOST still perform their retained-handle path and role checks.
+    private static void ValidateLogonSecurity(RawSecurityDescriptor descriptor,
+        SecurityIdentifier service, SecurityIdentifier gateway, bool leaf)
+    {
+        SecurityIdentifier system = new SecurityIdentifier("S-1-5-18");
+        SecurityIdentifier administrators = new SecurityIdentifier("S-1-5-32-544");
+        if (descriptor.DiscretionaryAcl == null ||
+            (descriptor.ControlFlags & ControlFlags.DiscretionaryAclProtected) == 0 ||
+            (leaf ? descriptor.Owner != gateway : descriptor.Owner != system && descriptor.Owner != administrators))
+            throw new LaunchFailure("Syntaur's installed owner scope has unexpected protection.");
+        Dictionary<SecurityIdentifier, int> expected = new Dictionary<SecurityIdentifier, int>();
+        expected.Add(system, 0x1f01ff);
+        expected.Add(gateway, leaf ? 0x1f01ff : 0x1200a9);
+        expected.Add(service, 0x1200a9);
+        if (!leaf) expected.Add(administrators, 0x1f01ff);
+        if (descriptor.DiscretionaryAcl.Count != expected.Count)
+            throw new LaunchFailure("Syntaur's installed owner scope has unexpected access.");
+        foreach (GenericAce entry in descriptor.DiscretionaryAcl)
+        {
+            CommonAce ace = entry as CommonAce;
+            int mask;
+            if (ace == null || ace.IsCallback || ace.AceQualifier != AceQualifier.AccessAllowed ||
+                ace.AceFlags != (AceFlags.ObjectInherit | AceFlags.ContainerInherit) ||
+                !expected.TryGetValue(ace.SecurityIdentifier, out mask) || ace.AccessMask != mask)
+                throw new LaunchFailure("Syntaur's installed owner scope has unexpected access.");
+            expected.Remove(ace.SecurityIdentifier);
         }
     }
 

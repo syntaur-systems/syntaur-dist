@@ -1,10 +1,26 @@
 # Syntaur Windows server launcher
 
-**Status: the unsigned development SERVER MSI passed silent install, update,
-missing-file repair and uninstall in disposable Windows accounts. Complete
-interactive setup, trusted signing and Store submission remain unverified;
-this is not ready for public installation.** The original nine launcher fixtures,
-five setup-activation fixtures and five maintenance fixtures passed separately.
+**Status: unsigned development SERVER packaging, not ready for public installation.**
+The new sign-in revision freshly installed and uninstalled successfully. Its
+MSI-owned common Startup shortcut selects only the configured server owner. One
+direct owner `--logon` invocation started the installed Gateway; the first observer
+failed while recording its identity. A separate continuation checked the **same**
+Gateway's owned HTTP 200 and private-directory owner, then stopped it normally,
+without repeating startup. A different standard user returned 0 without starting
+Gateway or creating `.syntaur`. Uninstall removed both shortcuts, the product,
+service, program directory and registration while retaining all 21 recorded
+private files and 38 ACLs. Disposable fixture cleanup is separate from uninstall.
+These are programmatic checks, not actual Explorer sign-in or interactive setup.
+
+The earlier development MSI revision separately passed update and missing-file
+repair; those cases were not repeated against the sign-in revision. The original
+nine launcher fixtures, five setup-activation fixtures and five maintenance
+fixtures remain historical passes. Six new pure logon/role groups passed with
+warnings-as-errors, and one new native public-code role test passed with no
+warnings. The captured 80 distribution and 2,232 native input identities remained
+unchanged during these checks; this is not an all-files test or full suite.
+Complete interactive setup, trusted signing and Store certification remain open.
+
 The base launcher revision `80ff783` started the published Gateway 0.7.322 in 7.6 seconds in a
 fresh explicit user-owned test home, verified HTTP 200 and the data-directory owner,
 and the test stopped its owned server afterward. No real Viewer was run. The
@@ -30,7 +46,7 @@ support files, with no live configuration, keys or user profiles.
 set and the explicit `-DevelopmentUnsigned` switch. Public mode refuses before
 writing anything. Cached WiX 5.0.2 is used for development only; supported public
 tooling/licensing, existing signed-release asset verification, Authenticode,
-interactive EULA/setup acceptance, sign-in startup integration and public release
+interactive EULA/setup acceptance, actual sign-in acceptance and public release
 integration remain required. Five native setup dialogs are authored and compile,
 but their complete visible flow has not been accepted. The operative EULA is unchanged. No public package or certificate
 purchase is implied by this prototype.
@@ -93,6 +109,38 @@ The first native Viewer development binary matching companion source `abe44b37`
 also built with no warnings. Its captured 2,232 source inputs remained unchanged;
 that is not an all-files test or interactive UI acceptance.
 
+## Selected-owner sign-in startup
+
+Standard MSI owns the common Startup-folder `Syntaur server` shortcut and its
+`--logon` argument. The launcher first checks the fixed Windows ProgramData
+publication for the current user; an unselected or inaccessible user returns 0
+before process discovery, profile creation or Gateway startup. For the selected
+owner it validates the existing protected parent/leaf role ACLs, then reuses the
+same bounded background readiness path. It opens no Viewer and adds no recurring
+health polling, task, service controller or startup supervisor. The Gateway still
+requires that owner to sign in; it is not a pre-login server service.
+
+Ordinary users receive read/execute access only to distributed ProgramFiles
+payloads so that the common shortcut can run its selector. These public code
+ACLs have five exact roles; no ordinary-user write permission is added. The
+ProgramData publication keeps its four-role parents and three-role owner leaf.
+HOST configuration, keys, private data and native private-role checks are
+unchanged. The companion native validator admits the optional ordinary-user RX
+role only for a ProgramFiles public executable root, and rejects ordinary-user
+writes, duplicate/extra roles and that role on private roots.
+
+An old unpublished prototype with the earlier four-role ProgramFiles ACL is
+refused during maintenance. This change does not silently migrate an existing
+ACL or add a second rollback journal. It has no public-server installation base
+to migrate. Retained identities, no-reparse checks and normal OS consent remain
+required; the logon selector is a startup preference, not an authority boundary.
+
+The development package containing this change is
+`b02a39101cf2b97182e56ab0848d60e2a015cf0cfe32ad8cbbc6f965af53694c`.
+It is unsigned and uses development-only tooling. No public release, Store
+submission, native visible owner setup, single-window transition or actual
+Windows sign-in acceptance is implied.
+
 ## Scope
 
 `ServerLauncher.cs` is a small .NET Framework 4.8 `winexe` entry point for the main
@@ -104,8 +152,8 @@ Syntaur **server** app. It expects these exact siblings beside the launcher:
 A normal launch reuses or starts the exact same-user sibling Gateway, waits for its
 owned IPv4 loopback listener, accepts only an HTTP 200 `/health`, rechecks the retained
 process and listener, and then opens local owner setup in Viewer. `--background` performs
-only the Gateway readiness path. The native setup handoff below is the sole additional
-user launch argument form. The installer-only maintenance form is described above.
+only the Gateway readiness path. `--logon` is the bounded sign-in selection path
+described below. The native setup handoff is the other supported user launch form. The installer-only maintenance form is described above.
 Other arguments are rejected. Foreground failures show
 a short fixed-label message; background failures return 1 without a message box.
 Exit 3 means startup failed and bounded cleanup of the newly started Gateway could not
