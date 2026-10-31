@@ -189,7 +189,9 @@ internal static class ServerLauncher
             {
                 if (HasAnyPortListener())
                     throw new LaunchFailure("Another application is using the Syntaur server port.");
-                Process child = Process.Start(StartInfo(gatewayPath, null, workingDirectory));
+                ProcessStartInfo gatewayInfo = StartInfo(gatewayPath, null, workingDirectory);
+                gatewayInfo.EnvironmentVariables["SYNTAUR_LAUNCHER_OWNS_UI"] = "1";
+                Process child = Process.Start(gatewayInfo);
                 if (child == null)
                     throw new LaunchFailure("Syntaur could not start the server.");
                 gateway = new GatewayProcess(child);

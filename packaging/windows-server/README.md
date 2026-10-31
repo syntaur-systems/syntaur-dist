@@ -2,7 +2,7 @@
 
 **Status: development source, compiled on Windows with nine isolated functional
 fixtures passing. Not signed, packaged, submitted, or ready for installation.**
-The corrected launcher started the published Gateway 0.7.322 in 7.6 seconds in a
+The base launcher revision `80ff783` started the published Gateway 0.7.322 in 7.6 seconds in a
 fresh explicit user-owned test home, verified HTTP 200 and the data-directory owner,
 and the test stopped its owned server afterward. No real Viewer was run. The
 disposable harness profile, whose owner was Administrators, was refused separately;
@@ -33,6 +33,14 @@ is received permits another startup health GET, after aborting the timed-out req
 and rechecking the same process and listener. Response/status/body errors remain
 fatal. Health has no proxy or redirects and is limited to 64 KiB. TCP owner-PID/listener checks are bounded ownership checks, not
 cryptographic peer authentication or an atomic network-identity proof.
+
+Only a newly started Gateway receives `SYNTAUR_LAUNCHER_OWNS_UI=1` in its child
+environment. A supporting Gateway uses that preference to skip its automatic
+browser opening because this launcher supplies Viewer. It is not an authorization
+signal. Existing servers and the Viewer environment are unchanged. Published
+0.7.322 ignores the preference: the companion Gateway change must be delivered
+before claiming that the combined application opens only one window. The Windows
+fixture verifies the child-observed preference; it does not run a real browser.
 
 Existing candidates use one retained limited-query/synchronize handle for image path,
 token user, liveness, and readiness. Only a newly created child handle can be terminated.

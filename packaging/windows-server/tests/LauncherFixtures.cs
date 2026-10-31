@@ -111,10 +111,12 @@ internal static class LauncherFixtures
         string pidPath = Path.Combine(Base, prefix + "-fixture.pid");
         string logPath = Path.Combine(Base, prefix + "-fixture.log");
         string invocationPath = Path.Combine(Base, prefix + "-invocation.marker");
+        string uiFlagPath = Path.Combine(Base, prefix + "-launcher-ui-flag.txt");
         int pid = Process.GetCurrentProcess().Id;
         int requests = 0;
         string mode = File.ReadAllText(Path.Combine(Base, "fixture-mode.txt")).Trim();
         File.WriteAllText(invocationPath, pid.ToString());
+        File.WriteAllText(uiFlagPath, Environment.GetEnvironmentVariable("SYNTAUR_LAUNCHER_OWNS_UI") ?? "");
         TcpListener listener = new TcpListener(IPAddress.Loopback, Port);
         listener.Start();
         File.WriteAllText(pidPath, pid.ToString());
@@ -240,6 +242,8 @@ internal static class LauncherFixtures
             {
                 first = RunLauncher(true);
                 Require(first.ExitCode == 0 && first.Gateway != null && Alive(first.Gateway), "gateway did not start cleanly");
+                Require(File.ReadAllText(Path.Combine(Base, "gateway-launcher-ui-flag.txt")) == "1",
+                    "launcher UI ownership flag was not propagated");
                 reused = first.Gateway;
                 return Detail(first);
             });
@@ -500,7 +504,7 @@ internal static class LauncherFixtures
     private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
     private static void SetMode(string mode) { File.WriteAllText(Path.Combine(Base, "fixture-mode.txt"), mode); }
     private static void Delete(string file) { string path = Path.Combine(Base, file); if (File.Exists(path)) File.Delete(path); }
-    private static void ClearEvidence(string prefix) { Delete(prefix + "-fixture.pid"); Delete(prefix + "-fixture.log"); Delete(prefix + "-invocation.marker"); }
+    private static void ClearEvidence(string prefix) { Delete(prefix + "-fixture.pid"); Delete(prefix + "-fixture.log"); Delete(prefix + "-invocation.marker"); Delete(prefix + "-launcher-ui-flag.txt"); }
 
     private static string Json(string name, string status, string detail)
     {
