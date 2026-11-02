@@ -1,6 +1,8 @@
 # Syntaur Windows server launcher
 
-**Status: unsigned development SERVER packaging, not ready for public installation.**
+**Status: development SERVER packaging with a tested signing-candidate path;
+not ready for public installation.** No trusted signature or certificate is
+implied by the signing helper's synthetic tests.
 The new sign-in revision freshly installed and uninstalled successfully. Its
 MSI-owned common Startup shortcut selects only the configured server owner. One
 direct owner `--logon` invocation started the installed Gateway; the first observer
@@ -43,13 +45,40 @@ warnings treated as errors. Its actual File table contains eight runtime and
 support files, with no live configuration, keys or user profiles.
 
 `scripts/build-windows-server-msi.ps1` requires an exact captured ten-file input
-set and the explicit `-DevelopmentUnsigned` switch. Public mode refuses before
-writing anything. Cached WiX 5.0.2 is used for development only; supported public
-tooling/licensing, existing signed-release asset verification, Authenticode,
+set and an explicit development or signed-candidate mode. Public mode refuses
+before writing anything. Cached WiX 5.0.2 remains limited to unsigned development;
+supported tooling/licensing, existing signed-release asset verification, actual Authenticode,
 interactive EULA/setup acceptance, actual sign-in acceptance and public release
 integration remain required. Five native setup dialogs are authored and compile,
 but their complete visible flow has not been accepted. The operative EULA is unchanged. No public package or certificate
 purchase is implied by this prototype.
+
+### Signing candidate preparation
+
+The separate `-SignedCandidate` path requires WiX 7.0.1, explicitly approved WiX
+EULA acceptance, Microsoft's SignTool and Artifact Signing dlib, and a bounded
+metadata file containing exactly `Endpoint`, `CodeSigningAccountName` and
+`CertificateProfileName`. The endpoint and account must match the Syntaur signing
+account; the profile must be an actual approved certificate profile. The metadata
+contains no credentials. The helper excludes unrelated credential sources and
+retains the deliberately authenticated Azure CLI identity; it performs no login
+or permission assignment. Do not pass `-AcceptWix7Eula` until the applicable terms
+and any required maintenance fee have been approved.
+
+The builder copies the exact captured inputs, signs and verifies all eight staged
+executables, packages those bytes, checks that they stayed unchanged, then signs
+and verifies the MSI. Every signature must be valid, timestamped and issued to
+`SYNTAUR ENTERPRISES LLC`. An error stops the sequence without automatic retry.
+Unsigned mode cannot be combined with signing options. Signed candidates retain
+the development upgrade identity and explicit test-candidate name, and their
+result still says `store_ready=false` and `public_release=false`.
+
+Twenty-two named synthetic signing/option cases passed in Windows PowerShell
+5.1, using process-local mocks and the existing encoded-command QA runner without
+changing execution policy. These verify metadata refusals, signing/verification
+order, publisher/timestamp refusals, failure stopping and mode preflights. They do
+not exercise Microsoft's signing service, WiX 7, an actual certificate or a signed
+MSI installation. The existing public release workflow is unchanged.
 
 The installer-only `InstallerProvisioner.cs` creates protected roles through
 retained Windows handles. Private HOST state lives under

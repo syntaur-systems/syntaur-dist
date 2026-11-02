@@ -9,11 +9,22 @@ param(
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
     [Parameter(Mandatory = $true)][string]$WixPath,
     [ValidatePattern('^\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}$')][string]$DevelopmentProductCode,
-    [switch]$DevelopmentUnsigned
+    [switch]$DevelopmentUnsigned,
+    [switch]$SignedCandidate,
+    [string]$SigningMetadata,
+    [string]$SignToolPath,
+    [string]$DlibPath,
+    [switch]$AcceptWix7Eula
 )
 $ErrorActionPreference = 'Stop'
-if (!$DevelopmentUnsigned) {
+if (!$DevelopmentUnsigned -and !$SignedCandidate) {
     throw 'This development builder cannot produce a public package. Existing signed-release asset verification and Authenticode integration remain required.'
+}
+if ($DevelopmentUnsigned -and ($SignedCandidate -or $SigningMetadata -or $SignToolPath -or $DlibPath -or $AcceptWix7Eula)) {
+    throw 'Unsigned development and signed-candidate options cannot be combined.'
+}
+if ($SignedCandidate -and (!$SigningMetadata -or !$SignToolPath -or !$DlibPath -or !$AcceptWix7Eula)) {
+    throw 'A signed candidate requires signing metadata, SignTool, the Microsoft dlib, and explicit WiX 7 EULA acceptance.'
 }
 function Assert-LocalPath {
     param([string]$LiteralPath, [switch]$AllowMissingLeaf)
@@ -55,6 +66,12 @@ $root = Split-Path -Parent $PSScriptRoot
 $wxs = Join-Path $root 'packaging\windows-server\Product.wxs'
 $ui = Join-Path $root 'packaging\windows-server\SetupUI.wxs'
 foreach ($path in @($InputDirectory, $InputHashes, $WixPath, $wxs, $ui)) { Assert-LocalPath $path }
+if ($SignedCandidate) {
+    $signingFunctions = Join-Path $root 'packaging\windows-server\ArtifactSigning.ps1'
+    foreach ($path in @($SigningMetadata, $SignToolPath, $DlibPath, $signingFunctions)) { Assert-LocalPath $path }
+    . $signingFunctions
+    $metadata = Read-SyntaurArtifactSigningMetadata -LiteralPath $SigningMetadata
+}
 if ((Get-Item -LiteralPath $InputHashes).Length -gt 16384) { throw 'Input hash list exceeds its bound.' }
 $hashes = Get-Content -Raw -LiteralPath $InputHashes | ConvertFrom-Json
 $expected = @('ServerLauncher.exe', 'InstallerProvisioner.exe', 'syntaur.exe', 'syntaur-viewer.exe',
@@ -72,8 +89,11 @@ foreach ($name in $expected) {
     }
 }
 $wixVersion = (& $WixPath --version | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or $wixVersion -notmatch '^5\.0\.2(?:\+[0-9A-Za-z.-]+)?$') {
-    throw 'This development prototype uses the already cached WiX 5.0.2; public tooling support and licensing remain unresolved.'
+if ($LASTEXITCODE -ne 0) { throw 'WiX version query failed.' }
+if ($SignedCandidate) {
+    if ($wixVersion -notmatch '^7\.0\.1(?:\+[0-9A-Za-z.-]+)?$') { throw 'Signed candidates require WiX 7.0.1.' }
+} elseif ($wixVersion -notmatch '^5\.0\.2(?:\+[0-9A-Za-z.-]+)?$') {
+    throw 'Unsigned development packages require the cached WiX 5.0.2.'
 }
 if (Test-Path -LiteralPath $OutputDirectory) { throw 'Output directory must be new.' }
 Assert-LocalPath $OutputDirectory -AllowMissingLeaf
@@ -88,21 +108,43 @@ foreach ($name in $expected) {
     Copy-Item -LiteralPath (Join-Path $InputDirectory $name) -Destination $destination
     if ((Get-Hash $destination) -cne $hashes.$name) { throw 'Staged development input differs.' }
 }
+$signedInputHashes = $null
+if ($SignedCandidate) {
+    $metadataPath = Join-Path $stage 'artifact-signing-metadata.json'
+    $metadata | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $metadataPath -Encoding UTF8
+    $runtimeNames = @($expected | Where-Object { $_.EndsWith('.exe', [StringComparison]::Ordinal) })
+    $runtimePaths = @($runtimeNames | ForEach-Object { Join-Path $stage $_ })
+    Invoke-SyntaurArtifactSigning -LiteralPaths $runtimePaths -SignToolPath $SignToolPath -DlibPath $DlibPath -MetadataPath $metadataPath
+    $signedInputHashes = [ordered]@{}
+    foreach ($name in $runtimeNames) { $signedInputHashes[$name] = Get-Hash (Join-Path $stage $name) }
+}
 $licenseRtf = Join-Path $stage 'EULA.rtf'
 $licenseText = [IO.File]::ReadAllText((Join-Path $stage 'EULA.md'), [Text.Encoding]::UTF8)
 [IO.File]::WriteAllText($licenseRtf, (ConvertTo-LicenseRtf $licenseText), [Text.Encoding]::ASCII)
-$msi = Join-Path $output ("Syntaur-Server-$Version-DEVELOPMENT-ONLY.msi")
-Invoke-Native -FilePath $WixPath -ArgumentList @('build', $wxs, $ui, '-arch', 'x64', '-wx',
-    '-d', "ProductVersion=$Version", '-d', 'ProductName=Syntaur DEVELOPMENT ONLY',
+$suffix = if ($SignedCandidate) { 'SIGNED-CANDIDATE' } else { 'DEVELOPMENT-ONLY' }
+$productName = if ($SignedCandidate) { 'Syntaur SIGNED TEST CANDIDATE' } else { 'Syntaur DEVELOPMENT ONLY' }
+$msi = Join-Path $output ("Syntaur-Server-$Version-$suffix.msi")
+$wixArguments = @('build', $wxs, $ui, '-arch', 'x64', '-wx',
+    '-d', "ProductVersion=$Version", '-d', "ProductName=$productName",
     '-d', 'UpgradeCode=05FAEEC7-80A8-4B12-B6DB-28528B7EEB37',
     '-d', "ProductCode=$DevelopmentProductCode",
     '-d', "StagingDirectory=$stage\", '-out', $msi)
+if ($SignedCandidate) { $wixArguments += @('-acceptEula', 'wix7', '-nohardlinks') }
+Invoke-Native -FilePath $WixPath -ArgumentList $wixArguments
+if ($SignedCandidate) {
+    foreach ($name in $runtimeNames) {
+        if ((Get-Hash (Join-Path $stage $name)) -cne $signedInputHashes[$name]) { throw 'A signed payload changed during packaging.' }
+    }
+    Invoke-SyntaurArtifactSigning -LiteralPaths @($msi) -SignToolPath $SignToolPath -DlibPath $DlibPath -MetadataPath $metadataPath
+    Remove-Item -LiteralPath $metadataPath
+}
 $result = [ordered]@{
-    development_only = $true; version = $Version; msi_sha256 = (Get-Hash $msi)
+    development_only = !$SignedCandidate; version = $Version; msi_sha256 = (Get-Hash $msi)
     input_sha256 = $hashes; package_source_sha256 = (Get-Hash $wxs)
     setup_ui_sha256 = (Get-Hash $ui); derived_license_rtf_sha256 = (Get-Hash $licenseRtf)
-    signed = $false; store_ready = $false; existing_data_in_package = $false
+    signed = [bool]$SignedCandidate; signed_input_sha256 = $signedInputHashes
+    store_ready = $false; public_release = $false; existing_data_in_package = $false
     development_product_code = $DevelopmentProductCode
 }
 $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $output 'build-result.json') -Encoding UTF8
-Write-Output 'Unsigned SERVER development MSI built. No publication, certification, or installation performed.'
+Write-Output "$suffix SERVER candidate built. No publication, certification, or installation performed."
