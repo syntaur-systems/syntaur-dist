@@ -959,8 +959,10 @@ release_download_consumers=$(yq -r '
 ' "$release_workflow" |
     awk -F '\t' '$3 ~ /^actions\/download-artifact@/ {print $1 "\t" $2 "\t" $4}' |
     LC_ALL=C sort)
-[[ $release_download_consumers \
-    == $'sign-and-release\tDownload all built binaries\ttrue' ]]
+expected_release_download_consumers=$(printf '%s\n' \
+    $'build-windows-server\tDownload same-run Windows binaries\ttrue' \
+    $'sign-and-release\tDownload all built binaries\ttrue')
+[[ $release_download_consumers == "$expected_release_download_consumers" ]]
 proof_helper_artifact_selector=$(yq -r '
     .jobs.replacement_proof_helper.steps[] |
     select(.name == "Select exact encrypted proof-helper source export") |
