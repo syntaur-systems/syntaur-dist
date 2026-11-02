@@ -32,6 +32,16 @@ function Read-SyntaurArtifactSigningMetadata {
     }
 }
 
+function Write-SyntaurArtifactSigningMetadata {
+    param(
+        [Parameter(Mandatory = $true)]$Metadata,
+        [Parameter(Mandatory = $true)][string]$LiteralPath
+    )
+    # The Microsoft dlib reads raw UTF-8 bytes and rejects PowerShell 5.1's BOM.
+    $json = $Metadata | ConvertTo-Json -Depth 3
+    [IO.File]::WriteAllText($LiteralPath, $json, (New-Object Text.UTF8Encoding($false)))
+}
+
 function Invoke-SyntaurSigningTool {
     param([string]$SignToolPath, [string[]]$ArgumentList)
     & $SignToolPath @ArgumentList

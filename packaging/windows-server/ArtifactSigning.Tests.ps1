@@ -90,6 +90,33 @@ try {
     }
     Write-Output '  PASS: Valid metadata reads exactly 3 fields and populates 9 excluded credentials (AzureCliCredential retained)'
 
+    # Real serialization through the same writer used by the builder.
+    $writtenMetaPath = Join-Path $tempDir 'written-metadata.json'
+    Write-SyntaurArtifactSigningMetadata -Metadata $parsed -LiteralPath $writtenMetaPath
+    $writtenBytes = [IO.File]::ReadAllBytes($writtenMetaPath)
+    if ($writtenBytes.Length -ge 3 -and $writtenBytes[0] -eq 0xEF -and $writtenBytes[1] -eq 0xBB -and $writtenBytes[2] -eq 0xBF) {
+        throw 'Written signing metadata must not start with a UTF-8 BOM.'
+    }
+    $writtenText = (New-Object Text.UTF8Encoding($false)).GetString($writtenBytes)
+    if (!$writtenText.TrimStart().StartsWith('{')) {
+        throw 'Written signing metadata must start with a JSON object.'
+    }
+    $writtenValue = $writtenText | ConvertFrom-Json
+    if ($writtenValue.Endpoint -cne 'https://wus2.codesigning.azure.net/' -or
+        $writtenValue.CodeSigningAccountName -cne 'syntaurenterprisesllc' -or
+        $writtenValue.CertificateProfileName -cne 'ReleaseProfile-2026') {
+        throw 'Written signing metadata public fields did not round-trip.'
+    }
+    if (@($writtenValue.ExcludeCredentials).Count -ne 9) {
+        throw 'Written signing metadata must preserve 9 excluded credentials.'
+    }
+    foreach ($cred in $expectedExcluded) {
+        if (@($writtenValue.ExcludeCredentials) -notcontains $cred) {
+            throw "Written signing metadata lost excluded credential '$cred'."
+        }
+    }
+    Write-Output '  PASS: Written metadata is BOM-less UTF-8 JSON with public fields and 9 exclusions preserved'
+
     # Extra public field rejected
     $extraFieldMeta = Join-Path $tempDir 'extra-field.json'
     @{

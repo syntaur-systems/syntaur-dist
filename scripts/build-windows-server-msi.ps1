@@ -111,7 +111,7 @@ foreach ($name in $expected) {
 $signedInputHashes = $null
 if ($SignedCandidate) {
     $metadataPath = Join-Path $stage 'artifact-signing-metadata.json'
-    $metadata | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $metadataPath -Encoding UTF8
+    Write-SyntaurArtifactSigningMetadata -Metadata $metadata -LiteralPath $metadataPath
     $runtimeNames = @($expected | Where-Object { $_.EndsWith('.exe', [StringComparison]::Ordinal) })
     $runtimePaths = @($runtimeNames | ForEach-Object { Join-Path $stage $_ })
     Invoke-SyntaurArtifactSigning -LiteralPaths $runtimePaths -SignToolPath $SignToolPath -DlibPath $DlibPath -MetadataPath $metadataPath
