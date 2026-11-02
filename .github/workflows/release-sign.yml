@@ -564,7 +564,7 @@ jobs:
             platform: windows
             arch: x86_64
             executable_suffix: '.exe'
-            build_service: false
+            build_service: true
             install_cross_compiler: false
     runs-on: ${{ matrix.os }}
     environment: product-release-source
@@ -661,8 +661,8 @@ jobs:
             "dist/syntaur-link-probe-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.executable_suffix }}"
           if [ "${{ matrix.build_service }}" = true ]; then
             cp \
-              "crates/syntaur-link-tor/target/${{ matrix.target }}/release/syntaur-link-tor" \
-              "dist/syntaur-link-tor-${{ matrix.platform }}-${{ matrix.arch }}"
+              "crates/syntaur-link-tor/target/${{ matrix.target }}/release/syntaur-link-tor${{ matrix.executable_suffix }}" \
+              "dist/syntaur-link-tor-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.executable_suffix }}"
           fi
 
       - name: Upload Link transport artifacts
@@ -942,9 +942,151 @@ jobs:
           path: dist/*
           retention-days: 7
 
+  build-windows-server:
+    name: Package signed Windows server
+    needs: [build, build-link-tor, build-snowflake]
+    runs-on: windows-2025
+    environment: product-release-source
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_CORE_OUTPUT: none
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ env.DIST_COMMIT }}
+          persist-credentials: false
+
+      - name: Verify original Windows package release context
+        shell: powershell
+        env:
+          SIGNER_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          SIGNER_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_RUN_ATTEMPT -cne '1' -or $env:GITHUB_REF -cne 'refs/heads/main' -or
+              $env:GITHUB_REPOSITORY -cne 'syntaur-systems/syntaur-dist' -or
+              $env:GITHUB_SHA -cne $env:DIST_COMMIT -or (git rev-parse HEAD) -cne $env:DIST_COMMIT) {
+            throw 'Windows signing requires the original exact main-branch release.'
+          }
+          if ($env:SIGNER_CLIENT_ID -cne '25b54e51-2bbe-4cb7-94ae-baf4f040efd7' -or
+              $env:SIGNER_TENANT_ID -cne 'ed6dc874-ee4c-470c-b484-143a6abb06c6') {
+            throw 'Windows signing identity differs from the approved profile-only identity.'
+          }
+          ('AZURE_CONFIG_DIR=' + (Join-Path $env:RUNNER_TEMP 'syntaur-signing-azure')) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Download same-run Windows binaries
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: syntaur-*-windows-*
+          path: ${{ runner.temp }}/syntaur-windows-inputs
+          merge-multiple: true
+
+      - name: Prepare Windows server package inputs and signing tools
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $inputRoot = Join-Path $env:RUNNER_TEMP 'syntaur-windows-inputs'
+          $stage = Join-Path $env:RUNNER_TEMP 'syntaur-server-inputs'
+          New-Item -ItemType Directory -Path (Join-Path $stage 'assets') | Out-Null
+          $mapping = [ordered]@{
+            'syntaur-gateway-windows-x86_64.exe' = 'syntaur.exe'
+            'syntaur-viewer-windows-x86_64.exe' = 'syntaur-viewer.exe'
+            'syntaur-link-tor-windows-x86_64.exe' = 'syntaur-link-tor.exe'
+            'syntaur-link-client-tor-windows-x86_64.exe' = 'syntaur-link-client-tor.exe'
+            'syntaur-link-probe-windows-x86_64.exe' = 'syntaur-link-probe.exe'
+            'syntaur-snowflake-client-windows-x86_64.exe' = 'syntaur-snowflake-client.exe'
+          }
+          $actual = @(Get-ChildItem -LiteralPath $inputRoot -Force)
+          if ($actual.Count -ne $mapping.Count) { throw 'Unexpected Windows build artifact set.' }
+          foreach ($name in $mapping.Keys) {
+            $source = Join-Path $inputRoot $name
+            if (!(Test-Path -LiteralPath $source -PathType Leaf)) { throw "Missing Windows artifact $name" }
+            Copy-Item -LiteralPath $source -Destination (Join-Path $stage $mapping[$name])
+          }
+          $csc = Join-Path $env:windir 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          & $csc /nologo /warnaserror /target:winexe "/out:$stage\ServerLauncher.exe" /reference:System.dll /reference:System.Windows.Forms.dll packaging\windows-server\ServerLauncher.cs
+          if ($LASTEXITCODE -ne 0) { throw 'Server launcher compilation failed.' }
+          & $csc /nologo /warnaserror /target:exe "/out:$stage\InstallerProvisioner.exe" /reference:System.dll /reference:System.Web.Extensions.dll packaging\windows-server\InstallerProvisioner.cs
+          if ($LASTEXITCODE -ne 0) { throw 'Installer provisioner compilation failed.' }
+          Copy-Item -LiteralPath EULA.md -Destination $stage
+          Copy-Item -LiteralPath assets\syntaur-icon.ico -Destination (Join-Path $stage 'assets')
+          # Distribute licensed app-local CRT files, not a second installer or
+          # dependency download. Preserve and verify Microsoft's own signatures.
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $visualStudio = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or !$visualStudio -or @($visualStudio).Count -ne 1) { throw 'Existing Visual C++ tools are unavailable.' }
+          $redists = @(Get-ChildItem -LiteralPath (Join-Path $visualStudio 'VC\Redist\MSVC') -Directory |
+            Where-Object { $_.Name -match '^14\.[0-9]+\.[0-9]+$' } | Sort-Object { [version]$_.Name } -Descending)
+          if ($redists.Count -lt 1) { throw 'Existing Microsoft C++ redistributables are unavailable.' }
+          $crtDirectories = @(Get-ChildItem -LiteralPath (Join-Path $redists[0].FullName 'x64') -Directory |
+            Where-Object { $_.Name -cmatch '^Microsoft\.VC[0-9]+\.CRT$' })
+          if ($crtDirectories.Count -ne 1) { throw 'Existing x64 Microsoft C++ runtime directory is ambiguous or absent.' }
+          $crt = $crtDirectories[0].FullName
+          $runtimeNames = @('concrt140.dll', 'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll',
+            'msvcp140_atomic_wait.dll', 'msvcp140_codecvt_ids.dll', 'vccorlib140.dll',
+            'vcruntime140.dll', 'vcruntime140_1.dll', 'vcruntime140_threads.dll')
+          foreach ($name in $runtimeNames) { Copy-Item -LiteralPath (Join-Path $crt $name) -Destination $stage }
+          $hashes = [ordered]@{}
+          foreach ($name in @('ServerLauncher.exe', 'InstallerProvisioner.exe') + @($mapping.Values) + @('EULA.md', 'assets\syntaur-icon.ico') + $runtimeNames) {
+            $hashes[$name] = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $stage $name)).Hash.ToLowerInvariant()
+          }
+          $hashes | ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $env:RUNNER_TEMP 'syntaur-server-input-hashes.json')
+          dotnet tool install wix --version 7.0.1 --tool-path (Join-Path $env:RUNNER_TEMP 'syntaur-wix')
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned WiX installation failed.' }
+          $clientZip = Join-Path $env:RUNNER_TEMP 'artifact-signing-client.zip'
+          Invoke-WebRequest -UseBasicParsing -Uri 'https://api.nuget.org/v3-flatcontainer/microsoft.artifactsigning.client/1.0.146/microsoft.artifactsigning.client.1.0.146.nupkg' -OutFile $clientZip -TimeoutSec 120
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $clientZip).Hash.ToLowerInvariant() -cne '7761e5d8f31e54b764da21d33cd8b0a2940e1b05526c7dfcb5e94b0431426f70') {
+            throw 'Artifact Signing client package differs from its tested pinned bytes.'
+          }
+          Expand-Archive -LiteralPath $clientZip -DestinationPath (Join-Path $env:RUNNER_TEMP 'syntaur-artifact-signing')
+          @{Endpoint='https://wus2.codesigning.azure.net/'; CodeSigningAccountName='syntaurenterprisesllc'; CertificateProfileName='syntaur-windows-release'} |
+            ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $env:RUNNER_TEMP 'syntaur-signing-profile.json')
+
+      - name: Log in to approved signing profile with GitHub OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Build timestamped public Windows server MSI
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $options = @{
+            Version = $env:REL_VERSION
+            InputDirectory = (Join-Path $env:RUNNER_TEMP 'syntaur-server-inputs')
+            InputHashes = (Join-Path $env:RUNNER_TEMP 'syntaur-server-input-hashes.json')
+            OutputDirectory = (Join-Path $env:RUNNER_TEMP 'syntaur-server-package')
+            WixPath = (Join-Path $env:RUNNER_TEMP 'syntaur-wix\wix.exe')
+            SigningMetadata = (Join-Path $env:RUNNER_TEMP 'syntaur-signing-profile.json')
+            SignToolPath = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe'
+            DlibPath = (Join-Path $env:RUNNER_TEMP 'syntaur-artifact-signing\bin\x64\Azure.CodeSigning.Dlib.dll')
+            PublicRelease = $true
+            AcceptWix7Eula = $true
+          }
+          # Sean accepted WiX 7 terms and confirmed the current revenue exemption.
+          # No paid WiX plan or automatic signing retry is authorized here.
+          & .\scripts\build-windows-server-msi.ps1 @options
+          $public = Join-Path $env:RUNNER_TEMP 'syntaur-server-public'
+          New-Item -ItemType Directory -Path $public | Out-Null
+          Copy-Item -LiteralPath (Join-Path $options.OutputDirectory 'syntaur-server-windows-x86_64.msi') -Destination $public
+          Copy-Item -LiteralPath (Join-Path $options.OutputDirectory 'build-result.json') -Destination (Join-Path $public 'syntaur-server-windows-x86_64-build.json')
+
+      - name: Upload signed Windows server package and existing build receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: syntaur-windows-server-package
+          path: ${{ runner.temp }}/syntaur-server-public/*
+          if-no-files-found: error
+          retention-days: 7
+
   sign-and-release:
     name: Sign + stage draft release
-    needs: [build, build-link-tor, build-snowflake, build-engine]
+    needs: [build, build-link-tor, build-snowflake, build-engine, build-windows-server]
     if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-24.04
     steps:
@@ -979,12 +1121,47 @@ jobs:
       - name: Stage install scripts into dist
         run: |
           set -euo pipefail
+          # Join the existing MSI build receipt to this exact release and the
+          # same-run native inputs before signing the common checksum manifest.
+          receipt=dist/syntaur-server-windows-x86_64-build.json
+          test "$(stat -c %s "$receipt")" -le 16384
+          msi_sha256=$(sha256sum dist/syntaur-server-windows-x86_64.msi | awk '{print $1}')
+          jq -e --arg version "$REL_VERSION" --arg src "$SRC_COMMIT" \
+            --arg engine "$ENGINE_COMMIT" --arg dist "$DIST_COMMIT" \
+            --arg correlation "$RELEASE_CORRELATION" --arg run "$GITHUB_RUN_ID" \
+            --arg attempt "$GITHUB_RUN_ATTEMPT" --arg msi "$msi_sha256" '
+            .version == $version and .signed == true and .public_release == true and
+            .development_only == false and .existing_data_in_package == false and
+            .package_mode == "PUBLIC-RELEASE" and .development_product_code == null and
+            .upgrade_code == "3C057823-F0A2-4385-813F-9D654747D7DF" and
+            .msi_sha256 == $msi and
+            .release_identity == {source_commit:$src, engine_commit:$engine, dist_commit:$dist,
+              correlation:$correlation, run_id:$run, run_attempt:$attempt} and
+            (.input_sha256 | length) == 20 and (.signed_input_sha256 | length) == 8 and
+            all(.signed_input_sha256[]; type == "string" and test("^[0-9a-f]{64}$"))
+          ' "$receipt" >/dev/null
+          while read -r asset input; do
+            hash=$(sha256sum "dist/$asset" | awk '{print $1}')
+            jq -e --arg name "$input" --arg hash "$hash" '.input_sha256[$name] == $hash' "$receipt" >/dev/null
+          done <<'INPUTS'
+          syntaur-gateway-windows-x86_64.exe syntaur.exe
+          syntaur-viewer-windows-x86_64.exe syntaur-viewer.exe
+          syntaur-link-tor-windows-x86_64.exe syntaur-link-tor.exe
+          syntaur-link-client-tor-windows-x86_64.exe syntaur-link-client-tor.exe
+          syntaur-link-probe-windows-x86_64.exe syntaur-link-probe.exe
+          syntaur-snowflake-client-windows-x86_64.exe syntaur-snowflake-client.exe
+          INPUTS
+          eula_input_sha256=$(sha256sum EULA.md | awk '{print $1}')
+          icon_input_sha256=$(sha256sum assets/syntaur-icon.ico | awk '{print $1}')
+          jq -e --arg eula "$eula_input_sha256" --arg icon "$icon_input_sha256" \
+            '.input_sha256["EULA.md"] == $eula and .input_sha256["assets\\syntaur-icon.ico"] == $icon' "$receipt" >/dev/null
           # issue #27: stamp install scripts with the release version BEFORE
           # staging+signing, so published installers never advertise a stale
           # hardcoded VERSION (and the signed bundle matches the shipped file).
           sed -i -E "s/^(VERSION=\")[^\"]+(\")/\1${REL_VERSION}\2/" install.sh
           sed -i -E "s/^(\\\$Version[[:space:]]*=[[:space:]]*\")[^\"]+(\")/\1${REL_VERSION}\2/" install.ps1
           sed -i -E "s/^(\\\$DistWorkflowCommit[[:space:]]*=[[:space:]]*\")[^\"]+(\")/\1${DIST_COMMIT}\2/" install.ps1
+          sed -i -E "s/^(\\\$ServerMsiSha256[[:space:]]*=[[:space:]]*\")[^\"]*(\")/\1${msi_sha256}\2/" install.ps1
           windows_gateway_sha256=$(sha256sum dist/syntaur-gateway-windows-x86_64.exe | awk '{print $1}')
           sed -i -E "s/^(\\\$GatewaySha256[[:space:]]*=[[:space:]]*\")[^\"]*(\")/\1${windows_gateway_sha256}\2/" install.ps1
           windows_viewer_sha256=$(sha256sum dist/syntaur-viewer-windows-x86_64.exe | awk '{print $1}')
@@ -1005,6 +1182,7 @@ jobs:
           grep -qE "^VERSION=\"${REL_VERSION}\"" install.sh || { echo "::error::install.sh VERSION not stamped to ${REL_VERSION} (sed matched nothing — check the VERSION= line format)"; exit 1; }
           grep -qE "^\\\$Version[[:space:]]*=[[:space:]]*\"${REL_VERSION}\"" install.ps1 || { echo "::error::install.ps1 \$Version not stamped to ${REL_VERSION} (sed matched nothing — check the \$Version line format)"; exit 1; }
           grep -qE "^\\\$DistWorkflowCommit[[:space:]]*=[[:space:]]*\"${DIST_COMMIT}\"" install.ps1 || { echo "::error::install.ps1 public commit was not stamped"; exit 1; }
+          grep -qE "^\\\$ServerMsiSha256[[:space:]]*=[[:space:]]*\"${msi_sha256}\"$" install.ps1 || { echo "::error::install.ps1 server MSI hash was not stamped"; exit 1; }
           grep -qE "^RUNTIME_BOOTSTRAP_SHA256=\"[0-9a-f]{64}\"$" install.sh || { echo "::error::install.sh runtime bootstrap hash was not stamped"; exit 1; }
           grep -qE "^PROCESS_INSPECTOR_SHA256=\"[0-9a-f]{64}\"$" install.sh || { echo "::error::install.sh process inspector hash was not stamped"; exit 1; }
           grep -qE "^DIST_WORKFLOW_COMMIT=\"${DIST_COMMIT}\"$" install.sh || { echo "::error::install.sh workflow commit was not stamped"; exit 1; }
@@ -1066,6 +1244,9 @@ jobs:
             syntaur-link-client-tor-windows-x86_64.exe
             syntaur-link-probe-windows-x86_64.exe
             syntaur-snowflake-client-windows-x86_64.exe
+            syntaur-link-tor-windows-x86_64.exe
+            syntaur-server-windows-x86_64.msi
+            syntaur-server-windows-x86_64-build.json
             syntaur-snowflake-LICENSE.txt
             syntaur-snowflake-source.txt
             syntaur-source-commit.txt
@@ -1124,6 +1305,9 @@ jobs:
             syntaur-link-client-tor-windows-x86_64.exe \
             syntaur-link-probe-windows-x86_64.exe \
             syntaur-snowflake-client-windows-x86_64.exe \
+            syntaur-link-tor-windows-x86_64.exe \
+            syntaur-server-windows-x86_64.msi \
+            syntaur-server-windows-x86_64-build.json \
             syntaur-snowflake-LICENSE.txt \
             syntaur-snowflake-source.txt \
             syntaur-engine-linux-x86_64 \
@@ -1545,6 +1729,9 @@ jobs:
             syntaur-link-client-tor-windows-x86_64.exe
             syntaur-link-probe-windows-x86_64.exe
             syntaur-snowflake-client-windows-x86_64.exe
+            syntaur-link-tor-windows-x86_64.exe
+            syntaur-server-windows-x86_64.msi
+            syntaur-server-windows-x86_64-build.json
             syntaur-snowflake-LICENSE.txt
             syntaur-snowflake-source.txt
             syntaur-engine-linux-x86_64
