@@ -24,6 +24,7 @@ stage_installers_step="$temporary/stage-installers.sh"
 verify_gateway_identity_step="$temporary/verify-gateway-identity.sh"
 smoke_gateway_step="$temporary/smoke-gateway.sh"
 smoke_gateway_windows_step="$temporary/smoke-gateway.ps1"
+stage_link_step="$temporary/stage-link.sh"
 extract_step 'Validate inputs' "$validate_step"
 extract_step 'Prepare canonical release operation metadata' "$prepare_step"
 extract_step 'Create draft release + upload assets (with retry + verification)' "$publish_step"
@@ -31,6 +32,48 @@ extract_step 'Stage install scripts into dist' "$stage_installers_step"
 extract_step 'Verify public gateway build identity' "$verify_gateway_identity_step"
 extract_step 'Smoke test (non-Windows)' "$smoke_gateway_step"
 extract_step 'Smoke test (Windows)' "$smoke_gateway_windows_step"
+extract_step 'Stage Link transport artifacts' "$stage_link_step"
+
+# Exercise the actual matrix-expanded staging command with platform-named inputs.
+# Windows HOST must keep its .exe suffix; Linux HOST staging stays unchanged.
+for platform in windows linux macos; do
+  matrix_filter=".jobs[\"build-link-tor\"].strategy.matrix.include[] | select(.platform == \"$platform\")"
+  [ "$platform" != linux ] || matrix_filter+=" | select(.arch == \"x86_64\")"
+  target=$(yq -r "$matrix_filter | .target" "$workflow")
+  arch=$(yq -r "$matrix_filter | .arch" "$workflow")
+  suffix=$(yq -r "$matrix_filter | .executable_suffix" "$workflow")
+  service=$(yq -r "$matrix_filter | .build_service" "$workflow")
+  link_case="$temporary/link-stage-$platform"
+  mkdir -p "$link_case/crates/syntaur-link-tor/target/$target/release" \
+    "$link_case/crates/syntaur-link-probe/target/$target/release"
+  for binary in syntaur-link-client-tor syntaur-link-tor; do
+    printf '%s fixture\n' "$binary" >"$link_case/crates/syntaur-link-tor/target/$target/release/$binary$suffix"
+  done
+  printf 'probe fixture\n' >"$link_case/crates/syntaur-link-probe/target/$target/release/syntaur-link-probe$suffix"
+  python3 - "$stage_link_step" "$link_case/stage.sh" "$target" "$platform" "$arch" "$suffix" "$service" <<'EXPAND_LINK_STAGE'
+import pathlib, sys
+source, output, *values = sys.argv[1:]
+text = pathlib.Path(source).read_text()
+for key, value in zip(('target', 'platform', 'arch', 'executable_suffix', 'build_service'), values):
+    text = text.replace('${{ matrix.' + key + ' }}', value)
+assert '${{' not in text
+pathlib.Path(output).write_text(text)
+EXPAND_LINK_STAGE
+  (cd "$link_case"; bash stage.sh)
+  if [ "$platform" = macos ]; then
+    test ! -e "$link_case/dist/syntaur-link-tor-$platform-$arch$suffix"
+  else
+    cmp "$link_case/crates/syntaur-link-tor/target/$target/release/syntaur-link-tor$suffix" \
+      "$link_case/dist/syntaur-link-tor-$platform-$arch$suffix"
+    if [ "$platform" = windows ]; then
+      rm "$link_case/crates/syntaur-link-tor/target/$target/release/syntaur-link-tor$suffix"
+      if (cd "$link_case"; bash stage.sh >/dev/null 2>&1); then
+        echo 'missing Windows HOST unexpectedly staged successfully' >&2
+        exit 1
+      fi
+    fi
+  fi
+done
 
 version=0.7.112
 tag=v${version}

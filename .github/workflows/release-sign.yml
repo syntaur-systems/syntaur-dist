@@ -564,7 +564,7 @@ jobs:
             platform: windows
             arch: x86_64
             executable_suffix: '.exe'
-            build_service: false
+            build_service: true
             install_cross_compiler: false
     runs-on: ${{ matrix.os }}
     environment: product-release-source
@@ -661,8 +661,8 @@ jobs:
             "dist/syntaur-link-probe-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.executable_suffix }}"
           if [ "${{ matrix.build_service }}" = true ]; then
             cp \
-              "crates/syntaur-link-tor/target/${{ matrix.target }}/release/syntaur-link-tor" \
-              "dist/syntaur-link-tor-${{ matrix.platform }}-${{ matrix.arch }}"
+              "crates/syntaur-link-tor/target/${{ matrix.target }}/release/syntaur-link-tor${{ matrix.executable_suffix }}" \
+              "dist/syntaur-link-tor-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.executable_suffix }}"
           fi
 
       - name: Upload Link transport artifacts
@@ -1066,6 +1066,7 @@ jobs:
             syntaur-link-client-tor-windows-x86_64.exe
             syntaur-link-probe-windows-x86_64.exe
             syntaur-snowflake-client-windows-x86_64.exe
+            syntaur-link-tor-windows-x86_64.exe
             syntaur-snowflake-LICENSE.txt
             syntaur-snowflake-source.txt
             syntaur-source-commit.txt
@@ -1124,6 +1125,7 @@ jobs:
             syntaur-link-client-tor-windows-x86_64.exe \
             syntaur-link-probe-windows-x86_64.exe \
             syntaur-snowflake-client-windows-x86_64.exe \
+            syntaur-link-tor-windows-x86_64.exe \
             syntaur-snowflake-LICENSE.txt \
             syntaur-snowflake-source.txt \
             syntaur-engine-linux-x86_64 \
@@ -1545,6 +1547,7 @@ jobs:
             syntaur-link-client-tor-windows-x86_64.exe
             syntaur-link-probe-windows-x86_64.exe
             syntaur-snowflake-client-windows-x86_64.exe
+            syntaur-link-tor-windows-x86_64.exe
             syntaur-snowflake-LICENSE.txt
             syntaur-snowflake-source.txt
             syntaur-engine-linux-x86_64
