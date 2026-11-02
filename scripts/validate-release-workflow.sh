@@ -190,7 +190,7 @@ product_environment_jobs=$(yq -r '
   select(.value.environment == "product-release-source") |
   .key
 ' "$workflow" | sort)
-[ "$product_environment_jobs" = $'build\nbuild-engine\nbuild-link-tor' ] || {
+[ "$product_environment_jobs" = $'build\nbuild-engine\nbuild-link-tor\nbuild-windows-server' ] || {
   echo "private product builds must use only the protected product-release-source environment" >&2
   exit 1
 }

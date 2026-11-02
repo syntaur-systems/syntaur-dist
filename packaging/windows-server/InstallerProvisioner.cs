@@ -26,7 +26,9 @@ internal static class InstallerProvisioner
     private static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = MaximumRecord };
     private static readonly string[] ProgramFiles = { "ServerLauncher.exe", "syntaur.exe", "syntaur-viewer.exe",
         "syntaur-link-tor.exe", "syntaur-link-client-tor.exe", "syntaur-link-probe.exe",
-        "syntaur-snowflake-client.exe", "EULA.md" };
+        "syntaur-snowflake-client.exe", "EULA.md", "concrt140.dll", "msvcp140.dll",
+        "msvcp140_1.dll", "msvcp140_2.dll", "msvcp140_atomic_wait.dll", "msvcp140_codecvt_ids.dll",
+        "vccorlib140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "vcruntime140_threads.dll" };
 
     [StructLayout(LayoutKind.Sequential)] private struct SecurityAttributes
     { internal int Length; internal IntPtr Descriptor; internal int Inherit; }

@@ -19,6 +19,7 @@ $Version = "0.7.322"
 $DistWorkflowCommit = "0827df131f0bae171eb5de599cd4d5b8ef3eb5b6"
 $EulaSourceCommit = "8811aa006673caa5082a7c9343e83c0b7ac51d16"
 $Binary = "syntaur.exe"
+$ServerMsiSha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 $InstallDir = "$env:LOCALAPPDATA\Syntaur"
 $GatewaySha256 = "024cb54300ea3ee3012787202ffd7fa8a6b436b5eda1cd0903d40ba39e9a4f75"
 $ViewerSha256 = "3e684b9bbea488cb318547fb8b8ccc62a74352cd952d7535f1e4d1a0c7c80831"
@@ -116,6 +117,46 @@ function Install-PinnedReleaseAsset {
         if ($Backup -and (Test-Path -LiteralPath $Backup)) {
             Remove-Item -LiteralPath $Backup -Force -ErrorAction SilentlyContinue
         }
+    }
+}
+
+function Install-SyntaurServerPackage {
+    # The same standalone MSI is distributed directly and through the Store.
+    # EULA acceptance above is explicit; elevation remains normal Windows UAC.
+    $Directory = Join-Path ([IO.Path]::GetTempPath()) ("Syntaur-Setup-" + [Guid]::NewGuid().ToString("N"))
+    $Package = Join-Path $Directory 'syntaur-server-windows-x86_64.msi'
+    $HeldPackage = $null
+    try {
+        Assert-PrivateInstallDirectory -LiteralPath $Directory
+        Install-PinnedReleaseAsset -Url "https://github.com/syntaur-systems/syntaur-dist/releases/download/v$Version/syntaur-server-windows-x86_64.msi" `
+            -LiteralPath $Package -ExpectedSha256 $ServerMsiSha256 -Label 'Syntaur server installer'
+        # Retain read sharing only until Windows Installer exits: another process
+        # cannot replace or modify these verified bytes during elevation.
+        $HeldPackage = [IO.File]::Open($Package, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        if ((Get-FileHash -LiteralPath $Package -Algorithm SHA256).Hash.ToLowerInvariant() -cne $ServerMsiSha256) {
+            throw 'Syntaur server installer changed before verification.'
+        }
+        $Signature = Get-AuthenticodeSignature -LiteralPath $Package
+        if ($Signature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
+            $null -eq $Signature.SignerCertificate -or $null -eq $Signature.TimeStamperCertificate -or
+            $Signature.SignerCertificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) -cne 'SYNTAUR ENTERPRISES LLC') {
+            throw 'Syntaur server installer is not timestamped and trusted for SYNTAUR ENTERPRISES LLC.'
+        }
+        $Installer = Join-Path $env:windir 'System32\msiexec.exe'
+        # Keep the unelevated MSI client with the initiating user. Windows
+        # Installer requests elevation for per-machine actions itself; explicitly
+        # using RunAs would change UserSID when another administrator consents.
+        $Process = Start-Process -FilePath $Installer -Wait -PassThru `
+            -ArgumentList @('/i', ('"' + $Package + '"'), 'ACCEPT_EULA=Yes', '/norestart')
+        if ($Process.ExitCode -ne 0 -and $Process.ExitCode -ne 3010) {
+            throw "Windows Installer did not complete Syntaur setup (code $($Process.ExitCode))."
+        }
+        if ($Process.ExitCode -eq 3010) { Write-Host 'Syntaur installed. Windows requests a restart.' }
+        else { Write-Host 'Syntaur installed. Open Syntaur from the Start menu to set up your server.' }
+    } finally {
+        if ($null -ne $HeldPackage) { $HeldPackage.Dispose() }
+        if (Test-Path -LiteralPath $Package) { Remove-Item -LiteralPath $Package -Force }
+        if (Test-Path -LiteralPath $Directory) { Remove-Item -LiteralPath $Directory }
     }
 }
 
@@ -527,24 +568,9 @@ if (-not (Confirm-EulaAcceptance -AcceptByFlag ($args -contains "--accept-eula")
 }
 
 # Parse mode
-$Mode = ""
+$Mode = "server"
 if ($args -contains "--server") { $Mode = "server" }
 if ($args -contains "--connect") { $Mode = "connect" }
-
-if (-not $Mode) {
-    Write-Host "  How would you like to use Syntaur?"
-    Write-Host ""
-    Write-Host "  1) Run the server on this computer"
-    Write-Host "     Your AI runs here. Access from phone, laptop, any device."
-    Write-Host "     (This computer needs to stay on.)"
-    Write-Host ""
-    Write-Host "  2) Connect to my Syntaur server"
-    Write-Host "     Syntaur is already running elsewhere. Just install the viewer."
-    Write-Host ""
-    $Choice = Read-Host "  Choose [1/2]"
-    $Mode = if ($Choice -eq "2") { "connect" } else { "server" }
-    Write-Host ""
-}
 
 # Detect architecture
 $Arch = if ([Environment]::Is64BitOperatingSystem) { "x86_64" } else {
@@ -554,6 +580,10 @@ $Arch = if ([Environment]::Is64BitOperatingSystem) { "x86_64" } else {
 
 Write-Host "  Platform: windows-$Arch"
 Write-Host ""
+if ($Mode -eq 'server') {
+    Install-SyntaurServerPackage
+    exit 0
+}
 
 # Create install directory
 if (-not (Test-Path $InstallDir)) {

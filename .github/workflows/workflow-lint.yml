@@ -94,3 +94,22 @@ jobs:
       - name: Verify Windows EULA acceptance reuse
         shell: powershell
         run: .\scripts\test-eula-acceptance.ps1
+
+      - name: Verify exact public server release context
+        shell: powershell
+        run: .\packaging\windows-server\tests\PublicReleaseFixtures.ps1
+
+      - name: Verify server bootstrap handoff
+        shell: powershell
+        run: .\packaging\windows-server\tests\ServerBootstrapFixtures.ps1
+
+      - name: Verify first-run licence records and unattended startup
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $csc = Join-Path $env:windir 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          $fixture = Join-Path $env:RUNNER_TEMP 'SyntaurLicenseFixtures.exe'
+          & $csc /nologo /warnaserror /target:exe /main:LicenseFixtures "/out:$fixture" /reference:System.dll /reference:System.Windows.Forms.dll packaging\windows-server\ServerLauncher.cs packaging\windows-server\tests\LicenseFixtures.cs
+          if ($LASTEXITCODE -ne 0) { throw 'Licence fixture compilation failed.' }
+          & $fixture
+          if ($LASTEXITCODE -ne 0) { throw 'Licence fixtures failed.' }

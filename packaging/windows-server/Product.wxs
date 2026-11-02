@@ -10,7 +10,6 @@
     <MajorUpgrade Schedule="afterInstallExecute"
                   DowngradeErrorMessage="A newer version of Syntaur is already installed." />
     <Launch Condition="VersionNT64" Message="Syntaur requires 64-bit Windows." />
-    <Property Id="ACCEPT_EULA" Secure="yes" />
     <Property Id="OPEN_SYNTAUR" Value="1" />
     <Icon Id="SyntaurIcon" SourceFile="$(var.StagingDirectory)assets\syntaur-icon.ico" />
     <Binary Id="InstallerProvisioner" SourceFile="$(var.StagingDirectory)InstallerProvisioner.exe" />
@@ -30,6 +29,10 @@
       <ComponentRef Id="Snowflake" /><ComponentRef Id="Eula" />
       <ComponentRef Id="ServerShortcut" />
       <ComponentRef Id="ServerLogonShortcut" />
+      <ComponentRef Id="Vcruntime" /><ComponentRef Id="Vcruntime1" /><ComponentRef Id="VcruntimeThreads" />
+      <ComponentRef Id="Msvcp" /><ComponentRef Id="Msvcp1" /><ComponentRef Id="Msvcp2" />
+      <ComponentRef Id="MsvcpAtomic" /><ComponentRef Id="MsvcpCodecvt" />
+      <ComponentRef Id="Vccorlib" /><ComponentRef Id="Concrt" />
     </Feature>
 
     <!-- This user-session action stops only its verified installed Gateway.
@@ -37,8 +40,6 @@
     <CustomAction Id="QuiesceGateway" BinaryRef="MaintenanceLauncher"
                   ExeCommand="--installer-stop" Execute="immediate"
                   Impersonate="yes" Return="check" />
-    <CustomAction Id="RequireEulaAcceptance"
-                  Error="Review the supplied Syntaur EULA and accept it before installing." />
     <CustomAction Id="OpenSyntaur" FileRef="ServerLauncherExe"
                   ExeCommand="" Execute="immediate" Impersonate="yes" Return="asyncNoWait" />
     <CustomAction Id="RollbackRoles" BinaryRef="InstallerProvisioner"
@@ -54,8 +55,6 @@
                   ExeCommand="commit &quot;[ProductCode]&quot; &quot;[UserSID]&quot;"
                   Execute="commit" Impersonate="no" Return="check" />
     <InstallExecuteSequence>
-      <Custom Action="RequireEulaAcceptance" Before="QuiesceGateway"
-              Condition="NOT Installed AND ACCEPT_EULA &lt;&gt; &quot;Yes&quot;" />
       <Custom Action="QuiesceGateway" Before="InstallValidate"
               Condition="(Installed OR WIX_UPGRADE_DETECTED) AND NOT UPGRADINGPRODUCTCODE" />
       <Custom Action="RollbackRoles" Before="PrepareRoles" Condition="NOT REMOVE~=&quot;ALL&quot;" />
@@ -66,6 +65,20 @@
     <UIRef Id="SyntaurServerUI" />
   </Package>
   <Fragment>
+    <!-- App-local licensed Microsoft redistributables remain Microsoft-signed.
+         Standard MSI maintenance updates them with the Syntaur package. -->
+    <Component Id="Vcruntime" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100011">
+      <File Id="Vcruntime140" Source="$(var.StagingDirectory)vcruntime140.dll" KeyPath="yes" />
+    </Component>
+    <Component Id="Vcruntime1" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100012"><File Source="$(var.StagingDirectory)vcruntime140_1.dll" KeyPath="yes" /></Component>
+    <Component Id="VcruntimeThreads" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100013"><File Source="$(var.StagingDirectory)vcruntime140_threads.dll" KeyPath="yes" /></Component>
+    <Component Id="Msvcp" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100014"><File Source="$(var.StagingDirectory)msvcp140.dll" KeyPath="yes" /></Component>
+    <Component Id="Msvcp1" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100015"><File Source="$(var.StagingDirectory)msvcp140_1.dll" KeyPath="yes" /></Component>
+    <Component Id="Msvcp2" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100016"><File Source="$(var.StagingDirectory)msvcp140_2.dll" KeyPath="yes" /></Component>
+    <Component Id="MsvcpAtomic" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100017"><File Source="$(var.StagingDirectory)msvcp140_atomic_wait.dll" KeyPath="yes" /></Component>
+    <Component Id="MsvcpCodecvt" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100018"><File Source="$(var.StagingDirectory)msvcp140_codecvt_ids.dll" KeyPath="yes" /></Component>
+    <Component Id="Vccorlib" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100019"><File Source="$(var.StagingDirectory)vccorlib140.dll" KeyPath="yes" /></Component>
+    <Component Id="Concrt" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100020"><File Source="$(var.StagingDirectory)concrt140.dll" KeyPath="yes" /></Component>
     <Component Id="Launcher" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100001">
       <File Id="ServerLauncherExe" Source="$(var.StagingDirectory)ServerLauncher.exe" KeyPath="yes" />
     </Component>
@@ -100,6 +113,7 @@
       <Shortcut Id="SyntaurShortcut" Directory="ProgramMenuFolder" Name="Syntaur"
                 Target="[#ServerLauncherExe]" WorkingDirectory="INSTALLFOLDER" Icon="SyntaurIcon" />
       <RegistryValue Root="HKLM" Key="Software\Syntaur\Server" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+      <RegistryValue Root="HKLM" Key="Software\Syntaur\Server" Name="Version" Type="string" Value="$(var.ProductVersion)" />
     </Component>
     <Component Id="ServerLogonShortcut" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100010">
       <Shortcut Id="SyntaurLogonShortcut" Directory="StartupFolder" Name="Syntaur server"

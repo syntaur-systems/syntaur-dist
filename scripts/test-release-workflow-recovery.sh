@@ -267,13 +267,51 @@ cp "$repository/install.sh" "$repository/install.ps1" "$stage_case/"
 cp "$repository/EULA.md" "$stage_case/EULA.md"
 printf 'runtime payload\n' >"$stage_case/dist/syntaur-runtime-linux-x86_64"
 printf 'process inspector payload\n' >"$stage_case/dist/syntaur-process-inspector-linux-x86_64"
-for asset in syntaur-gateway syntaur-viewer syntaur-link-client-tor syntaur-link-probe syntaur-snowflake-client; do
+for asset in syntaur-gateway syntaur-viewer syntaur-link-tor syntaur-link-client-tor syntaur-link-probe syntaur-snowflake-client; do
   printf '%s fixture payload\n' "$asset" >"$stage_case/dist/$asset-windows-x86_64.exe"
 done
+printf 'standalone MSI fixture\n' >"$stage_case/dist/syntaur-server-windows-x86_64.msi"
+python3 - "$stage_case" "$version" "$source_commit" "$engine_commit" "$dist_commit" "$correlation" <<'MSI_RECEIPT'
+import hashlib, json, pathlib, sys
+root=pathlib.Path(sys.argv[1])
+version,source,engine,dist,correlation=sys.argv[2:]
+def digest(path): return hashlib.sha256(path.read_bytes()).hexdigest()
+names={'syntaur-gateway':'syntaur', 'syntaur-viewer':'syntaur-viewer', 'syntaur-link-tor':'syntaur-link-tor',
+       'syntaur-link-client-tor':'syntaur-link-client-tor', 'syntaur-link-probe':'syntaur-link-probe',
+       'syntaur-snowflake-client':'syntaur-snowflake-client'}
+inputs={f'{target}.exe':digest(root/'dist'/f'{name}-windows-x86_64.exe') for name,target in names.items()}
+inputs.update({'ServerLauncher.exe':'a'*64,'InstallerProvisioner.exe':'b'*64,
+               'EULA.md':digest(root/'EULA.md'), 'assets\\syntaur-icon.ico':digest(root/'assets/syntaur-icon.ico')})
+for name in ('concrt140.dll','msvcp140.dll','msvcp140_1.dll','msvcp140_2.dll',
+             'msvcp140_atomic_wait.dll','msvcp140_codecvt_ids.dll','vccorlib140.dll',
+             'vcruntime140.dll','vcruntime140_1.dll','vcruntime140_threads.dll'):
+    inputs[name]='d'*64
+receipt=dict(version=version,signed=True,public_release=True,development_only=False,
+             existing_data_in_package=False,package_mode='PUBLIC-RELEASE',development_product_code=None,
+             upgrade_code='3C057823-F0A2-4385-813F-9D654747D7DF',
+             msi_sha256=digest(root/'dist/syntaur-server-windows-x86_64.msi'),input_sha256=inputs,
+             signed_input_sha256={k:'c'*64 for k in inputs if k.endswith('.exe')},
+             release_identity=dict(source_commit=source,engine_commit=engine,dist_commit=dist,
+                                   correlation=correlation,run_id='1234',run_attempt='1'))
+(root/'dist/syntaur-server-windows-x86_64-build.json').write_text(json.dumps(receipt))
+MSI_RECEIPT
 (
   cd "$stage_case"
-  env REL_VERSION="$version" DIST_COMMIT="$dist_commit" bash "$stage_installers_step" >/dev/null
+  env REL_VERSION="$version" SRC_COMMIT="$source_commit" ENGINE_COMMIT="$engine_commit" \
+    DIST_COMMIT="$dist_commit" RELEASE_CORRELATION="$correlation" GITHUB_RUN_ID=1234 GITHUB_RUN_ATTEMPT=1 \
+    bash "$stage_installers_step" >/dev/null
 )
+msi_digest=$(sha256sum "$stage_case/dist/syntaur-server-windows-x86_64.msi" | awk '{print $1}')
+grep -Fxq "\$ServerMsiSha256 = \"$msi_digest\"" "$stage_case/dist/install.ps1"
+if (
+  cd "$stage_case"
+  env REL_VERSION="$version" SRC_COMMIT="$(printf '%040d' 1)" ENGINE_COMMIT="$engine_commit" \
+    DIST_COMMIT="$dist_commit" RELEASE_CORRELATION="$correlation" GITHUB_RUN_ID=1234 GITHUB_RUN_ATTEMPT=1 \
+    bash "$stage_installers_step" >/dev/null 2>&1
+); then
+  echo 'MSI receipt from a different source was accepted' >&2
+  exit 1
+fi
 grep -Fxq "DIST_WORKFLOW_COMMIT=\"$dist_commit\"" "$stage_case/dist/install.sh"
 grep -Eq '^RUNTIME_BOOTSTRAP_SHA256="[0-9a-f]{64}"$' "$stage_case/dist/install.sh"
 grep -Fxq \

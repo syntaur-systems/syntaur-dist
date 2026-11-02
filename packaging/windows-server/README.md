@@ -1,6 +1,6 @@
 # Syntaur Windows server launcher
 
-**Status: development SERVER packaging with a tested signing-candidate path;
+**Status: development SERVER packaging with a tested signing-candidate path and public release builder mode;
 not ready for public installation.** No trusted signature or certificate is
 implied by the signing helper's synthetic tests.
 The new sign-in revision freshly installed and uninstalled successfully. Its
@@ -44,16 +44,56 @@ the selected owner's user-session process. The development MSI compiled with WiX
 warnings treated as errors. Its actual File table contains eight runtime and
 support files, with no live configuration, keys or user profiles.
 
-`scripts/build-windows-server-msi.ps1` requires an exact captured ten-file input
-set and an explicit development or signed-candidate mode. Public mode refuses
-before writing anything. Cached WiX 5.0.2 remains limited to unsigned development;
-supported tooling/licensing, existing signed-release asset verification, actual Authenticode,
+`scripts/build-windows-server-msi.ps1` requires an exact captured twenty-file input
+set and an explicit development, signed-candidate, or public-release mode.
+WiX 7 terms are approved under the revenue < $10k commercial exemption (no support
+plan purchase). Cached WiX 5.0.2 remains supported for unsigned development only.
+Supported tooling/licensing, existing signed-release asset verification, actual Authenticode,
 interactive EULA/setup acceptance, actual sign-in acceptance and public release
 integration remain required. Five native setup dialogs are authored and compile,
 but their complete visible flow has not been accepted. The operative EULA is unchanged. No public package or certificate
 purchase is implied by this prototype.
 
+### Public release mode
+
+The builder supports `-PublicRelease`, binding execution to an exact clean checkout
+on protected `main` CI (`refs/heads/main` on `syntaur-systems/syntaur-dist`), original
+run attempt 1, and the existing release tuple correlation (`syntaur-release-operation-v2`,
+matching version and source/engine/dist commit hashes).
+
+Public release mode requires WiX 7.0.1, approved WiX 7 EULA acceptance, SignTool, the
+Microsoft Artifact Signing dlib, and valid signing metadata. It signs and verifies all eight
+staged executables, packages them, verifies payload hashes remain unchanged, and signs
+and verifies the standalone MSI. The package uses the normal product name `Syntaur`,
+the stable public upgrade code `3C057823-F0A2-4385-813F-9D654747D7DF` (distinct from
+the candidate/development upgrade code `05FAEEC7-80A8-4B12-B6DB-28528B7EEB37`), and outputs
+the stable leaf `syntaur-server-windows-x86_64.msi` alongside `build-result.json` recording
+full release identity. The parent workflow integrates same-run release manifest and
+bootstrap workflows.
+
+Twelve public-release context fixtures and eight bootstrap fixtures passed on Windows.
+These verify context enforcement, correlation matching, and bootstrap elevation controls.
+They do not constitute live CI signing, public package deployment, interactive setup,
+full install acceptance, or Windows Store certification. Azure profile-only GitHub
+OIDC access is configured but not live-tested. Authenticode signatures issued to
+`SYNTAUR ENTERPRISES LLC` do not guarantee the absence of Windows UAC or SmartScreen prompts.
+
 ### Signing candidate preparation
+
+The Store's ordinary MSI `/qn` entry point does not require a custom acceptance
+property. The launcher asks for affirmative EULA acceptance before starting the
+Gateway or Viewer and reuses the existing seven-field `eula-accepted` record.
+An unattended launch without current consent creates no private data and starts
+no server. The CLI bootstrap's existing accepted record is reused. Private root
+ownership remains current-user only; no administrative root is adopted.
+
+The package also contains ten app-local Microsoft C++ runtime DLLs from Visual
+Studio's redistributable directory. Their Microsoft signatures are verified and
+preserved, and each has a separate standard MSI repair component. They are updated
+through ordinary Syntaur package maintenance, without changing shared Windows
+runtime files or adding another installer. WebView2 remains an operating-system
+runtime requirement; it is included with Windows 11 and most Windows 10 systems.
+These changes still need final package lifecycle and live public-CI verification.
 
 The separate `-SignedCandidate` path requires WiX 7.0.1, explicitly approved WiX
 EULA acceptance, Microsoft's SignTool and Artifact Signing dlib, and a bounded
@@ -71,7 +111,9 @@ and verifies the MSI. Every signature must be valid, timestamped and issued to
 `SYNTAUR ENTERPRISES LLC`. An error stops the sequence without automatic retry.
 Unsigned mode cannot be combined with signing options. Signed candidates retain
 the development upgrade identity and explicit test-candidate name, and their
-result still says `store_ready=false` and `public_release=false`.
+result still says `store_ready=false` and `public_release=false`. Previous actual
+fresh lifecycle testing under this path passed trust signing but remains a TEST
+identity, not a public release.
 
 Twenty-two named synthetic signing/option cases passed in Windows PowerShell
 5.1, using process-local mocks and the existing encoded-command QA runner without

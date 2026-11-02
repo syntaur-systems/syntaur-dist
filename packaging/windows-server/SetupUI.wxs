@@ -12,12 +12,11 @@
         <Control Id="License" Type="ScrollableText" X="18" Y="87" Width="354" Height="155" Sunken="yes" TabSkip="no">
           <Text SourceFile="$(var.StagingDirectory)EULA.rtf" />
         </Control>
-        <Control Id="Accept" Type="CheckBox" X="18" Y="250" Width="354" Height="18"
-                 Property="ACCEPT_EULA" CheckBoxValue="Yes" Text="I accept the Syntaur licence agreement." />
+        <Control Id="ConsentInfo" Type="Text" X="18" Y="248" Width="354" Height="25"
+                 Text="Before first use, Syntaur will ask you to accept this licence. Installing does not start the server." />
         <Control Id="Install" Type="PushButton" X="206" Y="280" Width="80" Height="20" Default="yes"
-                 ElevationShield="yes" Text="Install" DisableCondition="ACCEPT_EULA &lt;&gt; &quot;Yes&quot;"
-                 EnableCondition="ACCEPT_EULA = &quot;Yes&quot;">
-          <Publish Event="EndDialog" Value="Return" Condition="ACCEPT_EULA = &quot;Yes&quot;" />
+                 ElevationShield="yes" Text="Install">
+          <Publish Event="EndDialog" Value="Return" />
         </Control>
         <Control Id="Cancel" Type="PushButton" X="292" Y="280" Width="80" Height="20" Cancel="yes" Text="Cancel">
           <Publish Event="EndDialog" Value="Exit" />

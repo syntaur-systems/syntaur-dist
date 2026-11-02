@@ -6,6 +6,7 @@ using System.IO;
 using System.Net;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Threading;
@@ -543,6 +544,7 @@ internal static class ServerLauncher
         string workingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         if (!Directory.Exists(workingDirectory))
             throw new LaunchFailure("Syntaur could not locate the user profile.");
+        if (!EnsureLicenseAccepted(baseDirectory, workingDirectory, background)) return;
 
         GatewayProcess gateway = FindOwnedGateway(gatewayPath);
         StartupDeadline clock = new StartupDeadline(activation);
@@ -587,6 +589,123 @@ internal static class ServerLauncher
             if (!Object.ReferenceEquals(gateway, startedGateway) && gateway != null)
                 gateway.Dispose();
         }
+    }
+
+    private const string EulaHash = "3e417ea33bc2d6296070222df816a6d145846743c1d98e7e4d20c7c2c8e9a720";
+    private const string EulaUrl = "https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/8811aa006673caa5082a7c9343e83c0b7ac51d16/EULA.md";
+
+    private static bool CurrentLicenseRecord(string text)
+    {
+        string[] lines = text.Replace("\r\n", "\n").TrimEnd('\n').Split('\n');
+        if (lines.Length != 7) return false;
+        Dictionary<string, string> fields = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (string line in lines)
+        {
+            int split = line.IndexOf('=');
+            if (split <= 0 || fields.ContainsKey(line.Substring(0, split))) return false;
+            fields.Add(line.Substring(0, split), line.Substring(split + 1));
+        }
+        foreach (string key in new string[] { "record_format", "eula_version", "eula_sha256", "eula_url", "accepted_at", "method", "installer_version" })
+            if (!fields.ContainsKey(key)) return false;
+        DateTime accepted;
+        return fields["record_format"] == "1" && fields["eula_version"] == "1.0" &&
+            fields["eula_sha256"] == EulaHash && fields["eula_url"] == EulaUrl &&
+            (fields["method"] == "prompt" || fields["method"] == "flag") &&
+            DateTime.TryParseExact(fields["accepted_at"], "yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out accepted) &&
+            System.Text.RegularExpressions.Regex.IsMatch(fields["installer_version"], @"\A(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z");
+    }
+
+    private static bool ReadLicenseRecord(string directory)
+    {
+        if (!Directory.Exists(directory)) return false;
+        if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+            throw new LaunchFailure("Syntaur's licence record directory is unsafe.");
+        DirectorySecurity directorySecurity = Directory.GetAccessControl(directory);
+        using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+            if ((directorySecurity.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier) != identity.User)
+                throw new LaunchFailure("Syntaur's private directory belongs to another Windows account.");
+        ValidateAuthority(directory, directorySecurity);
+        string path = Path.Combine(directory, "eula-accepted");
+        if (!File.Exists(path)) return false;
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            throw new LaunchFailure("Syntaur's licence record is unsafe.");
+        ValidateAuthority(path, File.GetAccessControl(path));
+        using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            if (stream.Length <= 0 || stream.Length > 4096) return false;
+            using (StreamReader reader = new StreamReader(stream, new UTF8Encoding(false, true)))
+                return CurrentLicenseRecord(reader.ReadToEnd());
+        }
+    }
+
+    private static bool EnsureLicenseAccepted(string programDirectory, string profile, bool background)
+    {
+        // The OS supplies the genuine profile; never trust HOME/USERPROFILE.
+        // The existing path authority checks reject links and other-user writes.
+        ValidateProgramDirectoryChain(profile);
+        string directory = Path.Combine(profile, ".syntaur");
+        if (ReadLicenseRecord(directory)) return true;
+        // Startup may not manufacture consent or open an unattended dialog.
+        if (background) return false;
+        string licensePath = RequireProgramFile(programDirectory, "EULA.md");
+        string license;
+        using (FileStream stream = new FileStream(licensePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            if (stream.Length <= 0 || stream.Length > 65536) throw new LaunchFailure("Syntaur's licence exceeds its bounds.");
+            using (SHA256 sha = SHA256.Create())
+                if (BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "").ToLowerInvariant() != EulaHash)
+                    throw new LaunchFailure("Syntaur's licence does not match this version.");
+            stream.Position = 0;
+            using (StreamReader reader = new StreamReader(stream, new UTF8Encoding(false, true))) license = reader.ReadToEnd();
+        }
+        if (!LicenseConsentDialog.Show(license, EulaUrl)) return false;
+        string version = Microsoft.Win32.Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Syntaur\Server", "Version", null) as string;
+        if (version == null || !System.Text.RegularExpressions.Regex.IsMatch(version, @"\A(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z"))
+            throw new LaunchFailure("Syntaur could not read its installed version.");
+        string record = "record_format=1\neula_version=1.0\neula_sha256=" + EulaHash + "\neula_url=" + EulaUrl +
+            "\naccepted_at=" + DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture) +
+            "\nmethod=prompt\ninstaller_version=" + version + "\n";
+        WriteLicenseRecord(directory, record);
+        return ReadLicenseRecord(directory);
+    }
+
+    private static void WriteLicenseRecord(string directory, string record)
+    {
+        if (!CurrentLicenseRecord(record)) throw new LaunchFailure("Syntaur's licence acceptance record is invalid.");
+        if (!Directory.Exists(directory))
+        {
+            DirectorySecurity security = new DirectorySecurity();
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+            {
+                security.SetOwner(identity.User);
+                security.SetAccessRuleProtection(true, false);
+                foreach (SecurityIdentifier sid in new SecurityIdentifier[] { identity.User,
+                    new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                    new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null) })
+                    security.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl,
+                        InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                        PropagationFlags.None, AccessControlType.Allow));
+            }
+            Directory.CreateDirectory(directory, security);
+        }
+        // Validate any existing target before atomic replacement; never rewrite
+        // an unsafe owner/DACL or follow an existing record link.
+        ReadLicenseRecord(directory);
+        string path = Path.Combine(directory, "eula-accepted");
+        string temporary = Path.Combine(directory, ".eula-accepted.tmp." + Guid.NewGuid().ToString("N"));
+        try
+        {
+            byte[] bytes = new UTF8Encoding(false).GetBytes(record);
+            using (FileStream stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                stream.Write(bytes, 0, bytes.Length);
+                stream.Flush(true);
+            }
+            if (File.Exists(path)) File.Replace(temporary, path, null, true);
+            else File.Move(temporary, path);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
     // The installer provisions this same layout for its selected unelevated
@@ -980,5 +1099,78 @@ internal static class ServerLauncher
     {
         if (!background)
             MessageBox.Show(message, "Syntaur server", MessageBoxButtons.OK, MessageBoxIcon.Error);
+    }
+}
+
+// UI only. The launcher verifies the packaged licence and owns the existing
+// acceptance record; opening this dialog alone never grants consent.
+internal static class LicenseConsentDialog
+{
+    internal static bool Show(string licenseText, string licenseUrl)
+    {
+        Application.EnableVisualStyles();
+        using (Form form = new Form())
+        {
+            form.Text = "Welcome to Syntaur";
+            form.Width = 760;
+            form.Height = 620;
+            form.StartPosition = FormStartPosition.CenterScreen;
+            form.AutoScaleMode = AutoScaleMode.Font;
+            form.MinimizeBox = false;
+            TextBox license = new TextBox();
+            license.Multiline = true;
+            license.ReadOnly = true;
+            license.ScrollBars = ScrollBars.Vertical;
+            license.WordWrap = true;
+            license.Dock = DockStyle.Fill;
+            license.Text = licenseText;
+            license.AccessibleName = "Syntaur licence agreement";
+            license.TabIndex = 0;
+            TextBox url = new TextBox();
+            url.ReadOnly = true;
+            url.Dock = DockStyle.Top;
+            url.Text = licenseUrl;
+            url.AccessibleName = "Permanent licence agreement address";
+            url.TabIndex = 1;
+            CheckBox accept = new CheckBox();
+            accept.Text = "I have read and accept the Syntaur licence agreement.";
+            accept.AccessibleName = accept.Text;
+            accept.Dock = DockStyle.Top;
+            accept.Height = 42;
+            accept.TabIndex = 2;
+            accept.Checked = false;
+            Button proceed = new Button();
+            proceed.Text = "Continue";
+            proceed.Enabled = false;
+            proceed.AutoSize = true;
+            proceed.TabIndex = 3;
+            Button cancel = new Button();
+            cancel.Text = "Cancel";
+            cancel.AutoSize = true;
+            cancel.DialogResult = DialogResult.Cancel;
+            cancel.TabIndex = 4;
+            FlowLayoutPanel buttons = new FlowLayoutPanel();
+            buttons.Dock = DockStyle.Bottom;
+            buttons.Height = 42;
+            buttons.FlowDirection = FlowDirection.RightToLeft;
+            buttons.Controls.Add(cancel);
+            buttons.Controls.Add(proceed);
+            Panel consent = new Panel();
+            consent.Dock = DockStyle.Bottom;
+            consent.Height = 112;
+            consent.Controls.Add(accept);
+            consent.Controls.Add(url);
+            consent.Controls.Add(buttons);
+            form.Controls.Add(license);
+            form.Controls.Add(consent);
+            form.AcceptButton = proceed;
+            form.CancelButton = cancel;
+            accept.CheckedChanged += delegate { proceed.Enabled = accept.Checked; };
+            proceed.Click += delegate
+            {
+                if (accept.Checked) form.DialogResult = DialogResult.OK;
+            };
+            return form.ShowDialog() == DialogResult.OK && accept.Checked;
+        }
     }
 }
