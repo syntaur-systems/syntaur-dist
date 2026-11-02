@@ -67,7 +67,7 @@ function Invoke-SyntaurArtifactSigning {
     if (@($LiteralPaths | Select-Object -Unique).Count -ne $LiteralPaths.Count) { throw 'Duplicate signing input.' }
     foreach ($path in $LiteralPaths) {
         Invoke-SyntaurSigningTool -SignToolPath $SignToolPath -ArgumentList @(
-            'sign', '/fd', 'SHA256', '/tr', 'https://timestamp.acs.microsoft.com',
+            'sign', '/fd', 'SHA256', '/tr', 'http://timestamp.acs.microsoft.com/',
             '/td', 'SHA256', '/dlib', $DlibPath, '/dmdf', $MetadataPath, $path
         )
         Assert-SyntaurPublisherSignature -LiteralPath $path -SignToolPath $SignToolPath

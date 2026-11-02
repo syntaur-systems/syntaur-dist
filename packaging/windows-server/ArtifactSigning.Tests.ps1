@@ -253,7 +253,7 @@ try {
     }
     # Call 0: sign file 1
     $c0 = $global:SignToolCalls[0]
-    $expectedSignArgs1 = @('sign', '/fd', 'SHA256', '/tr', 'https://timestamp.acs.microsoft.com', '/td', 'SHA256', '/dlib', 'C:\tools\dlib.dll', '/dmdf', $validMetaPath, 'C:\stage\app1.exe')
+    $expectedSignArgs1 = @('sign', '/fd', 'SHA256', '/tr', 'http://timestamp.acs.microsoft.com/', '/td', 'SHA256', '/dlib', 'C:\tools\dlib.dll', '/dmdf', $validMetaPath, 'C:\stage\app1.exe')
     if (($c0.ArgumentList -join ' ') -ne ($expectedSignArgs1 -join ' ')) {
         throw "First file sign args mismatch: $(($c0.ArgumentList -join ' '))"
     }
@@ -265,7 +265,7 @@ try {
     }
     # Call 2: sign file 2
     $c2 = $global:SignToolCalls[2]
-    $expectedSignArgs2 = @('sign', '/fd', 'SHA256', '/tr', 'https://timestamp.acs.microsoft.com', '/td', 'SHA256', '/dlib', 'C:\tools\dlib.dll', '/dmdf', $validMetaPath, 'C:\stage\app2.exe')
+    $expectedSignArgs2 = @('sign', '/fd', 'SHA256', '/tr', 'http://timestamp.acs.microsoft.com/', '/td', 'SHA256', '/dlib', 'C:\tools\dlib.dll', '/dmdf', $validMetaPath, 'C:\stage\app2.exe')
     if (($c2.ArgumentList -join ' ') -ne ($expectedSignArgs2 -join ' ')) {
         throw "Second file sign args mismatch: $(($c2.ArgumentList -join ' '))"
     }
@@ -275,7 +275,7 @@ try {
     if (($c3.ArgumentList -join ' ') -ne ($expectedVerifyArgs2 -join ' ')) {
         throw "Second file verify args mismatch: $(($c3.ArgumentList -join ' '))"
     }
-    Write-Output '  PASS: Exact sign->verify order per file with SHA256/HTTPS timestamp/dlib/metadata args verified'
+    Write-Output '  PASS: Exact sign->verify order per file with SHA256/documented RFC3161 timestamp/dlib/metadata args verified'
 
     # Refusal on invalid signature status
     $global:SignToolCalls.Clear()
