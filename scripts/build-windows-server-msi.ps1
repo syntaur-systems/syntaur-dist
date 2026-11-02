@@ -34,7 +34,7 @@ function Assert-LocalPath {
     $item = Get-Item -LiteralPath $full -Force
     while ($null -ne $item) {
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Reparse paths are refused.' }
-        $item = if ($item.PSIsContainer) { $item.Parent } else { $item.Directory }
+        $item = if ($item -is [IO.DirectoryInfo]) { $item.Parent } else { $item.Directory }
     }
 }
 function Get-Hash { param([string]$LiteralPath) (Get-FileHash -LiteralPath $LiteralPath -Algorithm SHA256).Hash.ToLowerInvariant() }
