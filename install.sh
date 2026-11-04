@@ -957,7 +957,445 @@ LAUNCHER
 
 # The same selected-user LaunchAgent used by the native Mac server launcher.
 # It owns background restart; the Viewer owns the single setup window.
+macos_xml_escape() {
+  printf '%s' "$1" | sed \
+    -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' \
+    -e 's/"/\&quot;/g' -e "s/'/\&apos;/g"
+}
+
+macos_absolute_path() {
+  p="$1"
+  [ -n "$p" ] || return 1
+  case "$p" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case "$p" in
+    *[[:cntrl:]]*) return 1 ;;
+  esac
+  return 0
+}
+
+macos_u32_id() {
+  val="$1"
+  case "$val" in
+    ''|*[!0-9]*) return 1 ;;
+    0[0-9]*) return 1 ;;
+  esac
+  [ ${#val} -le 10 ] || return 1
+  if [ ${#val} -eq 10 ]; then
+    [ "$val" -le 4294967295 ] || return 1
+  fi
+  return 0
+}
+
+render_macos_tor_launchdaemon() (
+  host_exec="$1"
+  cfg_path="$2"
+
+  macos_absolute_path "$host_exec" || return 1
+  macos_absolute_path "$cfg_path" || return 1
+
+  exec_xml=$(macos_xml_escape "$host_exec") || return 1
+  cfg_xml=$(macos_xml_escape "$cfg_path") || return 1
+
+  cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.syntaur.link-tor</string>
+  <key>ProgramArguments</key><array><string>$exec_xml</string></array>
+  <key>UserName</key><string>_syntaur_tor</string>
+  <key>GroupName</key><string>_syntaur_link</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>Umask</key><integer>63</integer>
+  <key>EnvironmentVariables</key><dict>
+    <key>SYNTAUR_LINK_TOR_CONFIG</key><string>$cfg_xml</string>
+  </dict>
+</dict></plist>
+PLIST
+)
+
+# Provision only the existing isolated HOST. Gateway remains a user LaunchAgent.
+# The caller authenticates the asset before this narrow administrator boundary;
+# the root copy is hashed again before launchd can execute it.
+validate_macos_host_stage() (
+  macos_absolute_path "$1" || return 1
+  safe_release_component "$3" || return 1
+  case "$2" in ''|*[!0-9a-f]*) return 1 ;; esac
+  [ "${#2}" -eq 64 ] || return 1
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  stage_size=$(portable_stat_size "$1") || return 1
+  [ "$stage_size" -gt 0 ] && [ "$stage_size" -le 1073741824 ] || return 1
+  [ "$(sha256_file "$1")" = "$2" ]
+)
+
+provision_macos_tor_host() {
+  MACOS_HOST_STAGE=$1
+  MACOS_HOST_SHA=$2
+  macos_absolute_path "$HOME" || return 1
+  validate_macos_host_stage "$MACOS_HOST_STAGE" "$MACOS_HOST_SHA" "$VERSION" || return 1
+  [ "$(id -u)" -ne 0 ] || return 1
+  [ "${SYNTAUR_INSTALL_TEST_FORBID_SUDO:-0}" != 1 ] || return 1
+  MACOS_HOST_PLIST=$(render_macos_tor_launchdaemon \
+    "/usr/local/libexec/syntaur/link-hosts/$VERSION/syntaur-link-tor" \
+    '/Library/Application Support/Syntaur/LinkTor/private/host.json') || return 1
+  /usr/bin/sudo -v || return 1
+  # Pass data as arguments, never interpolate it into the privileged program.
+  /usr/bin/sudo -n /bin/sh -s -- "$MACOS_HOST_STAGE" "$MACOS_HOST_SHA" \
+    "$VERSION" "$(id -u)" "$HOME" "$MACOS_HOST_PLIST" <<'MACOS_HOST_ROOT' || return 1
+set -eu
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+umask 077
+stage=$1; digest=$2; version=$3; gateway_uid=$4; gateway_home=$5; plist_body=$6
+[ "$(id -u)" = 0 ] || exit 1
+case "$digest" in ''|*[!0-9a-f]*) exit 1 ;; esac
+[ "${#digest}" = 64 ] || exit 1
+case "$version" in ''|.*|*..*|*[!A-Za-z0-9._-]*) exit 1 ;; esac
+case "$gateway_uid" in ''|0|0*|*[!0-9]*) exit 1 ;; esac
+owner=$(/usr/bin/id -un "$gateway_uid")
+case "$owner" in ''|*[!A-Za-z0-9_.-]*) exit 1 ;; esac
+registered_home=$(/usr/bin/dscl . -read "/Users/$owner" NFSHomeDirectory)
+[ "$registered_home" = "NFSHomeDirectory: $gateway_home" ] || exit 1
+[ -d "$gateway_home" ] && [ ! -L "$gateway_home" ] || exit 1
+[ "$(cd -P "$gateway_home" && pwd)" = "$gateway_home" ] || exit 1
+[ "$(/usr/bin/stat -f '%u' "$gateway_home")" = "$gateway_uid" ] || exit 1
+base='/Library/Application Support/Syntaur/LinkTor'
+codebase=/usr/local/libexec/syntaur/link-hosts
+code="$codebase/$version"
+host="$code/syntaur-link-tor"
+job=/Library/LaunchDaemons/dev.syntaur.link-tor.plist
+agent="$gateway_home/Library/LaunchAgents/dev.syntaur.gateway.plist"
+
+# Refuse aliases, ACL grants and wrong roles. Never repair another owner's tree.
+entry() {
+  path=$1; kind=$2; uid=$3; gid=$4; mode=$5
+  [ ! -L "$path" ] || return 1
+  case "$kind" in d) [ -d "$path" ] ;; f) [ -f "$path" ] ;; *) return 1 ;; esac || return 1
+  [ "$(/usr/bin/stat -f '%u:%g:%Lp' "$path")" = "$uid:$gid:$mode" ] || return 1
+  [ "$(/bin/ls -lde "$path" | /usr/bin/wc -l | /usr/bin/tr -d ' ')" = 1 ] || return 1
+  if [ "$kind" = f ]; then [ "$(/usr/bin/stat -f '%l' "$path")" = 1 ] || return 1; fi
+}
+root_ancestor() {
+  [ -d "$1" ] && [ ! -L "$1" ] || return 1
+  [ "$(/usr/bin/stat -f '%u' "$1")" = 0 ] || return 1
+  permissions=$(/usr/bin/stat -f '%Lp' "$1")
+  [ $((0$permissions & 0022)) -eq 0 ] || return 1
+  [ "$(/bin/ls -lde "$1" | /usr/bin/wc -l | /usr/bin/tr -d ' ')" = 1 ]
+}
+loaded_host_matches() {
+  [ "${#1}" -le 65536 ] || return 1
+  printf '%s\n' "$1" | /usr/bin/awk -v program="$2" -v path="$job" -v config="$base/private/host.json" '
+    { sub(/^[ \t]+/, "") }
+    $0 == "arguments = {" {blocks++; in_args=1; next}
+    in_args {if ($0 == "}") {in_args=0} else {args++; if ($0 != program) bad=1}; next}
+    /^path = / {if ($0 != "path = " path) bad=1; paths++}
+    /^program = / {if ($0 != "program = " program) bad=1; programs++}
+    /^username = / {if ($0 != "username = _syntaur_tor") bad=1; users++}
+    /^group = / {if ($0 != "group = _syntaur_link") bad=1; groups++}
+    /^SYNTAUR_LINK_TOR_CONFIG => / {if ($0 != "SYNTAUR_LINK_TOR_CONFIG => " config) bad=1; configs++}
+    END {exit bad || in_args || blocks != 1 || args != 1 || paths != 1 || programs != 1 || users != 1 || groups != 1 || configs != 1}
+  '
+}
+for path in / /Library '/Library/Application Support' /Library/LaunchDaemons /usr /usr/local; do
+  root_ancestor "$path" || exit 1
+done
+for path in '/Library/Application Support/Syntaur' "$base" /usr/local/libexec /usr/local/libexec/syntaur "$codebase" "$code"; do
+  if [ -e "$path" ] || [ -L "$path" ]; then entry "$path" d 0 0 755 || exit 1; fi
+done
+if [ -e "$job" ] || [ -L "$job" ]; then
+  entry "$job" f 0 0 644 || exit 1
+  [ "$(/usr/bin/plutil -extract Label raw -o - "$job")" = dev.syntaur.link-tor ] || exit 1
+  [ "$(/usr/bin/plutil -extract UserName raw -o - "$job")" = _syntaur_tor ] || exit 1
+  [ "$(/usr/bin/plutil -extract GroupName raw -o - "$job")" = _syntaur_link ] || exit 1
+  [ "$(/usr/bin/plutil -extract EnvironmentVariables.SYNTAUR_LINK_TOR_CONFIG raw -o - "$job")" = "$base/private/host.json" ] || exit 1
+  previous_program=$(/usr/bin/plutil -extract ProgramArguments.0 raw -expect string -o - "$job")
+  case "$previous_program" in "$codebase"/*/syntaur-link-tor) ;; *) exit 1 ;; esac
+  previous_version=${previous_program#"$codebase"/}; previous_version=${previous_version%/syntaur-link-tor}
+  case "$previous_version" in ''|.*|*..*|*[!A-Za-z0-9._-]*) exit 1 ;; esac
+  entry "$codebase/$previous_version" d 0 0 755 || exit 1
+  entry "$previous_program" f 0 0 755 || exit 1
+fi
+if [ -e "$agent" ] || [ -L "$agent" ]; then
+  [ ! -L "$agent" ] && [ -f "$agent" ] || exit 1
+  [ "$(/usr/bin/stat -f '%u' "$agent")" = "$gateway_uid" ] || exit 1
+  # A UID is insufficient: the same user can have unrelated QA HOME directories.
+  if previous_home=$(/usr/bin/plutil -extract EnvironmentVariables.HOME raw -o - "$agent" 2>/dev/null); then
+    [ "$previous_home" = "$gateway_home" ] || exit 1
+  fi
+fi
+for path in '/Library/Application Support/Syntaur' "$base" /usr/local/libexec /usr/local/libexec/syntaur "$codebase" "$code"; do
+  if [ ! -e "$path" ]; then /usr/bin/install -d -m 755 -o root -g wheel "$path"; fi
+  entry "$path" d 0 0 755 || exit 1
+done
+# One standard installer lock, removed on every ordinary return; never force it.
+/bin/mkdir "$base/.install-lock" || exit 1
+temp=''; config_temp=''; job_temp=''; group_record=''; publish_started=0; publish_committed=0
+had_job=0; was_running=0; new_roles=0; private_published=0; created_private=0
+new_user_uuid=''; new_group_uuid=''
+cleanup() {
+  result=$?
+  trap - EXIT HUP INT TERM
+  if [ "$publish_started" = 1 ] && [ "$publish_committed" = 0 ]; then
+    # Same exact admitted job, including when a signal interrupts publication.
+    rollback_safe=1; already_old=0
+    if loaded=$(/bin/launchctl print system/dev.syntaur.link-tor 2>/dev/null); then
+      if [ "$had_job" = 1 ] && loaded_host_matches "$loaded" "$previous_program"; then
+        already_old=1
+      elif loaded_host_matches "$loaded" "$host"; then
+        /bin/launchctl bootout system "$job" || rollback_safe=0
+      else rollback_safe=0; fi
+    else
+      status=$?; [ "$status" = 113 ] || rollback_safe=0
+    fi
+    if [ "$rollback_safe" = 0 ]; then
+      result=1
+    elif [ "$had_job" = 1 ]; then
+      /bin/cp "$backup" "$job" && /bin/chmod 644 "$job" || result=1
+      if [ "$was_running" = 1 ] && [ "$already_old" = 0 ]; then /bin/launchctl bootstrap system "$job" || result=1; fi
+    elif [ -e "$job" ]; then /bin/rm "$job" || result=1; fi
+  fi
+  if [ "$new_roles" = 1 ] && [ "$private_published" = 0 ]; then
+    # Fresh incomplete identities only, identified by the UUIDs generated in
+    # this invocation before their records were created. Never remove adoptees.
+    if [ "$created_private" = 1 ]; then
+      for leaf in ipc private/cache private/state private; do
+        if [ -d "$base/$leaf" ] && [ ! -L "$base/$leaf" ]; then /bin/rmdir "$base/$leaf" || result=1; fi
+      done
+    fi
+    if [ -e "$base/private" ] || [ -L "$base/private" ]; then
+      result=1
+    elif [ "$(/usr/bin/dscl . -read /Users/_syntaur_tor GeneratedUID 2>/dev/null)" = "GeneratedUID: $new_user_uuid" ]; then
+      /usr/bin/dscl . -delete /Users/_syntaur_tor || result=1
+    fi
+    if [ ! -e "$base/private" ] && [ ! -L "$base/private" ] && [ "$(/usr/bin/dscl . -read /Groups/_syntaur_link GeneratedUID 2>/dev/null)" = "GeneratedUID: $new_group_uuid" ]; then
+      /usr/bin/dscl . -delete /Groups/_syntaur_link || result=1
+    fi
+  fi
+  [ -z "$temp" ] || /bin/rm -f "$temp"
+  [ -z "$config_temp" ] || /bin/rm -f "$config_temp"
+  [ -z "$job_temp" ] || /bin/rm -f "$job_temp"
+  [ -z "$group_record" ] || /bin/rm -f "$group_record"
+  /bin/rmdir "$base/.install-lock" || result=1
+  exit "$result"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+group_exists=0; user_exists=0
+matches=$(/usr/bin/dscl . -search /Groups RecordName _syntaur_link) || exit 1
+[ -z "$matches" ] || group_exists=1
+matches=$(/usr/bin/dscl . -search /Users RecordName _syntaur_tor) || exit 1
+[ -z "$matches" ] || user_exists=1
+[ "$group_exists" = "$user_exists" ] || exit 1
+if [ "$group_exists" = 0 ]; then
+  # A lost account must never cause adoption of existing private state.
+  [ ! -e "$base/private" ] && [ ! -L "$base/private" ] || exit 1
+  [ ! -e "$base/ipc" ] && [ ! -L "$base/ipc" ] || exit 1
+  shared_gid=''; sidecar_uid=''
+  for candidate in $(/usr/bin/jot 100 400); do
+    matches=$(/usr/bin/dscl /Search -search /Groups PrimaryGroupID "$candidate") || exit 1
+    if [ -z "$matches" ]; then shared_gid=$candidate; break; fi
+  done
+  for candidate in $(/usr/bin/jot 100 400); do
+    matches=$(/usr/bin/dscl /Search -search /Users UniqueID "$candidate") || exit 1
+    if [ -z "$matches" ]; then sidecar_uid=$candidate; break; fi
+  done
+  [ -n "$shared_gid" ] && [ -n "$sidecar_uid" ] && [ "$sidecar_uid" != "$gateway_uid" ] || exit 1
+  new_user_uuid=$(/usr/bin/uuidgen); new_group_uuid=$(/usr/bin/uuidgen); new_roles=1
+  /usr/bin/dscl . -create /Groups/_syntaur_link GeneratedUID "$new_group_uuid"
+  /usr/bin/dscl . -create /Groups/_syntaur_link PrimaryGroupID "$shared_gid"
+  /usr/bin/dscl . -create /Groups/_syntaur_link RealName 'Syntaur Link IPC'
+  /usr/bin/dscl . -create /Groups/_syntaur_link Password '*'
+  /usr/bin/dscl . -create /Users/_syntaur_tor GeneratedUID "$new_user_uuid"
+  /usr/bin/dscl . -create /Users/_syntaur_tor UniqueID "$sidecar_uid"
+  /usr/bin/dscl . -create /Users/_syntaur_tor PrimaryGroupID "$shared_gid"
+  /usr/bin/dscl . -create /Users/_syntaur_tor UserShell /usr/bin/false
+  /usr/bin/dscl . -create /Users/_syntaur_tor NFSHomeDirectory /var/empty
+  /usr/bin/dscl . -create /Users/_syntaur_tor RealName 'Syntaur Link Tor'
+  /usr/bin/dscl . -create /Users/_syntaur_tor IsHidden 1
+  /usr/bin/dscl . -create /Users/_syntaur_tor Password '*'
+fi
+sidecar_uid=$(/usr/bin/id -u _syntaur_tor)
+[ "$(/usr/bin/dscl . -read /Users/_syntaur_tor RecordName)" = 'RecordName: _syntaur_tor' ] || exit 1
+[ "$(/usr/bin/dscl . -read /Groups/_syntaur_link RecordName)" = 'RecordName: _syntaur_link' ] || exit 1
+shared_gid=$(/usr/bin/dscl . -read /Groups/_syntaur_link PrimaryGroupID)
+shared_gid=${shared_gid#PrimaryGroupID: }
+case "$sidecar_uid" in ''|0|0*|*[!0-9]*) exit 1 ;; esac
+case "$shared_gid" in ''|0|0*|*[!0-9]*) exit 1 ;; esac
+[ "$sidecar_uid" != "$gateway_uid" ] || exit 1
+[ "$(/usr/bin/id -g _syntaur_tor)" = "$shared_gid" ] || exit 1
+[ "$(/usr/bin/dscl . -read /Users/_syntaur_tor UserShell)" = 'UserShell: /usr/bin/false' ] || exit 1
+[ "$(/usr/bin/dscl . -read /Users/_syntaur_tor NFSHomeDirectory)" = 'NFSHomeDirectory: /var/empty' ] || exit 1
+[ "$(/usr/bin/dscl . -read /Users/_syntaur_tor Password)" = 'Password: *' ] || exit 1
+[ "$(/usr/bin/dscl . -read /Users/_syntaur_tor IsHidden)" = 'IsHidden: 1' ] || exit 1
+# Reverse mappings include every active DirectoryService search source. Primary
+# GID membership is implicit and must not admit another local/network account.
+users=$(/usr/bin/dscl /Search -list /Users UniqueID) || exit 1
+groups=$(/usr/bin/dscl /Search -list /Groups PrimaryGroupID) || exit 1
+[ "$(printf '%s\n' "$users" | /usr/bin/awk -v id="$sidecar_uid" '$2 == id {print $1}')" = _syntaur_tor ] || exit 1
+[ "$(printf '%s\n' "$groups" | /usr/bin/awk -v id="$shared_gid" '$2 == id {print $1}')" = _syntaur_link ] || exit 1
+primary_users=$(/usr/bin/dscl /Search -list /Users PrimaryGroupID) || exit 1
+printf '%s\n' "$primary_users" | /usr/bin/awk -v id="$shared_gid" -v owner="$owner" \
+  '$2 == id && $1 != "_syntaur_tor" && $1 != owner {bad=1} END {exit bad}' || exit 1
+# Existing configuration binds the selected owner before group membership or
+# private state can be changed. Keep any existing bridge choice byte-for-byte.
+config="$base/private/host.json"
+if [ -e "$base/private" ] && [ ! -e "$config" ]; then exit 1; fi
+if [ -e "$config" ] || [ -L "$config" ]; then
+  entry "$base/private" d "$sidecar_uid" "$shared_gid" 700 || exit 1
+  entry "$config" f "$sidecar_uid" "$shared_gid" 400 || exit 1
+  [ "$(/usr/bin/plutil -extract gateway_uid raw -expect integer -o - "$config")" = "$gateway_uid" ] || exit 1
+fi
+# Read one complete valid local record. A failed directory read is not an
+# absent optional attribute; subsequent missing-key checks use this frozen file.
+group_record=$(/usr/bin/mktemp "$base/.group.XXXXXX")
+/usr/bin/dscl -plist . -read /Groups/_syntaur_link >"$group_record"
+[ "$(/usr/bin/stat -f '%z' "$group_record")" -le 65536 ] || exit 1
+/usr/bin/plutil -lint "$group_record" >/dev/null
+owner_uuid=$(/usr/bin/dscl . -read "/Users/$owner" GeneratedUID)
+owner_uuid=${owner_uuid#GeneratedUID: }
+for attribute in GroupMembership GroupMembers NestedGroups; do
+  key="dsAttrTypeStandard:$attribute"
+  if kind=$(/usr/bin/plutil -type "$key" "$group_record" 2>/dev/null); then
+    [ "$kind" = array ] || exit 1
+    count=$(/usr/bin/plutil -extract "$key" raw -expect array -o - "$group_record")
+    case "$count" in 0) ;; 1)
+      member=$(/usr/bin/plutil -extract "$key.0" raw -expect string -o - "$group_record")
+      case "$attribute" in
+        GroupMembership) [ "$member" = "$owner" ] || exit 1 ;;
+        GroupMembers) [ "$member" = "$owner_uuid" ] || exit 1 ;;
+        *) exit 1 ;;
+      esac ;;
+      *) exit 1 ;;
+    esac
+  fi
+done
+/usr/sbin/dseditgroup -o edit -a "$owner" -t user _syntaur_link
+/usr/sbin/dseditgroup -o checkmember -m "$owner" _syntaur_link >/dev/null
+
+for leaf in private private/state private/cache ipc; do
+  uid=$sidecar_uid; mode=700
+  if [ "$leaf" = ipc ]; then uid=$gateway_uid; mode=2770; fi
+  path="$base/$leaf"
+  if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+    /usr/bin/install -d -m "$mode" -o "$uid" -g "$shared_gid" "$path"
+    if [ "$leaf" = private ]; then created_private=1; fi
+  fi
+  entry "$path" d "$uid" "$shared_gid" "$mode" || exit 1
+done
+config="$base/private/host.json"
+if [ -e "$config" ] || [ -L "$config" ]; then
+  entry "$config" f "$sidecar_uid" "$shared_gid" 400 || exit 1
+  [ "$(/usr/bin/plutil -extract schema raw -expect integer -o - "$config")" = 4 ] || exit 1
+  [ "$(/usr/bin/plutil -extract gateway_uid raw -expect integer -o - "$config")" = "$gateway_uid" ] || exit 1
+  [ "$(/usr/bin/plutil -extract shared_gid raw -expect integer -o - "$config")" = "$shared_gid" ] || exit 1
+  [ "$(/usr/bin/plutil -extract virtual_port raw -expect integer -o - "$config")" = 443 ] || exit 1
+  [ "$(/usr/bin/plutil -extract service_nickname raw -expect string -o - "$config")" = syntaur ] || exit 1
+  for pair in state_dir:private/state cache_dir:private/cache status_path:private/status.json control_socket:ipc/gateway.sock gateway_pin_path:ipc/gateway-pin.json; do
+    key=${pair%%:*}; relative=${pair#*:}
+    [ "$(/usr/bin/plutil -extract "$key" raw -expect string -o - "$config")" = "$base/$relative" ] || exit 1
+  done
+else
+  config_temp=$(/usr/bin/mktemp "$base/.host.json.XXXXXX")
+  /bin/cat >"$config_temp" <<CONFIG
+{"schema":4,"state_dir":"$base/private/state","cache_dir":"$base/private/cache","status_path":"$base/private/status.json","control_socket":"$base/ipc/gateway.sock","gateway_pin_path":"$base/ipc/gateway-pin.json","service_nickname":"syntaur","virtual_port":443,"gateway_uid":$gateway_uid,"shared_gid":$shared_gid,"bridge_bundle":null}
+CONFIG
+  /usr/sbin/chown "$sidecar_uid:$shared_gid" "$config_temp"
+  /bin/chmod 400 "$config_temp"
+  /bin/ln "$config_temp" "$config"
+  private_published=1
+  /bin/rm "$config_temp"; config_temp=''
+fi
+private_published=1
+if [ -e "$host" ] || [ -L "$host" ]; then
+  entry "$host" f 0 0 755 || exit 1
+  [ "$(/usr/bin/shasum -a 256 "$host" | /usr/bin/awk '{print $1}')" = "$digest" ] || exit 1
+else
+  temp=$(/usr/bin/mktemp "$code/.host.XXXXXX")
+  # Copy bytes only into a root-private file. A mutable staging alias must
+  # neither import ACLs nor expose unexpected root-readable bytes to users.
+  /bin/dd if="$stage" of="$temp" bs=1048576 count=1025 2>/dev/null
+  entry "$temp" f 0 0 600 || exit 1
+  [ "$(/usr/bin/shasum -a 256 "$temp" | /usr/bin/awk '{print $1}')" = "$digest" ] || exit 1
+  /bin/chmod 755 "$temp"
+  /bin/ln "$temp" "$host"
+  /bin/rm "$temp"; temp=''
+fi
+job_temp=$(/usr/bin/mktemp /Library/LaunchDaemons/.dev.syntaur.link-tor.XXXXXX)
+printf '%s\n' "$plist_body" >"$job_temp"
+/usr/bin/plutil -lint "$job_temp" >/dev/null
+/bin/chmod 644 "$job_temp"
+entry "$job_temp" f 0 0 644 || exit 1
+backup="$base/launchdaemon.previous.plist"
+if [ -e "$backup" ] || [ -L "$backup" ]; then entry "$backup" f 0 0 600 || exit 1; fi
+if [ -e "$job" ]; then
+  had_job=1
+  /bin/cp "$job" "$backup"
+  /bin/chmod 600 "$backup"
+  entry "$backup" f 0 0 600 || exit 1
+fi
+if loaded=$(/bin/launchctl print system/dev.syntaur.link-tor 2>/dev/null); then
+  [ -f "$job" ] || exit 1
+  loaded_host_matches "$loaded" "$previous_program" || exit 1
+  was_running=1
+  publish_started=1
+  /bin/launchctl bootout system "$job"
+else
+  status=$?; [ "$status" = 113 ] || exit 1
+fi
+publish_started=1
+/bin/mv -f "$job_temp" "$job"; job_temp=''
+/bin/launchctl bootstrap system "$job"
+publish_committed=1
+MACOS_HOST_ROOT
+  MACOS_TOR_UID=$(/usr/bin/id -u _syntaur_tor) || return 1
+  MACOS_TOR_GID=$(/usr/bin/dscl . -read /Groups/_syntaur_link PrimaryGroupID) || return 1
+  MACOS_TOR_GID=${MACOS_TOR_GID#PrimaryGroupID: }
+  MACOS_TOR_SOCKET='/Library/Application Support/Syntaur/LinkTor/ipc/gateway.sock'
+  MACOS_TOR_GATEWAY_PIN='/Library/Application Support/Syntaur/LinkTor/ipc/gateway-pin.json'
+  export MACOS_TOR_UID MACOS_TOR_GID MACOS_TOR_SOCKET MACOS_TOR_GATEWAY_PIN
+}
+
 write_macos_launchagent() (
+  macos_absolute_path "$HOME" || return 1
+  HOME_XML=$(macos_xml_escape "$HOME") || return 1
+  has_uid=0; has_gid=0; has_sock=0; has_pin=0
+  [ -n "${MACOS_TOR_UID+x}" ] && has_uid=1
+  [ -n "${MACOS_TOR_GID+x}" ] && has_gid=1
+  [ -n "${MACOS_TOR_SOCKET+x}" ] && has_sock=1
+  [ -n "${MACOS_TOR_GATEWAY_PIN+x}" ] && has_pin=1
+
+  tuple_count=$((has_uid + has_gid + has_sock + has_pin))
+  if [ "$tuple_count" -ne 0 ] && [ "$tuple_count" -ne 4 ]; then
+    return 1
+  fi
+
+  if [ "$tuple_count" -eq 4 ]; then
+    macos_u32_id "$MACOS_TOR_UID" || return 1
+    macos_u32_id "$MACOS_TOR_GID" || return 1
+
+    cur_uid=$(id -u) || return 1
+    if [ "$MACOS_TOR_UID" -eq 0 ] || [ "$MACOS_TOR_UID" -eq "$cur_uid" ]; then
+      return 1
+    fi
+    if [ "$MACOS_TOR_GID" -eq 0 ]; then
+      return 1
+    fi
+
+    macos_absolute_path "$MACOS_TOR_SOCKET" || return 1
+    macos_absolute_path "$MACOS_TOR_GATEWAY_PIN" || return 1
+
+    TOR_UID_XML=$(macos_xml_escape "$MACOS_TOR_UID") || return 1
+    TOR_GID_XML=$(macos_xml_escape "$MACOS_TOR_GID") || return 1
+    TOR_SOCKET_XML=$(macos_xml_escape "$MACOS_TOR_SOCKET") || return 1
+    TOR_PIN_XML=$(macos_xml_escape "$MACOS_TOR_GATEWAY_PIN") || return 1
+  fi
+
   safe_eula_entry "$HOME" directory || return 1
   PLIST_DIR="$HOME/Library/LaunchAgents"
   for DIRECTORY in "$HOME/Library" "$PLIST_DIR"; do
@@ -970,13 +1408,13 @@ write_macos_launchagent() (
   if [ -e "$PLIST_DEST" ] || [ -L "$PLIST_DEST" ]; then
     safe_eula_entry "$PLIST_DEST" file || return 1
   fi
-  GATEWAY_XML_PATH=$(printf '%s' "$INSTALL_DIR/$BINARY" | sed \
-    -e 's/\&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' \
-    -e 's/"/\&quot;/g' -e "s/'/\&apos;/g") || return 1
+  GATEWAY_XML_PATH=$(macos_xml_escape "$INSTALL_DIR/$BINARY") || return 1
   TEMP_PLIST=$(mktemp "$PLIST_DIR/.dev.syntaur.gateway.XXXXXX") || return 1
   trap 'rm -f "$TEMP_PLIST"' EXIT HUP INT TERM
   chmod 600 "$TEMP_PLIST"
-  cat > "$TEMP_PLIST" <<PLIST
+
+  {
+    cat <<HEADER
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -986,10 +1424,23 @@ write_macos_launchagent() (
   <key>KeepAlive</key><true/>
   <key>EnvironmentVariables</key><dict>
     <key>SYNTAUR_LAUNCHER_OWNS_UI</key><string>1</string>
+    <key>HOME</key><string>$HOME_XML</string>
+HEADER
+    if [ "$tuple_count" -eq 4 ]; then
+      cat <<VARS
+    <key>SYNTAUR_LINK_TOR_GATEWAY_PIN</key><string>$TOR_PIN_XML</string>
+    <key>SYNTAUR_LINK_TOR_GID</key><string>$TOR_GID_XML</string>
+    <key>SYNTAUR_LINK_TOR_SOCKET</key><string>$TOR_SOCKET_XML</string>
+    <key>SYNTAUR_LINK_TOR_UID</key><string>$TOR_UID_XML</string>
+VARS
+    fi
+    cat <<FOOTER
     <key>SYNTAUR_OWNER_UIDGID</key><string>$(id -u):$(id -g)</string>
   </dict>
 </dict></plist>
-PLIST
+FOOTER
+  } > "$TEMP_PLIST"
+
   if [ -e "$PLIST_DEST" ] || [ -L "$PLIST_DEST" ]; then
     safe_eula_entry "$PLIST_DEST" file || return 1
   fi
@@ -1243,6 +1694,27 @@ else
   done
 
   write_app_launcher || exit 1
+fi
+
+if [ "$PLATFORM" = macos ] && [ "$MODE" = server ]; then
+  echo "  Installing the isolated Syntaur Link server service (administrator consent required)..."
+  MACOS_HOST_TEMP=$(mktemp -d)
+  trap 'rm -rf "$MACOS_HOST_TEMP"' EXIT HUP INT TERM
+  # An administrator-owned executable always requires authenticated release
+  # bytes. Developer --skip-verify cannot cross this privilege boundary.
+  if ! ( VERIFY=1; download_verified \
+      "${REPO_URL}/releases/download/v${VERSION}/syntaur-link-tor-macos-arm64" \
+      "$MACOS_HOST_TEMP/syntaur-link-tor" ); then
+    echo "  Error: no authenticated Mac Link server service is available."
+    exit 1
+  fi
+  MACOS_HOST_DIGEST=$(sha256_file "$MACOS_HOST_TEMP/syntaur-link-tor") || exit 1
+  provision_macos_tor_host "$MACOS_HOST_TEMP/syntaur-link-tor" "$MACOS_HOST_DIGEST" || {
+    echo "  Error: the isolated Mac Link server service could not be installed safely."
+    exit 1
+  }
+  rm -rf "$MACOS_HOST_TEMP"
+  trap - EXIT HUP INT TERM
 fi
 
 configure_link_transport || {

@@ -557,7 +557,7 @@ jobs:
             platform: macos
             arch: arm64
             executable_suffix: ''
-            build_service: false
+            build_service: true
             install_cross_compiler: false
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -1238,6 +1238,7 @@ jobs:
             syntaur-link-probe-linux-aarch64
             syntaur-snowflake-client-linux-aarch64
             syntaur-link-tor-linux-aarch64
+            syntaur-link-tor-macos-arm64
             syntaur-link-client-tor-macos-arm64
             syntaur-link-probe-macos-arm64
             syntaur-snowflake-client-macos-arm64
@@ -1299,6 +1300,7 @@ jobs:
             syntaur-link-probe-linux-aarch64 \
             syntaur-snowflake-client-linux-aarch64 \
             syntaur-link-tor-linux-aarch64 \
+            syntaur-link-tor-macos-arm64 \
             syntaur-link-client-tor-macos-arm64 \
             syntaur-link-probe-macos-arm64 \
             syntaur-snowflake-client-macos-arm64 \
@@ -1723,6 +1725,7 @@ jobs:
             syntaur-link-probe-linux-aarch64
             syntaur-snowflake-client-linux-aarch64
             syntaur-link-tor-linux-aarch64
+            syntaur-link-tor-macos-arm64
             syntaur-link-client-tor-macos-arm64
             syntaur-link-probe-macos-arm64
             syntaur-snowflake-client-macos-arm64
