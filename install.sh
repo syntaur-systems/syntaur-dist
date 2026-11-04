@@ -933,6 +933,9 @@ export PATH="$APP_DIR:$PATH"
 # Retired URL and bearer variables cannot select a remote customer path.
 unset SYNTAUR_URL SYNTAUR_OPEN_URL SYNTAUR_SESSION_TOKEN SYNTAUR_TS_AUTHKEY
 if [ "$INSTALL_MODE" = "server" ]; then
+  if [ "$APP_PLATFORM" = "macos" ]; then
+    exec "$APP_DIR/syntaur-viewer" --server
+  fi
   if [ -x "$APP_DIR/syntaur-engine" ]; then
     exec "$APP_DIR/syntaur-engine" --url http://127.0.0.1:18789 --width 1440 --height 950
   fi
@@ -951,6 +954,49 @@ LAUNCHER
   } > "$APP_LAUNCHER"
   chmod +x "$APP_LAUNCHER"
 }
+
+# The same selected-user LaunchAgent used by the native Mac server launcher.
+# It owns background restart; the Viewer owns the single setup window.
+write_macos_launchagent() (
+  safe_eula_entry "$HOME" directory || return 1
+  PLIST_DIR="$HOME/Library/LaunchAgents"
+  for DIRECTORY in "$HOME/Library" "$PLIST_DIR"; do
+    if [ ! -e "$DIRECTORY" ] && [ ! -L "$DIRECTORY" ]; then
+      mkdir -m 700 "$DIRECTORY" || return 1
+    fi
+    safe_eula_entry "$DIRECTORY" directory || return 1
+  done
+  PLIST_DEST="$PLIST_DIR/dev.syntaur.gateway.plist"
+  if [ -e "$PLIST_DEST" ] || [ -L "$PLIST_DEST" ]; then
+    safe_eula_entry "$PLIST_DEST" file || return 1
+  fi
+  GATEWAY_XML_PATH=$(printf '%s' "$INSTALL_DIR/$BINARY" | sed \
+    -e 's/\&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' \
+    -e 's/"/\&quot;/g' -e "s/'/\&apos;/g") || return 1
+  TEMP_PLIST=$(mktemp "$PLIST_DIR/.dev.syntaur.gateway.XXXXXX") || return 1
+  trap 'rm -f "$TEMP_PLIST"' EXIT HUP INT TERM
+  chmod 600 "$TEMP_PLIST"
+  cat > "$TEMP_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.syntaur.gateway</string>
+  <key>ProgramArguments</key><array><string>$GATEWAY_XML_PATH</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>EnvironmentVariables</key><dict>
+    <key>SYNTAUR_LAUNCHER_OWNS_UI</key><string>1</string>
+    <key>SYNTAUR_OWNER_UIDGID</key><string>$(id -u):$(id -g)</string>
+  </dict>
+</dict></plist>
+PLIST
+  if [ -e "$PLIST_DEST" ] || [ -L "$PLIST_DEST" ]; then
+    safe_eula_entry "$PLIST_DEST" file || return 1
+  fi
+  mv -f "$TEMP_PLIST" "$PLIST_DEST" || return 1
+  safe_eula_entry "$PLIST_DEST" file || return 1
+  trap - EXIT HUP INT TERM
+)
 
 if [ "${SYNTAUR_INSTALL_TEST_LIBRARY_ONLY:-0}" = "1" ]; then
   # shellcheck disable=SC2317 # direct execution uses exit; tests source and return.
@@ -1357,23 +1403,7 @@ fi
 
 # macOS launchd plist (server mode only)
 if [ "$MODE" = "server" ] && [ "$PLATFORM" = "macos" ]; then
-  PLIST_DIR="$HOME/Library/LaunchAgents"
-  mkdir -p "$PLIST_DIR"
-
-  cat > "$PLIST_DIR/dev.syntaur.gateway.plist" << PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>dev.syntaur.gateway</string>
-  <key>ProgramArguments</key>
-  <array><string>$INSTALL_DIR/$BINARY</string></array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-</dict>
-</plist>
-PLIST
-
+  write_macos_launchagent || { echo "  Error: unsafe Syntaur LaunchAgent installation"; exit 1; }
   echo "  LaunchAgent installed (dev.syntaur.gateway)"
 fi
 
@@ -1499,9 +1529,9 @@ if [ "$PLATFORM" = "macos" ]; then
 </plist>
 PLIST
 
-  cat > "$APP_PATH/Contents/MacOS/syntaur-open" << LAUNCHER
+  cat > "$APP_PATH/Contents/MacOS/syntaur-open" << 'LAUNCHER'
 #!/bin/sh
-exec "$APP_LAUNCHER"
+exec "$HOME/.local/bin/syntaur-open"
 LAUNCHER
   chmod +x "$APP_PATH/Contents/MacOS/syntaur-open"
 
