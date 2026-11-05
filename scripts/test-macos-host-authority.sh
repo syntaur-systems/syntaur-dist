@@ -150,10 +150,205 @@ entry \"\$1\" \"\$2\" \"\$3\" \"\$4\" \"\$5\"
   ln -s "$target_file" "$symlink_target"
   if run_entry_test "$symlink_target" f "$uid" "$gid" 600; then echo "Symlink accepted" >&2; exit 1; fi
 
+  # Special bits must not disappear from the validator's mode observation.
+  chmod 1600 "$target_file"
+  if run_entry_test "$target_file" f "$uid" "$gid" 600; then echo "Unexpected special mode bit accepted" >&2; exit 1; fi
+  chmod 600 "$target_file"
+
   # Hardlink
   hardlink_target="$test_dir/hardlink.txt"
   ln "$target_file" "$hardlink_target"
   if run_entry_test "$target_file" f "$uid" "$gid" 600; then echo "Hardlinked file accepted" >&2; exit 1; fi
+fi
+
+# Hidden account attribute regression tests
+extract_hidden_guard() {
+  python3 - "$fragment_file" <<'PY'
+import sys
+
+with open(sys.argv[1], 'r', encoding='utf-8') as f:
+    text = f.read()
+
+marker = chr(60) * 2 + chr(39) + 'MACOS_HOST_ROOT' + chr(39) + ' || return 1\n'
+assert text.count(marker) == 1
+body = text.split(marker, 1)[1].split('\nMACOS_HOST_ROOT\n', 1)[0]
+
+old_pattern = '[ "$(/usr/bin/dscl . -read /Users/_syntaur_tor IsHidden)" = \'IsHidden: 1\' ] || exit 1'
+new_line1 = 'hidden_record=$(/usr/bin/dscl . -read /Users/_syntaur_tor IsHidden) || exit 1'
+new_line2 = '[ "$hidden_record" = \'dsAttrTypeNative:IsHidden: 1\' ] || exit 1'
+
+if new_line1 in body and new_line2 in body:
+    guard = f'{new_line1}\n{new_line2}\n'
+elif old_pattern in body:
+    guard = f'{old_pattern}\n'
+else:
+    sys.exit('Hidden guard not found')
+sys.stdout.write(guard.replace('/usr/bin/dscl . -read /Users/_syntaur_tor IsHidden',
+                              'dscl_stub . -read /Users/_syntaur_tor IsHidden'))
+PY
+}
+
+hidden_guard_src="$(extract_hidden_guard)"
+
+run_hidden_guard_test() {
+  local mock_stdout="$1"
+  local mock_exit_code="${2:-0}"
+  # shellcheck disable=SC2016 # Fixture arguments belong to the child shell.
+  bash -c '
+set -e
+mock_stdout=$1
+mock_exit_code=$2
+dscl_stub() {
+  if [ "$*" != ". -read /Users/_syntaur_tor IsHidden" ]; then
+    echo "Unexpected dscl invocation" >&2
+    return 1
+  fi
+  printf "%s\n" "$mock_stdout"
+  return "$mock_exit_code"
+}
+eval "$3"
+' _ "$mock_stdout" "$mock_exit_code" "$hidden_guard_src"
+}
+
+# 1. Valid native-qualified output must pass on parent fix (and fails on old single-line guard)
+run_hidden_guard_test "dsAttrTypeNative:IsHidden: 1" 0 || { echo "Valid native IsHidden output failed" >&2; exit 1; }
+
+# 2. Unqualified IsHidden: 1 must fail
+if run_hidden_guard_test "IsHidden: 1" 0; then
+  echo "Unqualified IsHidden: 1 accepted" >&2
+  exit 1
+fi
+
+# 3. Native 0 must fail
+if run_hidden_guard_test "dsAttrTypeNative:IsHidden: 0" 0; then
+  echo "dsAttrTypeNative:IsHidden: 0 accepted" >&2
+  exit 1
+fi
+
+# 4. Native 01 must fail
+if run_hidden_guard_test "dsAttrTypeNative:IsHidden: 01" 0; then
+  echo "dsAttrTypeNative:IsHidden: 01 accepted" >&2
+  exit 1
+fi
+
+# 5. Extra appended line must fail
+bad_appended_output="$(cat <<EOF
+dsAttrTypeNative:IsHidden: 1
+extra_line: true
+EOF
+)"
+if run_hidden_guard_test "$bad_appended_output" 0; then
+  echo "Appended extra line accepted" >&2
+  exit 1
+fi
+
+# 6. Empty output must fail
+if run_hidden_guard_test "" 0; then
+  echo "Empty output accepted" >&2
+  exit 1
+fi
+
+# 7. Nonzero exit with valid-looking output must fail
+if run_hidden_guard_test "dsAttrTypeNative:IsHidden: 1" 1; then
+  echo "Nonzero command exit accepted" >&2
+  exit 1
+fi
+
+# Directory mode regression tests
+if [ "$(uname -s)" = "Darwin" ]; then
+extract_creation_loop() {
+  python3 - "$fragment_file" <<'PY'
+import sys
+
+with open(sys.argv[1], 'r', encoding='utf-8') as f:
+    text = f.read()
+
+marker = chr(60) * 2 + chr(39) + 'MACOS_HOST_ROOT' + chr(39) + ' || return 1\n'
+assert text.count(marker) == 1
+body = text.split(marker, 1)[1].split('\nMACOS_HOST_ROOT\n', 1)[0]
+
+start_token = 'for leaf in private private/state private/cache ipc; do'
+end_token = '\ndone'
+
+if start_token not in body:
+    sys.exit('Creation loop start token not found')
+
+loop_part = body.split(start_token, 1)[1]
+if end_token not in loop_part:
+    sys.exit('Creation loop end token not found')
+
+loop_body = start_token + loop_part.split(end_token, 1)[0] + end_token + '\n'
+
+sys.stdout.write(loop_body)
+PY
+}
+
+creation_loop_src="$(extract_creation_loop)"
+
+run_creation_loop_test() {
+  local base_dir="$1"
+  local cur_uid
+  local cur_gid
+  cur_uid="$(id -u)"
+  cur_gid="$(id -g)"
+
+  # shellcheck disable=SC2016 # The child owns fixture parameters and source.
+  bash -c '
+set -euo pipefail
+base=$1
+sidecar_uid=$2
+gateway_uid=$2
+shared_gid=$3
+entry_src=$4
+loop_src=$5
+
+eval "$entry_src"
+eval "$loop_src"
+' _ "$base_dir" "$cur_uid" "$cur_gid" "$entry_func_src" "$creation_loop_src"
+}
+
+get_octal_mode() {
+  python3 - "$1" <<'PY'
+import os
+import stat
+import sys
+
+st = os.stat(sys.argv[1])
+sys.stdout.write(oct(stat.S_IMODE(st.st_mode))[2:])
+PY
+}
+
+# 1. Fresh directory creation: new loop must succeed and yield 2770 for ipc
+fresh_test_dir="$test_dir/fresh-mode"
+mkdir "$fresh_test_dir"
+if ! run_creation_loop_test "$fresh_test_dir"; then
+  rm -rf "$fresh_test_dir"
+  echo "Creation loop failed on fresh directories" >&2
+  exit 1
+fi
+ipc_mode="$(get_octal_mode "$fresh_test_dir/ipc")"
+rm -rf "$fresh_test_dir"
+if [ "$ipc_mode" != "2770" ]; then
+  echo "ipc directory mode expected 2770 but got $ipc_mode" >&2
+  exit 1
+fi
+
+# 2. Pre-existing mismatched ipc directory (0770): must refuse and NOT be repaired
+preexist_test_dir="$test_dir/preexist-mode"
+mkdir "$preexist_test_dir"
+mkdir -p "$preexist_test_dir/ipc"
+chmod 0770 "$preexist_test_dir/ipc"
+if run_creation_loop_test "$preexist_test_dir"; then
+  rm -rf "$preexist_test_dir"
+  echo "Pre-existing 770 ipc directory was accepted unexpectedly" >&2
+  exit 1
+fi
+preexist_ipc_mode="$(get_octal_mode "$preexist_test_dir/ipc")"
+rm -rf "$preexist_test_dir"
+if [ "$preexist_ipc_mode" != "770" ]; then
+  echo "Pre-existing 770 ipc directory was modified to $preexist_ipc_mode" >&2
+  exit 1
+fi
 fi
 
 echo "PASS synthetic loaded-HOST guards; Darwin file roles checked when available; no OS job/account calls."

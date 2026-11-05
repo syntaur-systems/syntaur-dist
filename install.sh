@@ -1074,7 +1074,11 @@ entry() {
   path=$1; kind=$2; uid=$3; gid=$4; mode=$5
   [ ! -L "$path" ] || return 1
   case "$kind" in d) [ -d "$path" ] ;; f) [ -f "$path" ] ;; *) return 1 ;; esac || return 1
-  [ "$(/usr/bin/stat -f '%u:%g:%Lp' "$path")" = "$uid:$gid:$mode" ] || return 1
+  entry_metadata=$(/usr/bin/stat -f '%u:%g:%p' "$path") || return 1
+  entry_permissions=${entry_metadata##*:}
+  case "$entry_permissions" in ''|*[!0-7]*) return 1 ;; esac
+  [ "${entry_metadata%:*}" = "$uid:$gid" ] || return 1
+  [ $((0$entry_permissions & 07777)) -eq $((0$mode)) ] || return 1
   [ "$(/bin/ls -lde "$path" | /usr/bin/wc -l | /usr/bin/tr -d ' ')" = 1 ] || return 1
   if [ "$kind" = f ]; then [ "$(/usr/bin/stat -f '%l' "$path")" = 1 ] || return 1; fi
 }
@@ -1232,7 +1236,8 @@ case "$shared_gid" in ''|0|0*|*[!0-9]*) exit 1 ;; esac
 [ "$(/usr/bin/dscl . -read /Users/_syntaur_tor UserShell)" = 'UserShell: /usr/bin/false' ] || exit 1
 [ "$(/usr/bin/dscl . -read /Users/_syntaur_tor NFSHomeDirectory)" = 'NFSHomeDirectory: /var/empty' ] || exit 1
 [ "$(/usr/bin/dscl . -read /Users/_syntaur_tor Password)" = 'Password: *' ] || exit 1
-[ "$(/usr/bin/dscl . -read /Users/_syntaur_tor IsHidden)" = 'IsHidden: 1' ] || exit 1
+hidden_record=$(/usr/bin/dscl . -read /Users/_syntaur_tor IsHidden) || exit 1
+[ "$hidden_record" = 'dsAttrTypeNative:IsHidden: 1' ] || exit 1
 # Reverse mappings include every active DirectoryService search source. Primary
 # GID membership is implicit and must not admit another local/network account.
 users=$(/usr/bin/dscl /Search -list /Users UniqueID) || exit 1
