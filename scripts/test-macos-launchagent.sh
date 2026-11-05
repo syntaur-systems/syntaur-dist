@@ -169,9 +169,43 @@ done
   : >"$stage.empty"
   empty_digest=$(sha256_file "$stage.empty")
   if validate_macos_host_stage "$stage.empty" "$empty_digest" 0.7.326; then exit 1; fi
+  # These overrides intentionally end with this disposable fixture subshell.
+  # shellcheck disable=SC2030
   HOME="$empty_target_dir"
+  # shellcheck disable=SC2030
   SYNTAUR_INSTALL_TEST_FORBID_SUDO=1
   if provision_macos_tor_host "$stage" "$digest"; then exit 1; fi
   test ! -e "$HOME/Library"
 )
-printf 'PASS Mac LaunchAgent and LaunchDaemon exact plist and stage tests; refusal before mutation verified\n'
+# 7. Maintenance uses the installed Viewer as one argument and propagates a
+# refusal. These command fixtures never signal a host job or prove a restart.
+maintenance_bin="$fixture_home/maintenance bin"
+mkdir -m 700 "$maintenance_bin"
+cat >"$maintenance_bin/syntaur-viewer" <<'VIEWER'
+#!/bin/sh
+printf '%s|%s\n' "$#" "$1" >>"$SYNTAUR_FIXTURE_VIEWER_LOG"
+exit "${SYNTAUR_FIXTURE_VIEWER_EXIT:-0}"
+VIEWER
+chmod 700 "$maintenance_bin/syntaur-viewer"
+maintenance() (
+  SYNTAUR_INSTALL_TEST_LIBRARY_ONLY=1
+  export SYNTAUR_INSTALL_TEST_LIBRARY_ONLY
+  . "$repository/install.sh"
+  INSTALL_DIR="$maintenance_bin"
+  restart_macos_server_if_running
+)
+export SYNTAUR_FIXTURE_VIEWER_LOG="$fixture_root/maintenance-calls"
+maintenance
+test "$(cat "$SYNTAUR_FIXTURE_VIEWER_LOG")" = '1|--server-restart'
+export SYNTAUR_FIXTURE_VIEWER_EXIT=23
+if maintenance >"$fixture_root/maintenance-output" 2>&1; then
+  echo 'FAIL: maintenance refusal was hidden' >&2; exit 1
+fi
+test "$(wc -l <"$SYNTAUR_FIXTURE_VIEWER_LOG" | tr -d ' ')" = 2
+grep -q 'installation is incomplete' "$fixture_root/maintenance-output"
+unset SYNTAUR_FIXTURE_VIEWER_EXIT
+mv "$maintenance_bin/syntaur-viewer" "$maintenance_bin/real-viewer"
+ln -s real-viewer "$maintenance_bin/syntaur-viewer"
+if maintenance; then echo 'FAIL: maintenance followed a Viewer alias' >&2; exit 1; fi
+test "$(wc -l <"$SYNTAUR_FIXTURE_VIEWER_LOG" | tr -d ' ')" = 2
+printf 'PASS Mac LaunchAgent, LaunchDaemon, stage and installed-maintenance command fixtures; no live job action\n'

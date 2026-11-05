@@ -1454,6 +1454,19 @@ FOOTER
   trap - EXIT HUP INT TERM
 )
 
+restart_macos_server_if_running() {
+  safe_eula_entry "$INSTALL_DIR" directory || return 1
+  safe_eula_entry "$INSTALL_DIR/syntaur-viewer" file || return 1
+  [ -x "$INSTALL_DIR/syntaur-viewer" ] || return 1
+  # Use the newly verified installed Viewer, not a staging executable. Its
+  # existing socket/job/process checks admit one graceful restart only when
+  # the loaded definition matches. No running job means no restart is needed.
+  if ! "$INSTALL_DIR/syntaur-viewer" --server-restart; then
+    echo "  Error: the Mac server update could not be verified; installation is incomplete." >&2
+    return 1
+  fi
+}
+
 if [ "${SYNTAUR_INSTALL_TEST_LIBRARY_ONLY:-0}" = "1" ]; then
   # shellcheck disable=SC2317 # direct execution uses exit; tests source and return.
   return 0 2>/dev/null || exit 0
@@ -2067,6 +2080,9 @@ ICON
 
 fi
 
+if [ "$MODE" = "server" ] && [ "$PLATFORM" = "macos" ]; then
+  restart_macos_server_if_running || exit 1
+fi
 
 echo ""
 if [ "$MODE" = "server" ]; then

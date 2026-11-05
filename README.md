@@ -16,6 +16,14 @@ macOS releases require Apple Silicon (M1 or newer). Intel Macs are unsupported. 
 
 Mac server packaging in this development branch keeps the server in the selected account and uses a separate, unprivileged Link service installed with administrator consent. The service requires authenticated release bytes even with `--skip-verify`. Native owner setup reuses the installed server and its private pairing flow. Privileged installation, full interactive acceptance and Apple distribution signing remain under validation; this branch is not a published Mac release.
 
+For ordinary Mac code updates, the newly installed native Viewer verifies an
+already-running selected-user server, requests one graceful restart through
+its existing LaunchAgent, and verifies the successor before the installer
+reports success. An absent or stopped job is not started by this maintenance
+step. A changed or stale loaded job definition refuses; this is not automatic
+configuration migration, rollback, removal, or replacement of an open Viewer
+window. This branch requires the matching native `--server-restart` support.
+
 The Linux/macOS installer includes the native Syntaur browser engine when that asset is present, with `syntaur-viewer` and the system browser as fallbacks. An exact accepted EULA version and hash are durable; another prompt is required only when that authority changes or the record is unsafe. It requires [Cosign](https://docs.sigstore.dev/system_config/installation/), downloads `checksums.txt` plus its bundle, and **verifies every installed binary before installing it**. Managed Linux installs also authenticate a versioned, root-owned process inspector carrying only `CAP_SYS_PTRACE`; the main runtime remains unprivileged. Missing verification tooling or trust assets aborts the install; `--skip-verify` never bypasses the runtime or inspector hashes.
 
 The two-line bootstrap above trusts GitHub HTTPS for the installer script itself. To verify the installer independently before execution, download a versioned `install.sh`, its bundle, `checksums.txt`, and the operation metadata from the same release, establish the accepted workflow commit as below, then verify the installer exactly like any other manifest entry before running it.
