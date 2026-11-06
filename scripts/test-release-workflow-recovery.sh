@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016 # Exact GitHub/PowerShell fixture expressions must remain literal.
 set -euo pipefail
 
 workflow=${1:-.github/workflows/release-sign.yml}
@@ -60,18 +61,12 @@ assert '${{' not in text
 pathlib.Path(output).write_text(text)
 EXPAND_LINK_STAGE
   (cd "$link_case"; bash stage.sh)
-  if [ "$platform" = macos ]; then
-    test ! -e "$link_case/dist/syntaur-link-tor-$platform-$arch$suffix"
-  else
-    cmp "$link_case/crates/syntaur-link-tor/target/$target/release/syntaur-link-tor$suffix" \
-      "$link_case/dist/syntaur-link-tor-$platform-$arch$suffix"
-    if [ "$platform" = windows ]; then
-      rm "$link_case/crates/syntaur-link-tor/target/$target/release/syntaur-link-tor$suffix"
-      if (cd "$link_case"; bash stage.sh >/dev/null 2>&1); then
-        echo 'missing Windows HOST unexpectedly staged successfully' >&2
-        exit 1
-      fi
-    fi
+  cmp "$link_case/crates/syntaur-link-tor/target/$target/release/syntaur-link-tor$suffix" \
+    "$link_case/dist/syntaur-link-tor-$platform-$arch$suffix"
+  rm "$link_case/crates/syntaur-link-tor/target/$target/release/syntaur-link-tor$suffix"
+  if (cd "$link_case"; bash stage.sh >/dev/null 2>&1); then
+    echo "missing $platform HOST unexpectedly staged successfully" >&2
+    exit 1
   fi
 done
 
@@ -1065,6 +1060,7 @@ while IFS= read -r asset; do
 done </tmp/allowed-recovery-primary-assets
 (
   cd "$publish_dist"
+  # shellcheck disable=SC2094 # The output checksums.txt is explicitly excluded from find.
   find . -maxdepth 1 -type f ! -name '*.cosign.bundle' ! -name checksums.txt \
     -printf '%f\n' | sort | xargs sha256sum >checksums.txt
 )

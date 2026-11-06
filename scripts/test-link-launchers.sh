@@ -62,10 +62,16 @@ expect syntaur-engine --link --width 1440 --height 950
 render server linux
 launch
 expect syntaur-engine --url http://127.0.0.1:18789 --width 1440 --height 950
+render server macos
+launch
+expect syntaur-viewer --server
 rm "$fixture_bin/syntaur-engine"
+launch
+expect syntaur-viewer --server
+render server linux
 launch
 expect syntaur-viewer --local-owner
 render connect linux
 launch
 expect syntaur-viewer
-printf 'PASS: seven native launcher scenarios; retired connection variables never reached a client\n'
+printf 'PASS: nine native launcher scenarios; retired connection variables never reached a client\n'
