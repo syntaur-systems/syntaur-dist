@@ -1496,18 +1496,104 @@ FOOTER
   trap - EXIT HUP INT TERM
 )
 
-restart_macos_server_if_running() {
+
+# Change the installed job only after the old definition and its socket peer
+# have been authenticated and retired by the existing native maintenance path.
+# Keep one exact prior plist until the replacement is verified. This restores
+# configuration only; downloaded code and the separate HOST have their own scope.
+update_macos_launchagent() (
+  macos_absolute_path "$HOME" || return 1
+  agent_dir="$HOME/Library/LaunchAgents"
+  agent="$agent_dir/dev.syntaur.gateway.plist"
+  safe_eula_entry "$HOME" directory || return 1
+  for directory in "$HOME/Library" "$agent_dir"; do
+    if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then
+      (umask 077; mkdir "$directory") || return 1
+    fi
+    safe_eula_entry "$directory" directory || return 1
+  done
+  safe_eula_entry "$agent_dir" directory || return 1
   safe_eula_entry "$INSTALL_DIR" directory || return 1
-  safe_eula_entry "$INSTALL_DIR/syntaur-viewer" file || return 1
-  [ -x "$INSTALL_DIR/syntaur-viewer" ] || return 1
-  # Use the newly verified installed Viewer, not a staging executable. Its
-  # existing socket/job/process checks admit one graceful restart only when
-  # the loaded definition matches. No running job means no restart is needed.
-  if ! "$INSTALL_DIR/syntaur-viewer" --server-restart; then
-    echo "  Error: the Mac server update could not be verified; installation is incomplete." >&2
-    return 1
+  viewer="$INSTALL_DIR/syntaur-viewer"
+  safe_eula_entry "$viewer" file && [ -x "$viewer" ] || return 1
+  lock="$agent_dir/.dev.syntaur.gateway.update-lock"
+  (umask 077; mkdir "$lock") || return 1
+  prior_exists=0
+  if [ -e "$agent" ] || [ -L "$agent" ]; then
+    safe_eula_entry "$agent" file || { rmdir "$lock"; return 1; }
+    prior_exists=1
   fi
-}
+  backup=''; stopped=0; stop_attempted=0; committed=0
+  prior_digest=''; expected_digest=''
+  if [ "$prior_exists" = 1 ]; then
+    prior_digest=$(sha256_file "$agent") || { rmdir "$lock"; return 1; }
+    expected_digest=$prior_digest
+  fi
+  cleanup_agent_update() {
+    result=$?
+    trap - EXIT HUP INT TERM
+    if [ "$committed" = 0 ] && [ "$stopped" = 1 ]; then
+      # A failed start may still have loaded a job. Never restore an old plist
+      # underneath it, or overwrite a configuration changed by another actor.
+      restored=0
+      if safe_eula_entry "$agent" file \
+         && [ "$(sha256_file "$agent")" = "$expected_digest" ]; then
+        stop_result=0
+        "$viewer" --server-stop || stop_result=$?
+        if [ "$stop_result" = 0 ] || [ "$stop_result" = 3 ]; then
+          if safe_eula_entry "$agent" file \
+             && [ "$(sha256_file "$agent")" = "$expected_digest" ] \
+             && safe_eula_entry "$backup" file \
+             && [ "$(sha256_file "$backup")" = "$prior_digest" ] \
+             && mv -f "$backup" "$agent"; then
+            backup=''
+            if "$viewer" --server-start; then restored=1; fi
+          fi
+        fi
+      fi
+      [ "$restored" = 1 ] || echo "  Error: the previous Mac server configuration was not restored; installation is incomplete." >&2
+    fi
+    if [ -n "$backup" ]; then
+      if [ "$committed" = 1 ] || [ "$stop_attempted" = 0 ]; then
+        rm -f "$backup" || result=1
+      else
+        echo "  Previous Mac server configuration retained at: $backup" >&2
+      fi
+    fi
+    rmdir "$lock" || result=1
+    exit "$result"
+  }
+  trap cleanup_agent_update EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  if [ "$prior_exists" = 1 ]; then
+    backup=$(mktemp "$agent_dir/.dev.syntaur.gateway.previous.XXXXXX") || exit 1
+    chmod 600 "$backup" && cat "$agent" >"$backup" || exit 1
+    safe_eula_entry "$backup" file || exit 1
+    [ "$(sha256_file "$backup")" = "$prior_digest" ] || exit 1
+  fi
+  stop_attempted=1
+  stop_result=0
+  "$viewer" --server-stop || stop_result=$?
+  case "$stop_result" in
+    0) [ "$prior_exists" = 1 ] || exit 1; stopped=1 ;;
+    3) ;; # No loaded job: preserve that state after rendering the new plist.
+    *) echo "  Error: the Mac server could not be stopped safely; installation is incomplete." >&2; exit 1 ;;
+  esac
+  if [ "$prior_exists" = 1 ]; then
+    safe_eula_entry "$agent" file || exit 1
+    [ "$(sha256_file "$agent")" = "$expected_digest" ] || exit 1
+  else
+    [ ! -e "$agent" ] && [ ! -L "$agent" ] || exit 1
+  fi
+  write_macos_launchagent || exit 1
+  expected_digest=$(sha256_file "$agent") || exit 1
+  if [ "$stopped" = 1 ]; then "$viewer" --server-start || exit 1; fi
+  safe_eula_entry "$agent" file || exit 1
+  [ "$(sha256_file "$agent")" = "$expected_digest" ] || exit 1
+  committed=1
+)
 
 if [ "${SYNTAUR_INSTALL_TEST_LIBRARY_ONLY:-0}" = "1" ]; then
   # shellcheck disable=SC2317 # direct execution uses exit; tests source and return.
@@ -1935,7 +2021,7 @@ fi
 
 # macOS launchd plist (server mode only)
 if [ "$MODE" = "server" ] && [ "$PLATFORM" = "macos" ]; then
-  write_macos_launchagent || { echo "  Error: unsafe Syntaur LaunchAgent installation"; exit 1; }
+  update_macos_launchagent || { echo "  Error: unsafe Syntaur LaunchAgent update; installation is incomplete."; exit 1; }
   echo "  LaunchAgent installed (dev.syntaur.gateway)"
 fi
 
@@ -2120,10 +2206,6 @@ ICON
 
 
 
-fi
-
-if [ "$MODE" = "server" ] && [ "$PLATFORM" = "macos" ]; then
-  restart_macos_server_if_running || exit 1
 fi
 
 echo ""

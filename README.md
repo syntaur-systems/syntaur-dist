@@ -16,13 +16,17 @@ macOS releases require Apple Silicon (M1 or newer). Intel Macs are unsupported. 
 
 Mac server packaging in this development branch keeps the server in the selected account and uses a separate, unprivileged Link service installed with administrator consent. The service requires authenticated release bytes even with `--skip-verify`. Native owner setup reuses the installed server and its private pairing flow. Privileged installation, full interactive acceptance and Apple distribution signing remain under validation; this branch is not a published Mac release.
 
-For ordinary Mac code updates, the newly installed native Viewer verifies an
-already-running selected-user server, requests one graceful restart through
-its existing LaunchAgent, and verifies the successor before the installer
-reports success. An absent or stopped job is not started by this maintenance
-step. A changed or stale loaded job definition refuses; this is not automatic
-configuration migration, rollback, removal, or replacement of an open Viewer
-window. This branch requires the matching native `--server-restart` support.
+Mac server updates authenticate and normally stop the selected user's loaded
+Gateway before changing its LaunchAgent settings, then start and verify the
+replacement through that same OS job. A positively absent job stays absent;
+an unverified or nonrunning loaded job refuses before settings are changed.
+The installer retains one exact previous definition and restores it only after
+confirming that any replacement job has stopped and neither definition was
+changed concurrently. An uncertain rollback reports an incomplete install and
+preserves that prior file. This is configuration recovery, not whole-install
+rollback or replacement of an open Viewer window. It requires matching native
+`--server-stop` and `--server-start` maintenance support; ordinary
+`--server-restart` remains available for code-only maintenance.
 
 The Linux/macOS installer includes the native Syntaur browser engine when that asset is present, with `syntaur-viewer` and the system browser as fallbacks. An exact accepted EULA version and hash are durable; another prompt is required only when that authority changes or the record is unsafe. It requires [Cosign](https://docs.sigstore.dev/system_config/installation/), downloads `checksums.txt` plus its bundle, and **verifies every installed binary before installing it**. Managed Linux installs also authenticate a versioned, root-owned process inspector carrying only `CAP_SYS_PTRACE`; the main runtime remains unprivileged. Missing verification tooling or trust assets aborts the install; `--skip-verify` never bypasses the runtime or inspector hashes.
 
