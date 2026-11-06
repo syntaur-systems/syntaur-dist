@@ -1366,9 +1366,37 @@ MACOS_HOST_ROOT
   export MACOS_TOR_UID MACOS_TOR_GID MACOS_TOR_SOCKET MACOS_TOR_GATEWAY_PIN
 }
 
+# Speech destinations remain data for the Gateway's existing private-address
+# validator. Keep the selected user's exact, bounded values across updates.
+macos_speech_host_valid() (
+  LC_ALL=C
+  export LC_ALL
+  [ -n "$1" ] && [ "${#1}" -le 1024 ] || return 1
+  case "$1" in *[[:space:][:cntrl:]]*) return 1 ;; esac
+)
+
+macos_previous_speech_host() (
+  previous_plist="$1"
+  previous_key="$2"
+  /usr/bin/plutil -lint -s "$previous_plist" >/dev/null 2>&1 || return 1
+  previous_env_type=$(/usr/bin/plutil -type EnvironmentVariables "$previous_plist" 2>/dev/null) || return 1
+  [ "$previous_env_type" = dictionary ] || return 1
+  previous_environment=$(/usr/bin/plutil -extract EnvironmentVariables xml1 -o - "$previous_plist" 2>/dev/null) || return 1
+  case "$previous_environment" in *"<key>$previous_key</key>"*) ;; *) return 0 ;; esac
+  previous_type=$(/usr/bin/plutil -type "EnvironmentVariables.$previous_key" "$previous_plist" 2>/dev/null) || return 1
+  [ "$previous_type" = string ] || return 1
+  # The sentinel preserves trailing newlines so validation cannot strip them.
+  previous_value=$(/usr/bin/plutil -extract "EnvironmentVariables.$previous_key" raw -expect string -n -o - "$previous_plist" 2>/dev/null && printf '.') || return 1
+  previous_value=${previous_value%.}
+  macos_speech_host_valid "$previous_value" || return 1
+  printf '%s' "$previous_value"
+)
+
 write_macos_launchagent() (
   macos_absolute_path "$HOME" || return 1
   HOME_XML=$(macos_xml_escape "$HOME") || return 1
+  if [ "${SYNTAUR_STT_HOST+x}" = x ]; then macos_speech_host_valid "$SYNTAUR_STT_HOST" || return 1; fi
+  if [ "${SYNTAUR_TTS_HOST+x}" = x ]; then macos_speech_host_valid "$SYNTAUR_TTS_HOST" || return 1; fi
   has_uid=0; has_gid=0; has_sock=0; has_pin=0
   [ -n "${MACOS_TOR_UID+x}" ] && has_uid=1
   [ -n "${MACOS_TOR_GID+x}" ] && has_gid=1
@@ -1410,9 +1438,15 @@ write_macos_launchagent() (
     safe_eula_entry "$DIRECTORY" directory || return 1
   done
   PLIST_DEST="$PLIST_DIR/dev.syntaur.gateway.plist"
+  previous_stt=''
+  previous_tts=''
   if [ -e "$PLIST_DEST" ] || [ -L "$PLIST_DEST" ]; then
     safe_eula_entry "$PLIST_DEST" file || return 1
+    previous_stt=$(macos_previous_speech_host "$PLIST_DEST" SYNTAUR_STT_HOST) || return 1
+    previous_tts=$(macos_previous_speech_host "$PLIST_DEST" SYNTAUR_TTS_HOST) || return 1
   fi
+  speech_stt=${SYNTAUR_STT_HOST-$previous_stt}
+  speech_tts=${SYNTAUR_TTS_HOST-$previous_tts}
   GATEWAY_XML_PATH=$(macos_xml_escape "$INSTALL_DIR/$BINARY") || return 1
   TEMP_PLIST=$(mktemp "$PLIST_DIR/.dev.syntaur.gateway.XXXXXX") || return 1
   trap 'rm -f "$TEMP_PLIST"' EXIT HUP INT TERM
@@ -1431,6 +1465,14 @@ write_macos_launchagent() (
     <key>SYNTAUR_LAUNCHER_OWNS_UI</key><string>1</string>
     <key>HOME</key><string>$HOME_XML</string>
 HEADER
+    if [ -n "$speech_stt" ]; then
+      SPEECH_STT_XML=$(macos_xml_escape "$speech_stt") || exit 1
+      printf '    <key>SYNTAUR_STT_HOST</key><string>%s</string>\n' "$SPEECH_STT_XML"
+    fi
+    if [ -n "$speech_tts" ]; then
+      SPEECH_TTS_XML=$(macos_xml_escape "$speech_tts") || exit 1
+      printf '    <key>SYNTAUR_TTS_HOST</key><string>%s</string>\n' "$SPEECH_TTS_XML"
+    fi
     if [ "$tuple_count" -eq 4 ]; then
       cat <<VARS
     <key>SYNTAUR_LINK_TOR_GATEWAY_PIN</key><string>$TOR_PIN_XML</string>

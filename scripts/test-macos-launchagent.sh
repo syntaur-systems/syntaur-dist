@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+unset SYNTAUR_STT_HOST SYNTAUR_TTS_HOST
 repository=$(cd "$(dirname "$0")/.." && pwd -P)
 fixture_root=$(mktemp -d)
 trap 'rm -rf "$fixture_root"' EXIT
@@ -208,4 +209,53 @@ mv "$maintenance_bin/syntaur-viewer" "$maintenance_bin/real-viewer"
 ln -s real-viewer "$maintenance_bin/syntaur-viewer"
 if maintenance; then echo 'FAIL: maintenance followed a Viewer alias' >&2; exit 1; fi
 test "$(wc -l <"$SYNTAUR_FIXTURE_VIEWER_LOG" | tr -d ' ')" = 2
-printf 'PASS Mac LaunchAgent, LaunchDaemon, stage and installed-maintenance command fixtures; no live job action\n'
+# 8. Explicit speech routes must survive rendering, without changing the Tor
+# tuple or forwarding arbitrary variables into the selected user's job.
+env HOME="$fixture_home" SYNTAUR_STT_HOST='127.0.0.1:10300' \
+  SYNTAUR_TTS_HOST='voice&test.local:10400' SYNTAUR_UNRELATED_SETTING=do-not-forward \
+  /bin/sh "$fixture_root/render.sh" "$repository" "$fixture_bin"
+python3 - "$plist" <<'PY'
+import pathlib,plistlib,sys
+env=plistlib.loads(pathlib.Path(sys.argv[1]).read_bytes())['EnvironmentVariables']
+assert env['SYNTAUR_STT_HOST']=='127.0.0.1:10300'
+assert env['SYNTAUR_TTS_HOST']=='voice&test.local:10400'
+assert 'SYNTAUR_UNRELATED_SETTING' not in env
+PY
+cp "$plist" "$fixture_root/speech-before"
+for invalid in '' ' ' $'host:10300\n' $'host\t:10300' "$(printf '%1025s' x)"; do
+  if env HOME="$fixture_home" SYNTAUR_STT_HOST="$invalid" \
+      /bin/sh "$fixture_root/render.sh" "$repository" "$fixture_bin"; then
+    echo 'FAIL: invalid speech setting accepted' >&2; exit 1
+  fi
+  cmp "$plist" "$fixture_root/speech-before"
+done
+
+# Previous-plist extraction is an actual macOS plutil path. These cases run
+# against that production helper on Mac; Linux does not claim that coverage.
+if [ "$(uname -s)" = Darwin ]; then
+  render
+  cmp "$plist" "$fixture_root/speech-before"
+  env HOME="$fixture_home" SYNTAUR_STT_HOST='127.0.0.1:20300' \
+    /bin/sh "$fixture_root/render.sh" "$repository" "$fixture_bin"
+  python3 - "$plist" <<'PY'
+import pathlib,plistlib,sys
+p=pathlib.Path(sys.argv[1]); d=plistlib.loads(p.read_bytes()); env=d['EnvironmentVariables']
+assert env['SYNTAUR_STT_HOST']=='127.0.0.1:20300'
+assert env['SYNTAUR_TTS_HOST']=='voice&test.local:10400'
+PY
+  for kind in number trailing_newline empty; do
+    python3 - "$plist" "$kind" <<'PY'
+import pathlib,plistlib,sys
+p=pathlib.Path(sys.argv[1]);d=plistlib.loads(p.read_bytes())
+d['EnvironmentVariables']['SYNTAUR_STT_HOST']={'number':10300,'trailing_newline':'host:10300\n','empty':''}[sys.argv[2]]
+p.write_bytes(plistlib.dumps(d))
+PY
+    cp "$plist" "$fixture_root/invalid-speech-before"
+    if render; then echo 'FAIL: invalid retained speech setting accepted' >&2; exit 1; fi
+    cmp "$plist" "$fixture_root/invalid-speech-before"
+  done
+  echo 'PASS actual macOS speech-setting preservation, override and refusal'
+else
+  echo 'NOT RUN macOS-only previous-plist speech extraction on this host'
+fi
+printf 'PASS Mac LaunchAgent, LaunchDaemon, stage, installed-maintenance and explicit speech fixtures; no live job action\n'
