@@ -8,6 +8,8 @@
 #
 # Pass --accept-eula to accept the EULA non-interactively after reading the
 # immutable commit-pinned URL printed by this installer.
+# Pass --quiet to suppress MSI dialogs for an authorized unattended server install.
+# This does not accept the EULA or grant installation privileges.
 #Requires -Version 5.1
 $ErrorActionPreference = "Stop"
 
@@ -121,6 +123,7 @@ function Install-PinnedReleaseAsset {
 }
 
 function Install-SyntaurServerPackage {
+    param([switch]$Quiet)
     # The same standalone MSI is distributed directly and through the Store.
     # EULA acceptance above is explicit; elevation remains normal Windows UAC.
     $Directory = Join-Path ([IO.Path]::GetTempPath()) ("Syntaur-Setup-" + [Guid]::NewGuid().ToString("N"))
@@ -146,8 +149,10 @@ function Install-SyntaurServerPackage {
         # Keep the unelevated MSI client with the initiating user. Windows
         # Installer requests elevation for per-machine actions itself; explicitly
         # using RunAs would change UserSID when another administrator consents.
+        $InstallerArgs = @('/i', ('"' + $Package + '"'), 'ACCEPT_EULA=Yes', '/norestart')
+        if ($Quiet) { $InstallerArgs += '/qn' }
         $Process = Start-Process -FilePath $Installer -Wait -PassThru `
-            -ArgumentList @('/i', ('"' + $Package + '"'), 'ACCEPT_EULA=Yes', '/norestart')
+            -ArgumentList $InstallerArgs
         if ($Process.ExitCode -ne 0 -and $Process.ExitCode -ne 3010) {
             throw "Windows Installer did not complete Syntaur setup (code $($Process.ExitCode))."
         }
@@ -581,7 +586,7 @@ $Arch = if ([Environment]::Is64BitOperatingSystem) { "x86_64" } else {
 Write-Host "  Platform: windows-$Arch"
 Write-Host ""
 if ($Mode -eq 'server') {
-    Install-SyntaurServerPackage
+    Install-SyntaurServerPackage -Quiet:($args -contains "--quiet")
     exit 0
 }
 

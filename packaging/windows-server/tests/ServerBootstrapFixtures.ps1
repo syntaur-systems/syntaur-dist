@@ -30,8 +30,10 @@ function Get-AuthenticodeSignature {
 function Start-Process {
     param($FilePath, $Verb, [switch]$Wait, [switch]$PassThru, $ArgumentList)
     $script:launches++
+    $expectedArgs = '/i|"' + $script:package + '"|ACCEPT_EULA=Yes|/norestart'
+    if ($script:quietCase) { $expectedArgs += '|/qn' }
     if ($FilePath -cne (Join-Path $env:windir 'System32\msiexec.exe') -or $Verb -or !$Wait -or !$PassThru -or
-        ($ArgumentList -join '|') -cne ('/i|"' + $script:package + '"|ACCEPT_EULA=Yes|/norestart')) { throw 'Incorrect normal installer invocation.' }
+        ($ArgumentList -join '|') -cne $expectedArgs) { throw 'Incorrect normal installer invocation.' }
     $openedForWrite = $false
     try { $h = [IO.File]::Open($script:package, [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite); $h.Dispose(); $openedForWrite = $true } catch [IO.IOException] {}
     if ($openedForWrite) { throw 'Verified MSI was writable during elevation.' }
@@ -39,10 +41,10 @@ function Start-Process {
     [pscustomobject]@{ExitCode=$script:exitCode}
 }
 function Invoke-Case {
-    param([string]$Name, [string]$Expected, [int]$ExpectedLaunches)
-    $script:launches=0; $script:package=$null
+    param([string]$Name, [string]$Expected, [int]$ExpectedLaunches, [switch]$Quiet)
+    $script:launches=0; $script:package=$null; $script:quietCase=$Quiet.IsPresent
     $message=$null
-    try { Install-SyntaurServerPackage } catch { $message=$_.Exception.Message }
+    try { Install-SyntaurServerPackage -Quiet:$Quiet.IsPresent } catch { $message=$_.Exception.Message }
     if ($Expected -eq '') { if ($null -ne $message) { throw "$Name failed: $message" } }
     elseif ($null -eq $message -or !$message.Contains($Expected)) { throw "$Name expected '$Expected', got '$message'" }
     if ($script:launches -ne $ExpectedLaunches) { throw "$Name dispatched an unexpected installer count." }
@@ -66,3 +68,14 @@ $script:timestamp=New-Object PSObject; $script:signatureStatus='HashMismatch'
 Invoke-Case 'untrusted signature blocks elevation' 'not timestamped and trusted' 0
 $script:signatureStatus='Valid'; $ServerMsiSha256='0'*64
 Invoke-Case 'changed MSI bytes block elevation' 'changed before verification' 0
+
+$ServerMsiSha256=$expectedHash; $script:signatureStatus='Valid'; $script:timestamp=New-Object PSObject
+Invoke-Case 'quiet MSI handoff retains held bytes' '' 1 -Quiet
+$script:exitCode=3010
+Invoke-Case 'quiet restart required is successful' '' 1 -Quiet
+$script:exitCode=1603
+Invoke-Case 'quiet failure has no fallback' 'code 1603' 1 -Quiet
+$script:exitCode=0; $script:cancel=$true
+Invoke-Case 'quiet canceled elevation has no retry' 'Fixture UAC canceled' 1 -Quiet
+$script:cancel=$false; $script:publisher='Other publisher'
+Invoke-Case 'quiet wrong publisher still blocks dispatch' 'not timestamped and trusted' 0 -Quiet
