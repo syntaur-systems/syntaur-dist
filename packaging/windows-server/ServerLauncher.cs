@@ -546,8 +546,18 @@ internal static class ServerLauncher
             throw new LaunchFailure("Syntaur could not locate the user profile.");
         if (!EnsureLicenseAccepted(baseDirectory, workingDirectory, background)) return;
 
+        // Only the installed selected owner may retire the old per-user server.
+        // The old binary is never adopted as the installed server.
+        Stopwatch migration = activation ?? Stopwatch.StartNew();
+        List<LegacyShortcut> legacy = new List<LegacyShortcut>();
+        // A custom, unavailable or unsafe alias is not migration authority and
+        // must not veto an otherwise valid installed-server startup.
+        try { if (HasLogonOwner()) legacy = FindLegacyShortcuts(baseDirectory); }
+        catch { legacy.Clear(); }
         GatewayProcess gateway = FindOwnedGateway(gatewayPath);
-        StartupDeadline clock = new StartupDeadline(activation);
+        if (gateway == null && HasAnyPortListener())
+            DrainLegacyServer(legacy, migration);
+        StartupDeadline clock = new StartupDeadline(migration);
         try
         {
             if (gateway == null)
@@ -583,6 +593,17 @@ internal static class ServerLauncher
                 }
             }
             startedGateway = null;
+            // Startup has committed. A shortcut collision must not tear down a
+            // healthy server or discard either the old shortcut or its backup.
+            foreach (LegacyShortcut shortcut in legacy)
+            {
+                try { RetireLegacyShortcut(shortcut, workingDirectory); }
+                catch
+                {
+                    ShowFailure("Syntaur is running, but an old shortcut could not be moved. Your data is unchanged.", background);
+                    break;
+                }
+            }
         }
         finally
         {
@@ -593,6 +614,425 @@ internal static class ServerLauncher
 
     private const string EulaHash = "3e417ea33bc2d6296070222df816a6d145846743c1d98e7e4d20c7c2c8e9a720";
     private const string EulaUrl = "https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/8811aa006673caa5082a7c9343e83c0b7ac51d16/EULA.md";
+
+    [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+    private class ShellLink { }
+
+    // SDK IShellLinkW order. Read raw fields only; never Resolve or execute a
+    // shortcut while deciding whether it is an obsolete server alias.
+    [ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface ShellLinkFields
+    {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int capacity, IntPtr data, uint flags);
+        void GetIDList(out IntPtr id); void SetIDList(IntPtr id);
+        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder text, int capacity);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int capacity);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string path);
+        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder text, int capacity);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void GetHotkey(out short key); void SetHotkey(short key);
+        void GetShowCmd(out int command); void SetShowCmd(int command);
+        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int capacity, out int index);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path, int index);
+        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
+        void Resolve(IntPtr window, uint flags);
+        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string path);
+    }
+
+    [StructLayout(LayoutKind.Sequential)] private struct ShortcutFileInfo
+    {
+        internal uint Attributes; internal System.Runtime.InteropServices.ComTypes.FILETIME Creation, Access, Write;
+        internal uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(string path, uint access, uint share,
+        IntPtr security, uint creation, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(SafeFileHandle file, out ShortcutFileInfo info);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetFileInformationByHandle(SafeFileHandle file, int type, IntPtr info, uint size);
+
+    private sealed class ShortcutParents : IDisposable
+    {
+        private readonly List<SafeFileHandle> handles = new List<SafeFileHandle>();
+        internal SafeFileHandle Leaf { get { return handles[handles.Count - 1]; } }
+        internal ShortcutParents(string directory)
+        {
+            List<string> paths = new List<string>();
+            for (DirectoryInfo part = new DirectoryInfo(directory); part != null; part = part.Parent) paths.Add(part.FullName);
+            paths.Reverse();
+            try
+            {
+                foreach (string path in paths)
+                {
+                    SafeFileHandle handle = CreateFile(path, 0x80 | ReadControl, 3, IntPtr.Zero, 3, 0x2200000, IntPtr.Zero);
+                    handles.Add(handle);
+                    ShortcutFileInfo info;
+                    if (handle.IsInvalid || !GetFileInformationByHandle(handle, out info) ||
+                        (info.Attributes & 0x410) != 0x10) throw new IOException("unsafe-shortcut-parent");
+                }
+                // Pinned ancestors cannot be renamed while their owner/ACL is checked.
+                ValidateProgramDirectoryChain(directory);
+            }
+            catch { Dispose(); throw; }
+        }
+        public void Dispose() { for (int i = handles.Count - 1; i >= 0; i--) handles[i].Dispose(); handles.Clear(); }
+    }
+
+    private sealed class LegacyShortcut
+    {
+        internal string Path, BackupName, LegacyDirectory, Digest;
+        internal bool Startup;
+        internal ShortcutFileInfo Identity;
+    }
+
+    private static FileStream OpenShortcut(string path, bool rename)
+    {
+        SafeFileHandle handle = CreateFile(path, 0x80000000 | ReadControl | (rename ? 0x10000U : 0),
+            1, IntPtr.Zero, 3, 0x200000, IntPtr.Zero);
+        if (handle.IsInvalid) { handle.Dispose(); throw new IOException("shortcut-open"); }
+        try
+        {
+            ShortcutFileInfo info;
+            if (!GetFileInformationByHandle(handle, out info) || (info.Attributes & 0x410) != 0 ||
+                info.Links != 1 || info.SizeHigh != 0 || info.SizeLow == 0 || info.SizeLow > 65536)
+                throw new IOException("unsafe-shortcut-file");
+            FileStream stream = new FileStream(handle, FileAccess.Read);
+            handle = null;
+            try { ValidateAuthority(path, stream.GetAccessControl()); return stream; }
+            catch { stream.Dispose(); throw; }
+        }
+        finally { if (handle != null) handle.Dispose(); }
+    }
+
+    private static string ShortcutDigest(FileStream stream)
+    {
+        stream.Position = 0;
+        using (SHA256 hash = SHA256.Create()) return Convert.ToBase64String(hash.ComputeHash(stream));
+    }
+
+    private static bool ReadShortcutFields(string path, out string target, out string arguments, out string directory)
+    {
+        object link = new ShellLink();
+        try
+        {
+            ((System.Runtime.InteropServices.ComTypes.IPersistFile)link).Load(path, 0x20); // READ, DENY_WRITE
+            ShellLinkFields fields = (ShellLinkFields)link;
+            StringBuilder t = new StringBuilder(32768), a = new StringBuilder(32768), d = new StringBuilder(32768);
+            fields.GetPath(t, t.Capacity, IntPtr.Zero, 4); // SLGP_RAWPATH
+            fields.GetArguments(a, a.Capacity); fields.GetWorkingDirectory(d, d.Capacity);
+            target = t.ToString(); arguments = a.ToString(); directory = d.ToString();
+            return t.Length < t.Capacity - 1 && a.Length < a.Capacity - 1 && d.Length < d.Capacity - 1;
+        }
+        finally { Marshal.FinalReleaseComObject(link); }
+    }
+
+    private static LegacyShortcut InspectLegacyShortcut(string path, string backupName, string legacyDirectory, bool startup)
+    {
+        if (!File.Exists(path)) return null;
+        using (ShortcutParents parents = new ShortcutParents(System.IO.Path.GetDirectoryName(path)))
+        using (FileStream stream = OpenShortcut(path, false))
+        {
+            string target, arguments, directory;
+            if (!ReadShortcutFields(path, out target, out arguments, out directory) ||
+                !MatchesLegacyServerShortcut(target, arguments, directory, legacyDirectory, startup)) return null;
+            LegacyShortcut result = new LegacyShortcut { Path = path, BackupName = backupName,
+                LegacyDirectory = legacyDirectory, Startup = startup, Digest = ShortcutDigest(stream) };
+            if (!GetFileInformationByHandle(stream.SafeFileHandle, out result.Identity)) throw new IOException("shortcut-identity");
+            return result;
+        }
+    }
+
+    private static List<LegacyShortcut> FindLegacyShortcuts(string installedDirectory)
+    {
+        string legacyDirectory = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Syntaur");
+        List<LegacyShortcut> result = new List<LegacyShortcut>();
+        foreach (Environment.SpecialFolder folder in new[] { Environment.SpecialFolder.Startup, Environment.SpecialFolder.Programs, Environment.SpecialFolder.DesktopDirectory })
+        {
+            bool startup = folder == Environment.SpecialFolder.Startup;
+            string parent = Environment.GetFolderPath(folder);
+            if (String.IsNullOrEmpty(parent)) continue;
+            LegacyShortcut shortcut = InspectLegacyShortcut(System.IO.Path.Combine(parent, startup ? "Syntaur Service.lnk" : "Syntaur.lnk"),
+                startup ? "startup.lnk" : folder == Environment.SpecialFolder.Programs ? "programs.lnk" : "desktop.lnk", legacyDirectory, startup);
+            if (shortcut != null) result.Add(shortcut);
+        }
+        if (result.Count == 0) return result;
+        // Require both normal MSI aliases before removing a working legacy alias.
+        string launcher = System.IO.Path.Combine(installedDirectory, "ServerLauncher.exe");
+        foreach (bool startup in new[] { false, true })
+        {
+            string common = System.IO.Path.Combine(Environment.GetFolderPath(startup
+                ? Environment.SpecialFolder.CommonStartup : Environment.SpecialFolder.CommonPrograms), startup ? "Syntaur server.lnk" : "Syntaur.lnk");
+            using (ShortcutParents parents = new ShortcutParents(System.IO.Path.GetDirectoryName(common)))
+            using (FileStream stream = OpenShortcut(common, false))
+            {
+                string target, arguments, directory;
+                if (!ReadShortcutFields(common, out target, out arguments, out directory) ||
+                    !String.Equals(target, launcher, StringComparison.OrdinalIgnoreCase) ||
+                    arguments != (startup ? "--logon" : "") ||
+                    !String.Equals(directory.TrimEnd('\\'), installedDirectory.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+                    throw new LaunchFailure("Syntaur could not verify its installed shortcuts.");
+            }
+        }
+        return result;
+    }
+
+    private static void VerifyShortcutUnchanged(FileStream stream, LegacyShortcut shortcut)
+    {
+        ShortcutFileInfo info;
+        if (!GetFileInformationByHandle(stream.SafeFileHandle, out info) ||
+            info.Volume != shortcut.Identity.Volume || info.IndexHigh != shortcut.Identity.IndexHigh ||
+            info.IndexLow != shortcut.Identity.IndexLow || ShortcutDigest(stream) != shortcut.Digest)
+            throw new IOException("shortcut-changed");
+    }
+
+    private static void DrainLegacyServer(List<LegacyShortcut> shortcuts, Stopwatch operation)
+    {
+        LegacyShortcut startup = shortcuts.Find(delegate(LegacyShortcut item) { return item.Startup; });
+        if (startup == null) return; // Ordinary occupied-port refusal remains below.
+        ValidateProgramDirectoryChain(startup.LegacyDirectory);
+        string path = RequireProgramFile(startup.LegacyDirectory, "syntaur.exe");
+        using (ShortcutParents parents = new ShortcutParents(System.IO.Path.GetDirectoryName(startup.Path)))
+        using (FileStream proof = OpenShortcut(startup.Path, false))
+        using (GatewayProcess previous = FindOwnedGateway(path))
+        {
+            VerifyShortcutUnchanged(proof, startup);
+            if (previous == null || !ConfirmOwnedListener(previous)) return;
+            ulong creation = ProcessCreation(previous.Handle);
+            VerifyActivationProcess(previous, path, creation);
+            IntPtr raw = OpenEvent(EventModifyState | ReadControl, false,
+                String.Format(CultureInfo.InvariantCulture, @"Local\Syntaur.Setup.{0}.{1:x16}", previous.Id, creation));
+            if (raw == IntPtr.Zero) throw new LaunchFailure("Close the earlier Syntaur server, then open Syntaur again.");
+            using (SafeWaitHandle notification = new SafeWaitHandle(raw, true))
+            {
+                VerifyActivationEvent(notification);
+                VerifyActivationProcess(previous, path, creation);
+                VerifyShortcutUnchanged(proof, startup);
+                if (!ConfirmOwnedListener(previous)) throw new LaunchFailure("The earlier Syntaur server changed during startup.");
+                long remaining = Math.Min(ActivationDrainTimeoutMs, ActivationOverallTimeoutMs - operation.ElapsedMilliseconds);
+                if (remaining <= 0 || !SetEvent(notification) || WaitForSingleObject(previous.Handle, (uint)remaining) != WaitObject0)
+                    throw new LaunchFailure("The earlier Syntaur server has not finished closing. Open Syntaur again after it closes.");
+                uint exit;
+                if (!GetExitCodeProcess(previous.Handle, out exit) || exit != 0)
+                    throw new LaunchFailure("The earlier Syntaur server did not close cleanly.");
+            }
+        }
+    }
+
+    private static void RetireLegacyShortcut(LegacyShortcut shortcut, string profile)
+    {
+        string backup = System.IO.Path.Combine(profile, ".syntaur", "legacy-server-shortcuts");
+        // Same protected current-user/SYSTEM/Administrators directory policy as
+        // the existing licence receipt; never place backups in Startup.
+        EnsurePrivateDirectory(backup);
+        using (ShortcutParents sourceParents = new ShortcutParents(System.IO.Path.GetDirectoryName(shortcut.Path)))
+        using (ShortcutParents destinationParents = new ShortcutParents(backup))
+        using (FileStream source = OpenShortcut(shortcut.Path, true))
+        {
+            VerifyShortcutUnchanged(source, shortcut);
+            byte[] name = Encoding.Unicode.GetBytes(System.IO.Path.Combine(backup, shortcut.BackupName));
+            IntPtr rename = Marshal.AllocHGlobal(24 + name.Length);
+            try
+            {
+                // Reuse InstallerProvisioner's zero-filled x64 rename contract.
+                // No replacement: an existing backup is never overwritten.
+                for (int i = 0; i < 24 + name.Length; i++) Marshal.WriteByte(rename, i, 0);
+                Marshal.WriteInt32(rename, 16, name.Length); Marshal.Copy(name, 0, IntPtr.Add(rename, 20), name.Length);
+                if (!SetFileInformationByHandle(source.SafeFileHandle, 3, rename, (uint)(24 + name.Length)))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "retain-legacy-shortcut");
+            }
+            finally { Marshal.FreeHGlobal(rename); }
+        }
+    }
+
+    private static bool TryCanonicalizeDirectory(string path, out string canonical)
+    {
+        canonical = null;
+        if (string.IsNullOrEmpty(path))
+        {
+            return false;
+        }
+
+        if (path.Length < 3 || path[1] != ':' || path[2] != '\\')
+        {
+            return false;
+        }
+
+        char drive = path[0];
+        if (!((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')))
+        {
+            return false;
+        }
+
+        int start = 3;
+        bool hadTrailingSlash = false;
+        System.Text.StringBuilder sb = new System.Text.StringBuilder();
+        sb.Append(drive);
+        sb.Append(@":\");
+
+        int i = 3;
+        while (i <= path.Length)
+        {
+            if (i == path.Length || path[i] == '\\')
+            {
+                int segLen = i - start;
+                if (segLen == 0)
+                {
+                    if (i == path.Length && i > 3)
+                    {
+                        hadTrailingSlash = true;
+                        break;
+                    }
+                    return false;
+                }
+
+                string segment = path.Substring(start, segLen);
+                if (!IsValidSegment(segment))
+                {
+                    return false;
+                }
+
+                if (sb.Length > 3)
+                {
+                    sb.Append('\\');
+                }
+                sb.Append(segment);
+
+                start = i + 1;
+                if (i == path.Length - 1)
+                {
+                    hadTrailingSlash = true;
+                    break;
+                }
+            }
+            i++;
+        }
+
+        if (sb.Length == 3 && hadTrailingSlash)
+        {
+            canonical = sb.ToString();
+            return true;
+        }
+
+        canonical = sb.ToString();
+        return true;
+    }
+
+    private static bool IsValidSegment(string segment)
+    {
+        if (string.IsNullOrEmpty(segment))
+        {
+            return false;
+        }
+
+        if (segment == "." || segment == "..")
+        {
+            return false;
+        }
+
+        char last = segment[segment.Length - 1];
+        if (last == ' ' || last == '.')
+        {
+            return false;
+        }
+
+        for (int i = 0; i < segment.Length; i++)
+        {
+            char c = segment[i];
+            if (c < 32)
+            {
+                return false;
+            }
+
+            switch (c)
+            {
+                case '<':
+                case '>':
+                case ':':
+                case '"':
+                case '/':
+                case '\\':
+                case '|':
+                case '?':
+                case '*':
+                case '%':
+                    return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool MatchesLegacyServerShortcut(string target, string arguments, string workingDirectory, string legacyDirectory, bool startup)
+    {
+        string canonLegacy;
+        if (!TryCanonicalizeDirectory(legacyDirectory, out canonLegacy))
+        {
+            return false;
+        }
+
+        string canonWorkDir;
+        if (!TryCanonicalizeDirectory(workingDirectory, out canonWorkDir))
+        {
+            return false;
+        }
+
+        if (!string.Equals(canonWorkDir, canonLegacy, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrEmpty(target) || target.EndsWith("\\", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        int lastSlash = target.LastIndexOf('\\');
+        if (lastSlash < 3)
+        {
+            return false;
+        }
+
+        string targetDir = target.Substring(0, lastSlash);
+        if (lastSlash == 2)
+        {
+            targetDir = target.Substring(0, 3);
+        }
+
+        string targetFileName = target.Substring(lastSlash + 1);
+        if (!IsValidSegment(targetFileName))
+        {
+            return false;
+        }
+
+        string canonTargetDir;
+        if (!TryCanonicalizeDirectory(targetDir, out canonTargetDir))
+        {
+            return false;
+        }
+
+        if (!string.Equals(canonTargetDir, canonLegacy, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        string expectedExe = startup ? "syntaur.exe" : "syntaur-viewer.exe";
+        if (!string.Equals(targetFileName, expectedExe, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(target, canonLegacy + @"\" + expectedExe, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (startup)
+        {
+            return string.IsNullOrEmpty(arguments);
+        }
+        else
+        {
+            return string.Equals(arguments, "--local-owner", StringComparison.Ordinal);
+        }
+    }
 
     private static bool CurrentLicenseRecord(string text)
     {
@@ -673,22 +1113,7 @@ internal static class ServerLauncher
     private static void WriteLicenseRecord(string directory, string record)
     {
         if (!CurrentLicenseRecord(record)) throw new LaunchFailure("Syntaur's licence acceptance record is invalid.");
-        if (!Directory.Exists(directory))
-        {
-            DirectorySecurity security = new DirectorySecurity();
-            using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
-            {
-                security.SetOwner(identity.User);
-                security.SetAccessRuleProtection(true, false);
-                foreach (SecurityIdentifier sid in new SecurityIdentifier[] { identity.User,
-                    new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
-                    new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null) })
-                    security.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl,
-                        InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                        PropagationFlags.None, AccessControlType.Allow));
-            }
-            Directory.CreateDirectory(directory, security);
-        }
+        EnsurePrivateDirectory(directory);
         // Validate any existing target before atomic replacement; never rewrite
         // an unsafe owner/DACL or follow an existing record link.
         ReadLicenseRecord(directory);
@@ -706,6 +1131,31 @@ internal static class ServerLauncher
             else File.Move(temporary, path);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
+    private static void EnsurePrivateDirectory(string directory)
+    {
+        ValidateProgramDirectoryChain(Path.GetDirectoryName(directory));
+        if (!Directory.Exists(directory))
+        {
+            DirectorySecurity security = new DirectorySecurity();
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+            {
+                security.SetOwner(identity.User);
+                security.SetAccessRuleProtection(true, false);
+                foreach (SecurityIdentifier sid in new SecurityIdentifier[] { identity.User,
+                    new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                    new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null) })
+                    security.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl,
+                        InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                        PropagationFlags.None, AccessControlType.Allow));
+            }
+            Directory.CreateDirectory(directory, security);
+        }
+        ValidateProgramDirectoryChain(directory);
+        using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+            if ((Directory.GetAccessControl(directory).GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier) != identity.User)
+                throw new LaunchFailure("Syntaur's private directory belongs to another Windows account.");
     }
 
     // The installer provisions this same layout for its selected unelevated
