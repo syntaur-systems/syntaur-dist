@@ -53,9 +53,9 @@
         <Control Id="Removed" Type="Text" X="18" Y="54" Width="354" Height="44" Hidden="yes" ShowCondition="REMOVE~=&quot;ALL&quot;"
                  Text="The application and connection service were removed. Existing owner data and connection identity were retained." />
         <Control Id="Open" Type="CheckBox" X="18" Y="108" Width="354" Height="20" Property="OPEN_SYNTAUR" CheckBoxValue="1"
-                 Text="Open Syntaur now" HideCondition="Installed OR WIX_UPGRADE_DETECTED OR REMOVE~=&quot;ALL&quot;" />
+                 Text="Open Syntaur now" HideCondition="Installed OR REMOVE~=&quot;ALL&quot;" />
         <Control Id="Finish" Type="PushButton" X="292" Y="144" Width="80" Height="20" Default="yes" Cancel="yes" Text="Finish">
-          <Publish Event="DoAction" Value="OpenSyntaur" Condition="OPEN_SYNTAUR = &quot;1&quot; AND NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT REMOVE~=&quot;ALL&quot;" />
+          <Publish Event="DoAction" Value="OpenSyntaur" Condition="OPEN_SYNTAUR = &quot;1&quot; AND NOT Installed AND NOT REMOVE~=&quot;ALL&quot;" />
           <Publish Event="EndDialog" Value="Return" />
         </Control>
       </Dialog>
