@@ -85,7 +85,7 @@ function Install-PinnedReleaseAsset {
     $Temporary = Join-Path $Directory ((Split-Path -Leaf $LiteralPath) + ".part." + [Guid]::NewGuid().ToString("N"))
     $Backup = $null
     try {
-        Invoke-WebRequest -Uri $Url -OutFile $Temporary -UseBasicParsing
+        Invoke-WebRequest -Uri $Url -OutFile $Temporary -UseBasicParsing -TimeoutSec 60
         $Item = Get-Item -LiteralPath $Temporary -Force
         if (-not [bool]$Item.PSIsContainer -and $Item.Length -gt 0 -and $Item.Length -le 1073741824) {
             $ActualSha256 = (Get-FileHash -LiteralPath $Temporary -Algorithm SHA256).Hash.ToLowerInvariant()
