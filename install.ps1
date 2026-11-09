@@ -75,7 +75,8 @@ function Install-PinnedReleaseAsset {
         [Parameter(Mandatory = $true)][string]$Url,
         [Parameter(Mandatory = $true)][string]$LiteralPath,
         [Parameter(Mandatory = $true)][string]$ExpectedSha256,
-        [Parameter(Mandatory = $true)][string]$Label
+        [Parameter(Mandatory = $true)][string]$Label,
+        [ValidateRange(1,60000)][int]$TimeoutMs = 60000
     )
     if ($ExpectedSha256 -cnotmatch '^[0-9a-f]{64}$' -or
         $ExpectedSha256 -ceq ('0' * 64)) {
@@ -84,8 +85,117 @@ function Install-PinnedReleaseAsset {
     $Directory = Split-Path -Parent $LiteralPath
     $Temporary = Join-Path $Directory ((Split-Path -Leaf $LiteralPath) + ".part." + [Guid]::NewGuid().ToString("N"))
     $Backup = $null
+    $Request = $null
+    $Response = $null
+    $ResponseStream = $null
+    $FileStream = $null
     try {
-        Invoke-WebRequest -Uri $Url -OutFile $Temporary -UseBasicParsing -TimeoutSec 60
+        $Uri = [System.Uri]$Url
+        if ($Uri.Scheme -ne [System.Uri]::UriSchemeHttps -and
+            -not ($Uri.Scheme -eq [System.Uri]::UriSchemeHttp -and $Uri.IsLoopback)) {
+            throw "download URL scheme must be HTTPS (or HTTP on loopback for testing)"
+        }
+        $MaxRedirects = 5
+        $RedirectCount = 0
+        $Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $CurrentUri = $Uri
+
+        while ($true) {
+            $RemainingMs = [int]($TimeoutMs - $Stopwatch.ElapsedMilliseconds)
+            if ($RemainingMs -le 0) {
+                throw "$Label download exceeded enclosing deadline of $TimeoutMs ms"
+            }
+
+            $Request = [System.Net.HttpWebRequest]::Create($CurrentUri)
+            $Request.AllowAutoRedirect = $false
+            $Request.Timeout = $RemainingMs
+            $Request.ReadWriteTimeout = $RemainingMs
+            $Request.KeepAlive = $false
+
+            try {
+                $Response = [System.Net.HttpWebResponse]$Request.GetResponse()
+            } catch [System.Net.WebException] {
+                if ($null -ne $_.Exception.Response) {
+                    $Response = [System.Net.HttpWebResponse]$_.Exception.Response
+                } else {
+                    throw
+                }
+            }
+
+            $StatusCode = [int]$Response.StatusCode
+            if ($StatusCode -in 301, 302, 303, 307, 308) {
+                $Location = $Response.GetResponseHeader("Location")
+                $Response.Close()
+                $Response.Dispose()
+                $Response = $null
+                $Request = $null
+
+                if ([string]::IsNullOrEmpty($Location)) {
+                    throw "redirect response missing Location header for $Label"
+                }
+                $RedirectCount++
+                if ($RedirectCount -gt $MaxRedirects) {
+                    throw "too many redirects encountered for $Label"
+                }
+                $NextUri = [System.Uri]::new($CurrentUri, $Location)
+                if ($CurrentUri.Scheme -eq [System.Uri]::UriSchemeHttps -and $NextUri.Scheme -ne [System.Uri]::UriSchemeHttps) {
+                    throw "prohibited redirect downgrade from HTTPS to non-HTTPS for $Label"
+                }
+                if ($NextUri.Scheme -ne [Uri]::UriSchemeHttps -and
+                    -not ($NextUri.Scheme -eq [Uri]::UriSchemeHttp -and $NextUri.IsLoopback)) {
+                    throw "unsupported redirect URL for $Label"
+                }
+                $CurrentUri = $NextUri
+                continue
+            }
+
+            if ($StatusCode -lt 200 -or $StatusCode -ge 300) {
+                throw "$Label download failed with HTTP status code $StatusCode"
+            }
+            break
+        }
+
+        $MaxBytes = 1073741824L
+        if ($Response.ContentLength -gt $MaxBytes) { throw "$Label download exceeds its size bound" }
+        $FileStream = New-Object -TypeName System.IO.FileStream -ArgumentList @($Temporary, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $ResponseStream = $Response.GetResponseStream()
+
+        $Buffer = New-Object -TypeName byte[] -ArgumentList 65536
+        $TotalBytes = 0L
+
+        while ($true) {
+            $RemainingMs = [int]($TimeoutMs - $Stopwatch.ElapsedMilliseconds)
+            if ($RemainingMs -le 0) {
+                throw "$Label download exceeded enclosing deadline of $TimeoutMs ms"
+            }
+            if (-not $ResponseStream.CanTimeout) { throw 'Download stream does not support bounded reads' }
+            $ResponseStream.ReadTimeout = $RemainingMs
+            $BytesRead = $ResponseStream.Read($Buffer, 0, $Buffer.Length)
+            if ($BytesRead -le 0) {
+                break
+            }
+            $TotalBytes += $BytesRead
+            if ($TotalBytes -gt $MaxBytes) {
+                throw "$Label download exceeded size bound of $MaxBytes bytes"
+            }
+            $FileStream.Write($Buffer, 0, $BytesRead)
+        }
+
+        if ($Stopwatch.ElapsedMilliseconds -ge $TimeoutMs) { throw "$Label download exceeded enclosing deadline of $TimeoutMs ms" }
+        $FileStream.Flush()
+        $FileStream.Close()
+        $FileStream.Dispose()
+        $FileStream = $null
+
+        $ResponseStream.Close()
+        $ResponseStream.Dispose()
+        $ResponseStream = $null
+
+        $Response.Close()
+        $Response.Dispose()
+        $Response = $null
+        $Request = $null
+
         $Item = Get-Item -LiteralPath $Temporary -Force
         if (-not [bool]$Item.PSIsContainer -and $Item.Length -gt 0 -and $Item.Length -le 1073741824) {
             $ActualSha256 = (Get-FileHash -LiteralPath $Temporary -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -113,6 +223,20 @@ function Install-PinnedReleaseAsset {
             throw "the installed $Label path has unsafe authority"
         }
     } finally {
+        # Abort owned network IO before disposing a partially-read response.
+        if ($null -ne $Request) {
+            try { $Request.Abort() } catch {}
+            $Request = $null
+        }
+        if ($null -ne $FileStream) {
+            try { $FileStream.Dispose() } catch {}
+        }
+        if ($null -ne $ResponseStream) {
+            try { $ResponseStream.Dispose() } catch {}
+        }
+        if ($null -ne $Response) {
+            try { $Response.Close(); $Response.Dispose() } catch {}
+        }
         if (Test-Path -LiteralPath $Temporary) {
             Remove-Item -LiteralPath $Temporary -Force -ErrorAction SilentlyContinue
         }
