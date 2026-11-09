@@ -22,6 +22,8 @@ $DistWorkflowCommit = "a045ce29a72476d5e173bc2d8be384eb5147a235"
 $EulaSourceCommit = "8811aa006673caa5082a7c9343e83c0b7ac51d16"
 $Binary = "syntaur.exe"
 $ServerMsiSha256 = "0e0399df224aa4b4f732e23d9a3579107fad05aeeb3427ce3c311ecec8fc8642"
+# Signed Gateway inside this server MSI; distinct from the standalone Gateway hash.
+$ServerGatewaySha256 = "f9ac9f8ec245e88de89768e2aff8b6ed1c1739a9c1f8881e5dd97f0f7631d6c0"
 $InstallDir = "$env:LOCALAPPDATA\Syntaur"
 $GatewaySha256 = "18fe03441a19ca18721673f4c106aed2858460f2c3e84a69e22b8ba53b6c74ae"
 $ViewerSha256 = "863e5af5106257747957ffccd98ee88983af280ef2bd3bb8980f7510cccdf2de"
