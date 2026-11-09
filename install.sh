@@ -1679,6 +1679,22 @@ echo ""
 mkdir -p "$INSTALL_DIR"
 DASHBOARD_URL="http://127.0.0.1:18789"
 
+if [ "$PLATFORM" = macos ] && [ "$MODE" = server ]; then
+  # Fetch and authenticate the required HOST before replacing any user payload.
+  # Provisioning still happens at the existing administrator-consent boundary.
+  MACOS_HOST_TEMP=$(mktemp -d)
+  trap 'rm -rf "$MACOS_HOST_TEMP"' EXIT HUP INT TERM
+  # An administrator-owned executable always requires authenticated release
+  # bytes. Developer --skip-verify cannot cross this privilege boundary.
+  if ! ( VERIFY=1; download_verified \
+      "${REPO_URL}/releases/download/v${VERSION}/syntaur-link-tor-macos-arm64" \
+      "$MACOS_HOST_TEMP/syntaur-link-tor" ); then
+    echo "  Error: no authenticated Mac Link server service is available."
+    exit 1
+  fi
+  MACOS_HOST_DIGEST=$(sha256_file "$MACOS_HOST_TEMP/syntaur-link-tor") || exit 1
+fi
+
 APP_LAUNCHER="$INSTALL_DIR/syntaur-open"
 if [ "$MANAGED_RUNTIME" = "1" ]; then
   if ! ensure_process_inspector_cap_tools; then
@@ -1844,17 +1860,6 @@ fi
 
 if [ "$PLATFORM" = macos ] && [ "$MODE" = server ]; then
   echo "  Installing the isolated Syntaur Link server service (administrator consent required)..."
-  MACOS_HOST_TEMP=$(mktemp -d)
-  trap 'rm -rf "$MACOS_HOST_TEMP"' EXIT HUP INT TERM
-  # An administrator-owned executable always requires authenticated release
-  # bytes. Developer --skip-verify cannot cross this privilege boundary.
-  if ! ( VERIFY=1; download_verified \
-      "${REPO_URL}/releases/download/v${VERSION}/syntaur-link-tor-macos-arm64" \
-      "$MACOS_HOST_TEMP/syntaur-link-tor" ); then
-    echo "  Error: no authenticated Mac Link server service is available."
-    exit 1
-  fi
-  MACOS_HOST_DIGEST=$(sha256_file "$MACOS_HOST_TEMP/syntaur-link-tor") || exit 1
   provision_macos_tor_host "$MACOS_HOST_TEMP/syntaur-link-tor" "$MACOS_HOST_DIGEST" || {
     echo "  Error: the isolated Mac Link server service could not be installed safely."
     exit 1
