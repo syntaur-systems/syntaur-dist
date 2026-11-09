@@ -1162,6 +1162,8 @@ jobs:
           sed -i -E "s/^(\\\$Version[[:space:]]*=[[:space:]]*\")[^\"]+(\")/\1${REL_VERSION}\2/" install.ps1
           sed -i -E "s/^(\\\$DistWorkflowCommit[[:space:]]*=[[:space:]]*\")[^\"]+(\")/\1${DIST_COMMIT}\2/" install.ps1
           sed -i -E "s/^(\\\$ServerMsiSha256[[:space:]]*=[[:space:]]*\")[^\"]*(\")/\1${msi_sha256}\2/" install.ps1
+          windows_server_gateway_sha256=$(jq -er '.signed_input_sha256["syntaur.exe"]' "$receipt")
+          sed -i -E "s/^(\\\$ServerGatewaySha256[[:space:]]*=[[:space:]]*\")[^\"]*(\")/\1${windows_server_gateway_sha256}\2/" install.ps1
           windows_gateway_sha256=$(sha256sum dist/syntaur-gateway-windows-x86_64.exe | awk '{print $1}')
           sed -i -E "s/^(\\\$GatewaySha256[[:space:]]*=[[:space:]]*\")[^\"]*(\")/\1${windows_gateway_sha256}\2/" install.ps1
           windows_viewer_sha256=$(sha256sum dist/syntaur-viewer-windows-x86_64.exe | awk '{print $1}')
@@ -1183,6 +1185,7 @@ jobs:
           grep -qE "^\\\$Version[[:space:]]*=[[:space:]]*\"${REL_VERSION}\"" install.ps1 || { echo "::error::install.ps1 \$Version not stamped to ${REL_VERSION} (sed matched nothing — check the \$Version line format)"; exit 1; }
           grep -qE "^\\\$DistWorkflowCommit[[:space:]]*=[[:space:]]*\"${DIST_COMMIT}\"" install.ps1 || { echo "::error::install.ps1 public commit was not stamped"; exit 1; }
           grep -qE "^\\\$ServerMsiSha256[[:space:]]*=[[:space:]]*\"${msi_sha256}\"$" install.ps1 || { echo "::error::install.ps1 server MSI hash was not stamped"; exit 1; }
+          grep -qE "^\\\$ServerGatewaySha256[[:space:]]*=[[:space:]]*\"${windows_server_gateway_sha256}\"$" install.ps1 || { echo "::error::install.ps1 signed server Gateway hash was not stamped"; exit 1; }
           grep -qE "^RUNTIME_BOOTSTRAP_SHA256=\"[0-9a-f]{64}\"$" install.sh || { echo "::error::install.sh runtime bootstrap hash was not stamped"; exit 1; }
           grep -qE "^PROCESS_INSPECTOR_SHA256=\"[0-9a-f]{64}\"$" install.sh || { echo "::error::install.sh process inspector hash was not stamped"; exit 1; }
           grep -qE "^DIST_WORKFLOW_COMMIT=\"${DIST_COMMIT}\"$" install.sh || { echo "::error::install.sh workflow commit was not stamped"; exit 1; }
