@@ -298,6 +298,8 @@ MSI_RECEIPT
 )
 msi_digest=$(sha256sum "$stage_case/dist/syntaur-server-windows-x86_64.msi" | awk '{print $1}')
 grep -Fxq "\$ServerMsiSha256 = \"$msi_digest\"" "$stage_case/dist/install.ps1"
+server_gateway_digest=$(printf 'c%.0s' {1..64})
+grep -Fxq "\$ServerGatewaySha256 = \"$server_gateway_digest\"" "$stage_case/dist/install.ps1" || { echo 'signed server Gateway stamp is missing or stale' >&2; exit 1; }
 if (
   cd "$stage_case"
   env REL_VERSION="$version" SRC_COMMIT="$(printf '%040d' 1)" ENGINE_COMMIT="$engine_commit" \
