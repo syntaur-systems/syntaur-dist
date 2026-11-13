@@ -483,8 +483,10 @@ jobs:
       # publishing the resolved, immutable SHA — signed — is what lets a
       # third party prove exactly which source produced these binaries.
       #
-      # The SBOM is generated from Cargo.lock: a binary-only scan of a Rust
-      # static binary yields ~1 package (no embedded dep metadata).
+      # Scan the exact committed source, including nested dependency manifests.
+      # Never scan target/ build/cache output: generated dependency manifests
+      # duplicate packages and can exceed the bounded release asset contract.
+      # A binary-only scan of Rust also loses dependency metadata.
       #
       # Resolved source provenance is release authority and therefore required.
       # SBOM generation remains supplementary and continue-on-error.
@@ -503,16 +505,57 @@ jobs:
           } > syntaur-source-commit.txt
           cat syntaur-source-commit.txt
 
+      - name: Prepare exact dependency SBOM source (Linux gateway only)
+        if: matrix.artifact_name == 'syntaur-gateway-linux-x86_64'
+        id: sbom_source
+        run: |
+          set -euo pipefail
+          # Archive exact committed source, never generated or untracked files.
+          # Symlinks/submodules require explicit snapshot support, not escape or omission.
+          if git ls-tree -r HEAD | grep -E '^(120000|160000) ' >/dev/null; then
+            echo '::error::dependency SBOM snapshot does not support symlinks or submodules'
+            exit 1
+          fi
+          source_dir=$(mktemp -d "${RUNNER_TEMP}/syntaur-sbom-source.XXXXXXXX")
+          git archive --format=tar HEAD | tar -xf - -C "$source_dir"
+          # Archive attributes must not silently omit committed source.
+          while IFS= read -r -d "" path; do
+            if [ ! -e "$source_dir/$path" ] && [ ! -L "$source_dir/$path" ]; then
+              echo "::error::dependency SBOM snapshot omitted a committed path"
+              exit 1
+            fi
+          done < <(git ls-tree -rz --name-only HEAD)
+          test -s "$source_dir/Cargo.lock"
+          printf 'path=%s\n' "$source_dir" >>"$GITHUB_OUTPUT"
+
       - name: Generate dependency SBOM (Linux gateway only)
         if: matrix.artifact_name == 'syntaur-gateway-linux-x86_64'
         continue-on-error: true
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
-          path: .
+          path: ${{ steps.sbom_source.outputs.path }}
           format: spdx-json
           output-file: syntaur-sbom.spdx.json
           upload-artifact: false
           upload-release-assets: false
+
+      - name: Validate dependency SBOM artifact (Linux gateway only)
+        if: matrix.artifact_name == 'syntaur-gateway-linux-x86_64'
+        run: |
+          set -euo pipefail
+          # Generation is supplementary, but a present artifact must satisfy
+          # the same bound as signed release upload/recovery before signing.
+          if [ -e syntaur-sbom.spdx.json ] || [ -L syntaur-sbom.spdx.json ]; then
+            test -f syntaur-sbom.spdx.json
+            test ! -L syntaur-sbom.spdx.json
+            size=$(wc -c <syntaur-sbom.spdx.json)
+            if (( size == 0 || size > 16777216 )); then
+              echo '::error::dependency SBOM is empty or exceeds its 16 MiB release limit'
+              exit 1
+            fi
+            jq -se 'length == 1 and (.[0] | (.spdxVersion | startswith("SPDX-")) and (.packages | type == "array"))' \
+              syntaur-sbom.spdx.json >/dev/null
+          fi
 
       - name: Upload source provenance artifact (Linux gateway only)
         if: matrix.artifact_name == 'syntaur-gateway-linux-x86_64'
