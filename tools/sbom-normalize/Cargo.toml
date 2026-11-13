@@ -1,0 +1,11 @@
+[package]
+name = "syntaur-sbom-normalize"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+serde_json = { version = "=1.0.154", features = ["arbitrary_precision"] }
+tempfile = "=3.27.0"

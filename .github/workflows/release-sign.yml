@@ -534,27 +534,43 @@ jobs:
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           path: ${{ steps.sbom_source.outputs.path }}
+          syft-version: v1.42.3
           format: spdx-json
           output-file: syntaur-sbom.spdx.json
           upload-artifact: false
           upload-release-assets: false
 
+      - name: Checkout exact SBOM release helper
+        if: matrix.artifact_name == 'syntaur-gateway-linux-x86_64'
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          repository: syntaur-systems/syntaur-dist
+          ref: ${{ github.workflow_sha }}
+          path: .release-sbom-tools
+          persist-credentials: false
+
+      - name: Build exact Rust SBOM release helper
+        if: matrix.artifact_name == 'syntaur-gateway-linux-x86_64'
+        env:
+          WORKFLOW_COMMIT: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git -C .release-sbom-tools rev-parse HEAD)" = "$WORKFLOW_COMMIT"
+          manifest=.release-sbom-tools/tools/sbom-normalize/Cargo.toml
+          target="$RUNNER_TEMP/syntaur-sbom-target"
+          cargo test --locked --manifest-path "$manifest" --target-dir "$target"
+          cargo build --locked --manifest-path "$manifest" --target-dir "$target"
+          printf 'SYNTAUR_SBOM_NORMALIZER=%s/debug/syntaur-sbom-normalize\n' "$target" >>"$GITHUB_ENV"
+
       - name: Validate dependency SBOM artifact (Linux gateway only)
         if: matrix.artifact_name == 'syntaur-gateway-linux-x86_64'
         run: |
           set -euo pipefail
-          # Generation is supplementary, but a present artifact must satisfy
-          # the same bound as signed release upload/recovery before signing.
+          # Rust preserves every graph/metadata value, verifies inverse ID
+          # mapping, and atomically replaces only a valid <=16 MiB result.
+          # Raw scanner staging is separately bounded to 32 MiB.
           if [ -e syntaur-sbom.spdx.json ] || [ -L syntaur-sbom.spdx.json ]; then
-            test -f syntaur-sbom.spdx.json
-            test ! -L syntaur-sbom.spdx.json
-            size=$(wc -c <syntaur-sbom.spdx.json)
-            if (( size == 0 || size > 16777216 )); then
-              echo '::error::dependency SBOM is empty or exceeds its 16 MiB release limit'
-              exit 1
-            fi
-            jq -se 'length == 1 and (.[0] | (.spdxVersion | startswith("SPDX-")) and (.packages | type == "array"))' \
-              syntaur-sbom.spdx.json >/dev/null
+            timeout 90 "$SYNTAUR_SBOM_NORMALIZER" syntaur-sbom.spdx.json
           fi
 
       - name: Upload source provenance artifact (Linux gateway only)
