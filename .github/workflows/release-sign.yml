@@ -707,6 +707,18 @@ jobs:
             --release \
             --target "${{ matrix.target }}"
 
+      - name: Build optional native image worker
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Older source releases do not contain this optional component.
+          # Reuse this exact-source native helper build; no managed runtime role.
+          if [ -f experiments/cortiq-image-adapter-prototype/Cargo.toml ]; then
+            cargo build --manifest-path experiments/cortiq-image-adapter-prototype/Cargo.toml \
+              --locked --release --target "${{ matrix.target }}"
+          fi
+
       - name: Stage Link transport artifacts
         shell: bash
         run: |
@@ -722,6 +734,11 @@ jobs:
             cp \
               "crates/syntaur-link-tor/target/${{ matrix.target }}/release/syntaur-link-tor${{ matrix.executable_suffix }}" \
               "dist/syntaur-link-tor-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.executable_suffix }}"
+          fi
+
+          if [ "${{ matrix.platform }}" != windows ] && [ -f experiments/cortiq-image-adapter-prototype/Cargo.toml ]; then
+            cp "experiments/cortiq-image-adapter-prototype/target/${{ matrix.target }}/release/syntaur-cortiq-adapter-prototype" \
+              "dist/syntaur-image-worker-${{ matrix.platform }}-${{ matrix.arch }}"
           fi
 
       - name: Upload Link transport artifacts
@@ -1395,6 +1412,9 @@ jobs:
             syntaur-viewer-linux-x86_64 \
             syntaur-viewer-macos-arm64 \
             syntaur-viewer-windows-x86_64.exe \
+            syntaur-image-worker-linux-x86_64 \
+            syntaur-image-worker-linux-aarch64 \
+            syntaur-image-worker-macos-arm64 \
             | sort -u >/tmp/allowed-recovery-primary-assets
 
           require_bounded_json_file() {
@@ -1823,6 +1843,11 @@ jobs:
           if [ -f syntaur-sbom.spdx.json ]; then
             expected+=(syntaur-sbom.spdx.json)
           fi
+          # Optional component assets still use the same exact allowlist,
+          # checksums, signing and recovery validation as every other helper.
+          for optional in syntaur-image-worker-linux-x86_64 syntaur-image-worker-linux-aarch64 syntaur-image-worker-macos-arm64; do
+            if [ -f "$optional" ]; then expected+=("$optional"); fi
+          done
           printf '%s\n' "${expected[@]}" | sort -u >/tmp/expected-primary-assets
           { printf '%s\n' "${expected[@]}"; echo syntaur-sbom.spdx.json; } | sort -u >/tmp/allowed-primary-assets
           find . -maxdepth 1 -type f -printf '%f\n' | sort -u >/tmp/actual-primary-assets

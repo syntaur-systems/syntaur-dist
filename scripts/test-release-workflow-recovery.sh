@@ -60,7 +60,28 @@ for key, value in zip(('target', 'platform', 'arch', 'executable_suffix', 'build
 assert '${{' not in text
 pathlib.Path(output).write_text(text)
 EXPAND_LINK_STAGE
+  if [ "$platform" != windows ]; then
+    image_workspace="$link_case/experiments/cortiq-image-adapter-prototype"
+    mkdir -p "$image_workspace/target/$target/release"
+    : >"$image_workspace/Cargo.toml"
+    printf 'image worker fixture\n' >"$image_workspace/target/$target/release/syntaur-cortiq-adapter-prototype"
+  fi
   (cd "$link_case"; bash stage.sh)
+  if [ "$platform" != windows ]; then
+    cmp "$image_workspace/target/$target/release/syntaur-cortiq-adapter-prototype" \
+      "$link_case/dist/syntaur-image-worker-$platform-$arch"
+    rm "$image_workspace/target/$target/release/syntaur-cortiq-adapter-prototype"
+    if (cd "$link_case"; bash stage.sh >/dev/null 2>&1); then
+      echo "missing built $platform image worker unexpectedly staged" >&2
+      exit 1
+    fi
+    # Older source has no worker workspace and remains releasable.
+    rm "$image_workspace/Cargo.toml" "$link_case/dist/syntaur-image-worker-$platform-$arch"
+    (cd "$link_case"; bash stage.sh)
+    test ! -e "$link_case/dist/syntaur-image-worker-$platform-$arch"
+  else
+    test ! -e "$link_case/dist/syntaur-image-worker-$platform-$arch"
+  fi
   cmp "$link_case/crates/syntaur-link-tor/target/$target/release/syntaur-link-tor$suffix" \
     "$link_case/dist/syntaur-link-tor-$platform-$arch$suffix"
   rm "$link_case/crates/syntaur-link-tor/target/$target/release/syntaur-link-tor$suffix"
@@ -1080,5 +1101,39 @@ upload_count=$(cat "$large_state/upload-count")
 run_publish "$large_state" >/dev/null
 test "$(cat "$large_state/create-count")" = "$create_count"
 test "$(cat "$large_state/upload-count")" = "$upload_count"
+
+
+# Exercise the actual optional helper function used after both installer branches.
+(
+  set -- --image-worker
+  export SYNTAUR_INSTALL_TEST_LIBRARY_ONLY=1
+  # shellcheck disable=SC1091
+  source "$repository/install.sh"
+  test "$INSTALL_IMAGE_WORKER" = 1
+  INSTALL_DIR="$temporary/image-install"
+  mkdir -p "$INSTALL_DIR"
+  VERIFY=0
+  download_optional_verified() {
+    test "$VERIFY" = 1 || return 2
+    printf '%s\n' "$@" >"$temporary/image-download"
+  }
+  for target in linux-x86_64 linux-aarch64 macos-arm64; do
+    PLATFORM=${target%-*}; ARCH=${target##*-}
+    install_image_worker
+    grep -Fx "${REPO_URL}/releases/download/v${VERSION}/syntaur-image-worker-$target" "$temporary/image-download"
+    grep -Fx "$INSTALL_DIR/syntaur-image-worker" "$temporary/image-download"
+  done
+  test "$VERIFY" = 0
+  rm "$temporary/image-download"
+  INSTALL_IMAGE_WORKER=0
+  install_image_worker
+  test ! -e "$temporary/image-download"
+  INSTALL_IMAGE_WORKER=1
+  PLATFORM=windows; ARCH=x86_64
+  if install_image_worker; then echo 'unsupported image platform accepted' >&2; exit 1; fi
+  PLATFORM=linux
+  download_optional_verified() { return 1; }
+  if install_image_worker; then echo 'missing/failed selected image worker accepted' >&2; exit 1; fi
+)
 
 printf 'release workflow recovery tests passed\n'
