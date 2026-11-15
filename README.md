@@ -98,3 +98,21 @@ See [`SECURITY.md`](SECURITY.md) for the full verification, provenance, disclosu
 | `cosign.pub` | Public key for the local-signed deploy-stamp path (see SECURITY.md) |
 | `SECURITY.md` | Verification + vulnerability disclosure + source-audit policy |
 | Releases | Signed binaries + `checksums.txt` + `*.cosign.bundle` |
+
+### Optional local image worker
+
+When the selected release includes it, `sh install.sh --server --image-worker`
+(or `--connect --image-worker`) installs the signed native image HTTP/TLS worker
+on Linux x86_64, Linux ARM64 or Apple Silicon. The option uses the same verified
+helper download for managed and direct installations; it does not start a
+service, select hardware, download weights or install an inference engine.
+
+The worker requires an explicit model catalog, installed compatible runtime and
+weights, private state directory, shared accelerator lock and transport settings.
+Configure matching model IDs and worker trust in **Images → Model settings**.
+The adapter's source README describes its launch and TLS configuration. Windows
+can connect to a configured worker but does not receive this native helper.
+
+To update this standalone helper, rerun the installer with `--image-worker` for
+the selected release after its active jobs have finished. Managed-runtime updates
+do not update this optional component or restart its separately configured service.
