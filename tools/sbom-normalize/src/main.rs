@@ -79,6 +79,59 @@ fn rewrite(d: &mut Value, ids: &IdMap) -> Result<()> {
     }
     Ok(())
 }
+// Syft emits this same evidence explanation on every package-to-file edge.
+const SYFT_EVIDENCE: &str =
+    "evident-by: indicates the package's existence is evident by the given file";
+const EVIDENCE_TOKEN: &str = "evident-by";
+const EVIDENCE_LEGEND: &str = "Relationship comment 'evident-by' expands to: evident-by: indicates the package's existence is evident by the given file";
+
+fn evidence_edge(v: &Value, comment: &str) -> bool {
+    v.get("relationshipType").and_then(Value::as_str) == Some("OTHER")
+        && v.get("comment").and_then(Value::as_str) == Some(comment)
+}
+
+fn compact_evidence_comments(doc: &mut Value) -> Result<bool> {
+    let root = object(doc)?;
+    // Don't reinterpret an existing document comment or an existing short label.
+    if root.contains_key("comment") {
+        return Ok(false);
+    }
+    let Some(edges) = root.get_mut("relationships") else {
+        return Ok(false);
+    };
+    let edges = array(edges)?;
+    if edges.iter().any(|edge| evidence_edge(edge, EVIDENCE_TOKEN)) {
+        return Ok(false);
+    }
+    let mut changed = false;
+    for edge in edges {
+        if evidence_edge(edge, SYFT_EVIDENCE) {
+            object(edge)?.insert("comment".into(), Value::String(EVIDENCE_TOKEN.into()));
+            changed = true;
+        }
+    }
+    if changed {
+        root.insert("comment".into(), Value::String(EVIDENCE_LEGEND.into()));
+    }
+    Ok(changed)
+}
+
+fn expand_evidence_comments(doc: &mut Value) -> Result<()> {
+    let root = object(doc)?;
+    if root.remove("comment").as_ref().and_then(Value::as_str) != Some(EVIDENCE_LEGEND) {
+        return Err("missing evidence comment legend".into());
+    }
+    for edge in array(
+        root.get_mut("relationships")
+            .ok_or("missing evidence relationships")?,
+    )? {
+        if evidence_edge(edge, EVIDENCE_TOKEN) {
+            object(edge)?.insert("comment".into(), Value::String(SYFT_EVIDENCE.into()));
+        }
+    }
+    Ok(())
+}
+
 fn normalize(raw: &[u8]) -> Result<Vec<u8>> {
     if raw.is_empty() || raw.len() as u64 > RAW_LIMIT {
         return Err("raw staging limit".into());
@@ -142,12 +195,20 @@ fn normalize(raw: &[u8]) -> Result<Vec<u8>> {
     }
     let mut normalized = original.clone();
     rewrite(&mut normalized, &forward)?;
+    let mut out = serde_json::to_vec(&normalized).map_err(|e| e.to_string())?;
+    let compacted_comments =
+        out.len() >= RELEASE_LIMIT && compact_evidence_comments(&mut normalized)?;
+    if compacted_comments {
+        out = serde_json::to_vec(&normalized).map_err(|e| e.to_string())?;
+    }
     let mut restored = normalized.clone();
+    if compacted_comments {
+        expand_evidence_comments(&mut restored)?;
+    }
     rewrite(&mut restored, &reverse)?;
     if restored != original {
         return Err("round-trip graph or metadata changed".into());
     }
-    let mut out = serde_json::to_vec(&normalized).map_err(|e| e.to_string())?;
     out.push(b'\n');
     if out.len() > RELEASE_LIMIT {
         return Err("unchanged 16 MiB release limit exceeded".into());
@@ -205,6 +266,42 @@ mod tests {
         assert!(text.contains("\"name\":\"SPDXRef-long\""));
         assert!(text.contains("\"SPDXID\":\"SPDXRef-0\""));
     }
+    #[test]
+    fn exact_syft_evidence_comments_have_a_reversible_document_legend() {
+        let original = serde_json::json!({"spdxVersion":"SPDX-2.3",
+        "SPDXID":"SPDXRef-DOCUMENT","packages":[{"SPDXID":"SPDXRef-thing"}],
+        "relationships":[
+            {"spdxElementId":"SPDXRef-DOCUMENT","relatedSpdxElement":"SPDXRef-thing",
+                "relationshipType":"OTHER","comment":SYFT_EVIDENCE},
+            {"spdxElementId":"SPDXRef-DOCUMENT","relatedSpdxElement":"SPDXRef-thing",
+                "relationshipType":"OTHER","comment":"unrelated"},
+            {"spdxElementId":"SPDXRef-DOCUMENT","relatedSpdxElement":"SPDXRef-thing",
+                "relationshipType":"DESCRIBES","comment":SYFT_EVIDENCE}
+        ]});
+        let out: Value =
+            serde_json::from_slice(&normalize(&serde_json::to_vec(&original).unwrap()).unwrap())
+                .unwrap();
+        assert!(out.get("comment").is_none());
+        assert_eq!(out["relationships"][0]["comment"], SYFT_EVIDENCE);
+        assert_eq!(out["relationships"][1]["comment"], "unrelated");
+        assert_eq!(out["relationships"][2]["comment"], SYFT_EVIDENCE);
+        let mut direct = original.clone();
+        assert!(compact_evidence_comments(&mut direct).unwrap());
+        assert_eq!(direct["comment"], EVIDENCE_LEGEND);
+        assert_eq!(direct["relationships"][0]["comment"], EVIDENCE_TOKEN);
+        assert!(!compact_evidence_comments(&mut direct).unwrap());
+        expand_evidence_comments(&mut direct).unwrap();
+        assert_eq!(direct, original);
+        let mut existing_label = original.clone();
+        existing_label["relationships"][1]["comment"] = Value::String(EVIDENCE_TOKEN.into());
+        assert!(!compact_evidence_comments(&mut existing_label).unwrap());
+        assert_eq!(existing_label["relationships"][0]["comment"], SYFT_EVIDENCE);
+        let mut existing_comment = original.clone();
+        existing_comment["comment"] = Value::String("existing document comment".into());
+        assert!(!compact_evidence_comments(&mut existing_comment).unwrap());
+        assert_eq!(existing_comment["comment"], "existing document comment");
+    }
+
     #[test]
     fn rejects_stream_and_duplicate_ids() {
         assert!(normalize(br#"{} {}"#).is_err());
