@@ -11,7 +11,6 @@
 # Flags:
 #   --server          install the gateway + service unit
 #   --connect         install only the client/browser (points at an existing server)
-#   --image-worker    also install the optional signed native image worker (no models or service)
 #   --accept-eula     accept the EULA non-interactively (required when no TTY is available)
 #   --skip-verify     bypass checksum + signature verification (developer use; WARNS)
 #   --no-sudo         skip the package-manager step that installs GStreamer plugins
@@ -22,16 +21,16 @@ BRAND="Syntaur"
 # before tagging a release so this string and install.ps1 stay in sync with
 # the workspace version in Cargo.toml. install.sh ships standalone (users
 # curl|sh it), so it can't read the VERSION file at runtime.
-VERSION="0.7.358"
+VERSION="0.7.366"
 # Stamped from the built runtime artifact by release-sign.yml before this
 # installer is signed. Managed installs enforce it regardless of --skip-verify.
-RUNTIME_BOOTSTRAP_SHA256="520f98b12d0205e6747abbf146279ea262109efdb6fb2620af098244d75892e5"
+RUNTIME_BOOTSTRAP_SHA256="fd724300c284bf71c38c32493b04876715a94aed97f22eb33d1f8c9369d08cfb"
 # Stamped from the matching helper asset. This pin remains mandatory even
 # when --skip-verify is used for developer-only direct assets.
 PROCESS_INSPECTOR_SHA256="9d79957f289793a205b7e29f7014084a58367f17aa3c92de094969ad30c5d36d"
 # Stamped from the exact public workflow checkout before this installer is
 # signed. Cosign verification binds the manifest to this immutable commit.
-DIST_WORKFLOW_COMMIT="8b04d3895b88c5df88012e36c486c681a1ccfc23"
+DIST_WORKFLOW_COMMIT="92e990e6647008d775f82b04c34ff6253d38cdc4"
 # Immutable provenance for the exact EULA bytes below. This changes only when
 # EULA_VERSION or EULA_SHA256 changes, never for an ordinary product release.
 EULA_SOURCE_COMMIT="8811aa006673caa5082a7c9343e83c0b7ac51d16"
@@ -41,7 +40,6 @@ MODE=""
 VERIFY="1"
 AUTOSUDO="1"
 ACCEPT_EULA="0"
-INSTALL_IMAGE_WORKER="0"
 EULA_VERSION="1.0"
 EULA_URL="https://raw.githubusercontent.com/syntaur-systems/syntaur-dist/$EULA_SOURCE_COMMIT/EULA.md"
 EULA_HISTORICAL_URL="https://github.com/syntaur-systems/syntaur-dist/blob/main/EULA.md"
@@ -54,7 +52,6 @@ for arg in "$@"; do
   case "$arg" in
     --server)       MODE="server" ;;
     --connect)      MODE="connect" ;;
-    --image-worker) INSTALL_IMAGE_WORKER="1" ;;
     --accept-eula)  ACCEPT_EULA="1" ;;
     --skip-verify)  VERIFY="0" ;;
     --no-sudo)      AUTOSUDO="0" ;;
@@ -234,25 +231,6 @@ download_optional_verified() {
   echo "    Refusing to continue after a verification failure."
   exit 1
 }
-
-# Explicitly selected optional helper, shared by managed and direct installs.
-# Configuration, model runtimes/weights and service activation remain deliberate.
-install_image_worker() (
-  [ "$INSTALL_IMAGE_WORKER" = 1 ] || exit 0
-  case "$PLATFORM-$ARCH" in
-    linux-x86_64|linux-aarch64|macos-arm64) ;;
-    *) echo "  Error: image worker is unavailable for $PLATFORM-$ARCH"; exit 1 ;;
-  esac
-  VERIFY=1
-  IMAGE_ASSET="syntaur-image-worker-$PLATFORM-$ARCH"
-  if ! download_optional_verified "native image worker" \
-      "${REPO_URL}/releases/download/v${VERSION}/$IMAGE_ASSET" \
-      "$INSTALL_DIR/syntaur-image-worker"; then
-    echo "  Error: the selected release has no verified image worker for this platform."
-    exit 1
-  fi
-  echo "  Image worker installed. Configure its models, device, shared accelerator lock and transport before starting it."
-)
 
 # Bounded release download used by the managed-runtime bootstrap. The file
 # size limit is applied in a subshell before curl/wget starts, then checked
@@ -1889,11 +1867,6 @@ if [ "$PLATFORM" = macos ] && [ "$MODE" = server ]; then
   rm -rf "$MACOS_HOST_TEMP"
   trap - EXIT HUP INT TERM
 fi
-
-install_image_worker || {
-  echo "  Error: requested image worker installation is incomplete."
-  exit 1
-}
 
 configure_link_transport || {
   echo "  Error: could not safely configure Syntaur Link"
