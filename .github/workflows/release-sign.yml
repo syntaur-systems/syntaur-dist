@@ -171,6 +171,9 @@ jobs:
             package: syntaur-gateway
             binary: syntaur-gateway
             artifact_name: syntaur-gateway-linux-x86_64
+            extra_package: mace
+            extra_binary: mace
+            extra_artifact_name: syntaur-mace-linux-x86_64
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             package: syntaur-gateway
@@ -210,6 +213,9 @@ jobs:
             package: syntaur-gateway
             binary: syntaur-gateway
             artifact_name: syntaur-gateway-macos-arm64
+            extra_package: mace
+            extra_binary: mace
+            extra_artifact_name: syntaur-mace-macos-arm64
           - os: macos-15
             target: aarch64-apple-darwin
             package: syntaur-viewer
@@ -220,6 +226,9 @@ jobs:
             package: syntaur-gateway
             binary: syntaur-gateway.exe
             artifact_name: syntaur-gateway-windows-x86_64.exe
+            extra_package: mace
+            extra_binary: mace.exe
+            extra_artifact_name: syntaur-mace-windows-x86_64.exe
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             package: syntaur-viewer
@@ -293,9 +302,11 @@ jobs:
             apt_get install -y --no-install-recommends libgtk-4-dev libwebkitgtk-6.0-dev
           fi
       - name: Build release
+        id: build-release
         shell: bash
         env:
           CARGO_FEATURES: ${{ matrix.features || '' }}
+          EXTRA_PACKAGE: ${{ matrix.extra_package || '' }}
           # Native Windows cannot use the build script's /usr/bin/git fallback.
           # Bind compilation directly to the validated release authority.
           SYNTAUR_SOURCE_COMMIT: ${{ env.SRC_COMMIT }}
@@ -306,6 +317,11 @@ jobs:
               --features "$CARGO_FEATURES"
           else
             cargo build --release --target ${{ matrix.target }} -p ${{ matrix.package }}
+          fi
+          # Source tags before standalone recovery can still use this workflow.
+          if [ -n "$EXTRA_PACKAGE" ] && [ -f mace/src/recovery/mod.rs ]; then
+            cargo build --locked --release --target ${{ matrix.target }} -p "$EXTRA_PACKAGE"
+            printf 'extra_package_built=true\n' >>"$GITHUB_OUTPUT"
           fi
 
       - name: Stage artifact
@@ -366,7 +382,7 @@ jobs:
           PY
 
       - name: Stage auxiliary runtime artifact
-        if: matrix.extra_binary != ''
+        if: matrix.extra_binary != '' && (!matrix.extra_package || steps.build-release.outputs.extra_package_built == 'true')
         shell: bash
         run: |
           cp "target/${{ matrix.target }}/release/${{ matrix.extra_binary }}" \
@@ -467,7 +483,7 @@ jobs:
           retention-days: 7
 
       - name: Upload auxiliary runtime binary
-        if: matrix.extra_artifact_name != ''
+        if: matrix.extra_artifact_name != '' && (!matrix.extra_package || steps.build-release.outputs.extra_package_built == 'true')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.extra_artifact_name }}
@@ -1415,6 +1431,9 @@ jobs:
             syntaur-image-worker-linux-x86_64 \
             syntaur-image-worker-linux-aarch64 \
             syntaur-image-worker-macos-arm64 \
+            syntaur-mace-linux-x86_64 \
+            syntaur-mace-macos-arm64 \
+            syntaur-mace-windows-x86_64.exe \
             | sort -u >/tmp/allowed-recovery-primary-assets
 
           require_bounded_json_file() {
@@ -1845,7 +1864,13 @@ jobs:
           fi
           # Optional component assets still use the same exact allowlist,
           # checksums, signing and recovery validation as every other helper.
-          for optional in syntaur-image-worker-linux-x86_64 syntaur-image-worker-linux-aarch64 syntaur-image-worker-macos-arm64; do
+          for optional in \
+            syntaur-image-worker-linux-x86_64 \
+            syntaur-image-worker-linux-aarch64 \
+            syntaur-image-worker-macos-arm64 \
+            syntaur-mace-linux-x86_64 \
+            syntaur-mace-macos-arm64 \
+            syntaur-mace-windows-x86_64.exe; do
             if [ -f "$optional" ]; then expected+=("$optional"); fi
           done
           printf '%s\n' "${expected[@]}" | sort -u >/tmp/expected-primary-assets
@@ -2178,6 +2203,12 @@ jobs:
           \`\`\`
 
           See \`SECURITY.md\` for the verification + disclosure policy.
+
+          If this release lists a \`syntaur-mace-*\` binary, download and verify
+          the one for your server. Make it executable on Linux or macOS and
+          install it as \`mace\` (\`mace.exe\` on Windows). Run
+          \`mace recovery --help\` to diagnose or start the server from a
+          terminal, including when the dashboard is unavailable.
 
           <!-- syntaur-release-correlation:${RELEASE_CORRELATION} -->
           <!-- syntaur-source-commit:${SRC_COMMIT} -->
