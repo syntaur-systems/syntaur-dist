@@ -1072,7 +1072,9 @@ jobs:
       - name: Download same-run Windows binaries
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          pattern: syntaur-*-windows-*
+          # These four build groups supply the six MSI inputs. The standalone
+          # MACE download is published separately in the signed release.
+          pattern: 'syntaur-{gateway-windows-x86_64.exe,viewer-windows-x86_64.exe,link-transport-x86_64-pc-windows-msvc,snowflake-windows-amd64}'
           path: ${{ runner.temp }}/syntaur-windows-inputs
           merge-multiple: true
 
