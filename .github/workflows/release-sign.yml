@@ -831,12 +831,26 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           cd source
-          go build \
-            -buildvcs=false \
-            -trimpath \
-            -ldflags='-s -w -buildid=' \
-            -o "../dist/syntaur-snowflake-client-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.executable_suffix }}" \
-            ./client
+          build_client() {
+            go build \
+              -buildvcs=false \
+              -trimpath \
+              -ldflags='-s -w -buildid=' \
+              -o "../dist/syntaur-snowflake-client-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.executable_suffix }}" \
+              ./client
+          }
+          build_log="$RUNNER_TEMP/snowflake-build.log"
+          if build_client 2>&1 | tee "$build_log"; then
+            exit 0
+          fi
+          # Retry the original build once if the Go proxy interrupted a module ZIP.
+          if grep -Eq 'checksum mismatch|SECURITY ERROR' "$build_log" ||
+             ! grep -Eq 'read "https://proxy\.golang\.org/[^"]+/@v/[^"]+\.zip": stream error: stream ID [0-9]+; INTERNAL_ERROR; received from peer$' "$build_log"; then
+            exit 1
+          fi
+          echo "::warning::Go proxy interrupted a module download. Retrying in 5 seconds."
+          sleep 5
+          build_client
 
       - name: Record Snowflake source and license
         if: matrix.publish_source
