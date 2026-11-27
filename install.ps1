@@ -26,6 +26,7 @@ $ServerMsiSha256 = "fd6965a80ecfbb1cf1bfe81234a47d961aeb8728859a77d3e988ca9a57b1
 $ServerGatewaySha256 = "33e8a7c0b9baa73cc6c4c8ed68b09b4d265de04a04423a06822f10a820b06195"
 $InstallDir = "$env:LOCALAPPDATA\Syntaur"
 $GatewaySha256 = "44ac0b75e634d28a046466c73fa36b37acf8bcf59feffcd143ae16f4d99f1864"
+$MaceSha256 = "2def01e14b162c53053366cbc185eccab670792b9151d73d394245bf6c819b39"
 $ViewerSha256 = "43d3befa6bc6982324e43b7e2dbbb27cb56c1620adc2b1416cb84721912642ed"
 $LinkClientTorSha256 = "3e404925f76b481e9a27f541074fce14925ff2f4ff16357a565e9e8b78b87711"
 $LinkProbeSha256 = "8bcd1b58cf009c8093464f6a9681e76fbca2fca718d86f930923b1e8dd85e24d"
@@ -734,6 +735,13 @@ $ViewerBinary = "syntaur-viewer.exe"
 $ViewerPath = Join-Path $InstallDir $ViewerBinary
 Install-PinnedReleaseAsset -Url "$ReleaseBase/syntaur-viewer-windows-$Arch.exe" `
     -LiteralPath $ViewerPath -ExpectedSha256 $ViewerSha256 -Label "dashboard viewer"
+$MacePath = Join-Path $InstallDir "mace.exe"
+Install-PinnedReleaseAsset -Url "$ReleaseBase/syntaur-mace-windows-$Arch.exe" `
+    -LiteralPath $MacePath -ExpectedSha256 $MaceSha256 -Label "MACE coding and recovery"
+& $MacePath desktop install
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "MACE is installed at $MacePath. Run mace desktop install to inspect the shortcut."
+}
 foreach ($Helper in @(
     @{ Name = "syntaur-link-client-tor"; Hash = $LinkClientTorSha256 },
     @{ Name = "syntaur-link-probe"; Hash = $LinkProbeSha256 },

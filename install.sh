@@ -1880,6 +1880,20 @@ else
   write_app_launcher || exit 1
 fi
 
+case "$PLATFORM-$ARCH" in
+  linux-x86_64|macos-arm64)
+    MACE_PATH="$INSTALL_DIR/mace"
+    if [ -L "$MACE_PATH" ] || { [ -e "$MACE_PATH" ] && [ ! -f "$MACE_PATH" ]; }; then
+      echo "  Preserved the existing non-regular path $MACE_PATH. Install standalone MACE from the release downloads."
+    else
+      ( VERIFY=1; download_verified "${REPO_URL}/releases/download/v${VERSION}/syntaur-mace-${PLATFORM}-${ARCH}" "$MACE_PATH" ) || exit 1
+      if [ "$PLATFORM" = macos ] || [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || [ -d "$HOME/Desktop" ]; then
+        "$MACE_PATH" desktop install || echo "  MACE is installed at $MACE_PATH. Run mace desktop install to see the shortcut details."
+      fi
+    fi
+    ;;
+esac
+
 if [ "$PLATFORM" = macos ] && [ "$MODE" = server ]; then
   echo "  Installing the isolated Syntaur Link server service (administrator consent required)..."
   provision_macos_tor_host "$MACOS_HOST_TEMP/syntaur-link-tor" "$MACOS_HOST_DIGEST" || {

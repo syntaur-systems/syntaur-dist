@@ -281,9 +281,10 @@ git clone --quiet --no-hardlinks "$repository" "$stage_case"
 mkdir -p "$stage_case/dist"
 cp "$repository/install.sh" "$repository/install.ps1" "$stage_case/"
 cp "$repository/EULA.md" "$stage_case/EULA.md"
+cp "$repository/assets/mace.ico" "$stage_case/assets/mace.ico"
 printf 'runtime payload\n' >"$stage_case/dist/syntaur-runtime-linux-x86_64"
 printf 'process inspector payload\n' >"$stage_case/dist/syntaur-process-inspector-linux-x86_64"
-for asset in syntaur-gateway syntaur-viewer syntaur-link-tor syntaur-link-client-tor syntaur-link-probe syntaur-snowflake-client; do
+for asset in syntaur-gateway syntaur-viewer syntaur-mace syntaur-link-tor syntaur-link-client-tor syntaur-link-probe syntaur-snowflake-client; do
   printf '%s fixture payload\n' "$asset" >"$stage_case/dist/$asset-windows-x86_64.exe"
 done
 printf 'standalone MSI fixture\n' >"$stage_case/dist/syntaur-server-windows-x86_64.msi"
@@ -292,12 +293,13 @@ import hashlib, json, pathlib, sys
 root=pathlib.Path(sys.argv[1])
 version,source,engine,dist,correlation=sys.argv[2:]
 def digest(path): return hashlib.sha256(path.read_bytes()).hexdigest()
-names={'syntaur-gateway':'syntaur', 'syntaur-viewer':'syntaur-viewer', 'syntaur-link-tor':'syntaur-link-tor',
+names={'syntaur-gateway':'syntaur', 'syntaur-viewer':'syntaur-viewer', 'syntaur-mace':'mace', 'syntaur-link-tor':'syntaur-link-tor',
        'syntaur-link-client-tor':'syntaur-link-client-tor', 'syntaur-link-probe':'syntaur-link-probe',
        'syntaur-snowflake-client':'syntaur-snowflake-client'}
 inputs={f'{target}.exe':digest(root/'dist'/f'{name}-windows-x86_64.exe') for name,target in names.items()}
 inputs.update({'ServerLauncher.exe':'a'*64,'InstallerProvisioner.exe':'b'*64,
-               'EULA.md':digest(root/'EULA.md'), 'assets\\syntaur-icon.ico':digest(root/'assets/syntaur-icon.ico')})
+               'EULA.md':digest(root/'EULA.md'), 'assets\\syntaur-icon.ico':digest(root/'assets/syntaur-icon.ico'),
+               'assets\\mace.ico':digest(root/'assets/mace.ico')})
 for name in ('concrt140.dll','msvcp140.dll','msvcp140_1.dll','msvcp140_2.dll',
              'msvcp140_atomic_wait.dll','msvcp140_codecvt_ids.dll','vccorlib140.dll',
              'vcruntime140.dll','vcruntime140_1.dll','vcruntime140_threads.dll'):
@@ -342,6 +344,7 @@ while read -r variable asset; do
 done <<'WINDOWS_PINS'
 GatewaySha256 syntaur-gateway
 ViewerSha256 syntaur-viewer
+MaceSha256 syntaur-mace
 LinkClientTorSha256 syntaur-link-client-tor
 LinkProbeSha256 syntaur-link-probe
 SnowflakeClientSha256 syntaur-snowflake-client
