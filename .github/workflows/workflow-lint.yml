@@ -95,9 +95,11 @@ jobs:
         shell: powershell
         run: .\scripts\test-eula-acceptance.ps1
 
-      - name: Verify exact public server release context
+      - name: Verify public server release context and signing inputs
         shell: powershell
-        run: .\packaging\windows-server\tests\PublicReleaseFixtures.ps1
+        run: |
+          .\packaging\windows-server\tests\PublicReleaseFixtures.ps1
+          .\packaging\windows-server\ArtifactSigning.Tests.ps1
 
       - name: Verify server bootstrap handoff
         shell: powershell
