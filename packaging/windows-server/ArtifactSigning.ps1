@@ -73,7 +73,7 @@ function Invoke-SyntaurArtifactSigning {
     # The builder admits exact staged inputs and tool paths before calling us.
     # Sign exactly the requested files; never glob adjacent outputs or retry an
     # uncertain submission. A failure leaves the candidate unpublished.
-    if ($LiteralPaths.Count -lt 1 -or $LiteralPaths.Count -gt 8) { throw 'Unexpected signing input count.' }
+    if ($LiteralPaths.Count -lt 1 -or $LiteralPaths.Count -gt 9) { throw 'Unexpected signing input count.' }
     if (@($LiteralPaths | Select-Object -Unique).Count -ne $LiteralPaths.Count) { throw 'Duplicate signing input.' }
     foreach ($path in $LiteralPaths) {
         Invoke-SyntaurSigningTool -SignToolPath $SignToolPath -ArgumentList @(

@@ -200,10 +200,10 @@ try {
         -ScriptBlock { Invoke-SyntaurArtifactSigning -LiteralPaths @() -SignToolPath 'C:\tools\signtool.exe' -DlibPath 'C:\tools\dlib.dll' -MetadataPath $validMetaPath } `
         -ExpectedMessageSubstring 'empty array'
 
-    # 9 items rejected
-    $nineFiles = @(1..9 | ForEach-Object { "C:\staged\file$_.exe" })
-    Assert-Throws -TestName 'Reject > 8 LiteralPaths' `
-        -ScriptBlock { Invoke-SyntaurArtifactSigning -LiteralPaths $nineFiles -SignToolPath 'C:\tools\signtool.exe' -DlibPath 'C:\tools\dlib.dll' -MetadataPath $validMetaPath } `
+    # 10 items rejected
+    $tenFiles = @(1..10 | ForEach-Object { "C:\staged\file$_.exe" })
+    Assert-Throws -TestName 'Reject > 9 LiteralPaths' `
+        -ScriptBlock { Invoke-SyntaurArtifactSigning -LiteralPaths $tenFiles -SignToolPath 'C:\tools\signtool.exe' -DlibPath 'C:\tools\dlib.dll' -MetadataPath $validMetaPath } `
         -ExpectedMessageSubstring 'Unexpected signing input count.'
 
     # Duplicate paths rejected before any signing
@@ -303,6 +303,36 @@ try {
         throw "Second file verify args mismatch: $(($c3.ArgumentList -join ' '))"
     }
     Write-Output '  PASS: Exact sign->verify order per file with SHA256/documented RFC3161 timestamp/dlib/metadata args verified'
+
+    # The MSI installs ServerLauncher and also embeds the same signed file as a custom action.
+    [xml]$product = Get-Content -Raw -LiteralPath (Join-Path $scriptRoot 'Product.wxs')
+    $stagingPrefix = '$(var.StagingDirectory)'
+    $packageNames = @($product.SelectNodes('//@Source | //@SourceFile') |
+        ForEach-Object { $_.Value } |
+        Where-Object { $_ -clike '$(var.StagingDirectory)*.exe' } |
+        ForEach-Object { $_.Substring($stagingPrefix.Length) } |
+        Sort-Object -Unique)
+    if ($packageNames.Count -ne 9 -or $packageNames -cnotcontains 'mace.exe') {
+        throw 'Expected nine executable inputs including MACE in the Windows package.'
+    }
+    $packagePaths = @($packageNames | ForEach-Object { Join-Path 'C:\stage' $_ })
+    $global:SignToolCalls.Clear()
+    $global:AuthenticodeCalls.Clear()
+    Invoke-SyntaurArtifactSigning -LiteralPaths $packagePaths -SignToolPath 'C:\tools\signtool.exe' `
+        -DlibPath 'C:\tools\dlib.dll' -MetadataPath $validMetaPath
+    if ($global:SignToolCalls.Count -ne 2 * $packagePaths.Count -or
+        ($global:AuthenticodeCalls -join '|') -cne ($packagePaths -join '|')) {
+        throw 'Every packaged executable must be signed and checked exactly once.'
+    }
+    for ($i = 0; $i -lt $packagePaths.Count; $i++) {
+        $signArgs = $global:SignToolCalls[2 * $i].ArgumentList
+        $verifyArgs = $global:SignToolCalls[2 * $i + 1].ArgumentList
+        if ($signArgs[0] -cne 'sign' -or $signArgs[-1] -cne $packagePaths[$i] -or
+            $verifyArgs[0] -cne 'verify' -or $verifyArgs[-1] -cne $packagePaths[$i]) {
+            throw "Missing or reordered signing operation for $($packagePaths[$i])."
+        }
+    }
+    Write-Output '  PASS: All nine Windows package programs, including MACE, signed and verified by the test doubles.'
 
     # Refusal on invalid signature status
     $global:SignToolCalls.Clear()
