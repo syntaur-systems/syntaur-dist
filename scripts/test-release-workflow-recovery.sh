@@ -1106,6 +1106,42 @@ test "$(cat "$large_state/create-count")" = "$create_count"
 test "$(cat "$large_state/upload-count")" = "$upload_count"
 
 
+# MACE upgrades its own program while respecting an occupied shell command.
+(
+  set --
+  export HOME="$temporary/mace user" SYNTAUR_INSTALL_TEST_LIBRARY_ONLY=1
+  unset DISPLAY WAYLAND_DISPLAY
+  # shellcheck disable=SC1091
+  source "$repository/install.sh"
+  mkdir -p "$INSTALL_DIR"
+  PLATFORM=linux; ARCH=x86_64
+  short="$INSTALL_DIR/mace"
+  managed="$HOME/.local/libexec/syntaur/mace"
+  payload=first
+  download_verified() {
+    test "$VERIFY" = 1 && test "$1" = "${REPO_URL}/releases/download/v${VERSION}/syntaur-mace-linux-x86_64" || return 1
+    printf '%s\n' "$payload" >"$2.next" && mv "$2.next" "$2"
+  }
+  install_mace_cli
+  test -L "$short"
+  test "$(cat "$short")" = first
+  payload=second
+  install_mace_cli
+  test -L "$short"
+  test "$(cat "$short")" = second
+  rm "$short"
+  printf 'custom command\n' >"$short"
+  payload=third
+  install_mace_cli
+  test "$(cat "$short")" = 'custom command'
+  test "$(cat "$managed")" = third
+  rm "$short"
+  ln -s "$HOME/other command" "$short"
+  install_mace_cli
+  test "$(readlink "$short")" = "$HOME/other command"
+  test ! -e "$HOME/other command"
+)
+
 # Exercise the actual optional helper function used after both installer branches.
 (
   set -- --image-worker
