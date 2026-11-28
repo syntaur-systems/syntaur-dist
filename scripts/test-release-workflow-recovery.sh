@@ -1106,6 +1106,35 @@ test "$(cat "$large_state/create-count")" = "$create_count"
 test "$(cat "$large_state/upload-count")" = "$upload_count"
 
 
+# Linux's managed runtime rejects group-writable command directories.
+(
+  set --
+  export SYNTAUR_INSTALL_TEST_LIBRARY_ONLY=1
+  # shellcheck disable=SC1091
+  source "$repository/install.sh"
+  PLATFORM=linux
+  for mask in 0002 0077; do
+    HOME="$temporary/command directory $mask"
+    INSTALL_DIR="$HOME/.local/bin"
+    mkdir -p "$HOME"
+    umask "$mask"
+    make_command_directory "$INSTALL_DIR"
+    make_command_directory "$HOME/.local/libexec/syntaur"
+    expected=755
+    if [ "$mask" = 0077 ]; then expected=700; fi
+    test "$(stat -c %a "$HOME/.local")" = "$expected"
+    test "$(stat -c %a "$INSTALL_DIR")" = "$expected"
+    test "$(stat -c %a "$HOME/.local/libexec")" = "$expected"
+    test "$(stat -c %a "$HOME/.local/libexec/syntaur")" = "$expected"
+    test "$(umask)" = "$mask"
+    chmod 775 "$INSTALL_DIR"
+    printf '%s\n' 'user file' > "$INSTALL_DIR/mace"
+    make_command_directory "$INSTALL_DIR"
+    test "$(stat -c %a "$INSTALL_DIR")" = 775
+    test "$(cat "$INSTALL_DIR/mace")" = 'user file'
+  done
+)
+
 # MACE upgrades its own program while respecting an occupied shell command.
 (
   set --
@@ -1140,6 +1169,18 @@ test "$(cat "$large_state/upload-count")" = "$upload_count"
   install_mace_cli
   test "$(readlink "$short")" = "$HOME/other command"
   test ! -e "$HOME/other command"
+  for directory in "$HOME/.local/libexec" "$(dirname "$managed")"; do
+    chmod 775 "$directory"
+    payload=unpublished
+    if install_mace_cli >"$temporary/mace-folder-message"; then
+      echo 'MACE wrote to a group-writable program directory' >&2
+      exit 1
+    fi
+    grep -F "Could not install MACE in $directory." "$temporary/mace-folder-message"
+    test "$(stat -c %a "$directory")" = 775
+    test "$(cat "$managed")" = third
+    chmod 755 "$directory"
+  done
 )
 
 # Exercise the actual optional helper function used after both installer branches.

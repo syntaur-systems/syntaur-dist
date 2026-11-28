@@ -235,6 +235,14 @@ download_optional_verified() {
   exit 1
 }
 
+make_command_directory() (
+  if [ "$PLATFORM" = linux ]; then
+    # Linux command directories must not grant group or other write access.
+    umask go-w
+  fi
+  mkdir -p "$1"
+)
+
 install_mace_cli() (
   case "$PLATFORM-$ARCH" in
     linux-x86_64|macos-arm64) ;;
@@ -247,7 +255,13 @@ install_mace_cli() (
      [ -L "$MACE_PATH" ] || { [ -e "$MACE_PATH" ] && [ ! -f "$MACE_PATH" ]; }; then
     echo "  Preserved the existing path to $MACE_PATH. Standalone MACE is available in the release downloads."
   else
-    mkdir -p "$MACE_DIR" || exit 1
+    for directory in "$HOME/.local/libexec" "$MACE_DIR"; do
+      make_command_directory "$directory" || exit 1
+      if [ "$PLATFORM" = linux ] && ! safe_eula_entry "$directory" directory; then
+        printf '  Could not install MACE in %s. This path must be a folder you own. Turn off write access for Group and Others in its permissions, then rerun this installer. Your existing files were preserved.\n' "$directory"
+        exit 1
+      fi
+    done
     ( VERIFY=1; download_verified "${REPO_URL}/releases/download/v${VERSION}/syntaur-mace-${PLATFORM}-${ARCH}" "$MACE_PATH" ) || exit 1
     if [ ! -e "$MACE_COMMAND" ] && [ ! -L "$MACE_COMMAND" ]; then
       ( cd "$INSTALL_DIR" && ln -s "$MACE_PATH" ) ||
@@ -1724,7 +1738,7 @@ echo "  Platform: $PLATFORM-$ARCH"
 echo ""
 
 # Create install directory
-mkdir -p "$INSTALL_DIR"
+make_command_directory "$INSTALL_DIR"
 DASHBOARD_URL="http://127.0.0.1:18789"
 
 if [ "$PLATFORM" = macos ] && [ "$MODE" = server ]; then
@@ -1864,6 +1878,13 @@ if [ "$MANAGED_RUNTIME" = "1" ]; then
     # The helper is signed, immutable, and version-addressed. Retaining it is
     # race-safe; a later retry can authenticate and reuse the exact file.
     echo "  Error: managed runtime installation failed."
+    for directory in "$HOME/.local" "$INSTALL_DIR"; do
+      mode=$(portable_stat_mode "$directory") || continue
+      case "$mode" in
+        *[2367][0-7]|*[2367])
+          printf '  Group or other write access is enabled on %s. Turn off write access for Group and Others in the folder permissions, then rerun this installer.\n' "$directory" ;;
+      esac
+    done
     exit 1
   fi
   if [ ! -x "$APP_LAUNCHER" ]; then
