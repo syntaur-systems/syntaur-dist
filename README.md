@@ -12,6 +12,8 @@ wget https://github.com/syntaur-systems/syntaur-dist/releases/latest/download/in
 sh install.sh --server      # gateway + service unit  (--connect for client-only)
 # First install asks for EULA acceptance; the exact current acceptance is reused.
 ```
+MACE provides a terminal for coding and recovery on x86-64 Linux, Apple Silicon macOS, and 64-bit Windows. Open **MACE** on the desktop, or run `mace recovery doctor` to check an installation while the gateway is offline. The Windows server MSI also adds MACE to Start. Its PowerShell command is `& "$env:ProgramFiles\Syntaur\mace.exe" recovery doctor`. Managed program updates preserve the current user's projects, model profiles, stories and knowledge. On Linux and macOS the installer keeps any existing command named `mace`. If you already use that name, run `~/.local/libexec/syntaur/mace code` to open the updated CLI.
+
 macOS releases require Apple Silicon (M1 or newer). Intel Macs are unsupported. Previously published releases and their verification records remain available.
 
 Mac server packaging in this development branch keeps the server in the selected account and uses a separate, unprivileged Link service installed with administrator consent. The service requires authenticated release bytes even with `--skip-verify`. Native owner setup reuses the installed server and its private pairing flow. Privileged installation, full interactive acceptance and Apple distribution signing remain under validation; this branch is not a published Mac release.

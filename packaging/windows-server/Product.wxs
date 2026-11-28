@@ -11,6 +11,7 @@
                   DowngradeErrorMessage="A newer version of Syntaur is already installed." />
     <Launch Condition="VersionNT64" Message="Syntaur requires 64-bit Windows." />
     <Property Id="OPEN_SYNTAUR" Value="1" />
+    <Icon Id="MaceIcon" SourceFile="$(var.StagingDirectory)assets\mace.ico" />
     <Icon Id="SyntaurIcon" SourceFile="$(var.StagingDirectory)assets\syntaur-icon.ico" />
     <Binary Id="InstallerProvisioner" SourceFile="$(var.StagingDirectory)InstallerProvisioner.exe" />
     <Binary Id="MaintenanceLauncher" SourceFile="$(var.StagingDirectory)ServerLauncher.exe" />
@@ -20,10 +21,12 @@
       <Directory Id="INSTALLFOLDER" Name="Syntaur" />
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder" />
+    <StandardDirectory Id="DesktopFolder" />
     <StandardDirectory Id="StartupFolder" />
 
     <Feature Id="SyntaurServer" Title="Syntaur" Level="1">
       <ComponentRef Id="Launcher" /><ComponentRef Id="Gateway" />
+      <ComponentRef Id="Mace" /><ComponentRef Id="MaceShortcuts" />
       <ComponentRef Id="Viewer" /><ComponentRef Id="TorHost" />
       <ComponentRef Id="ClientTor" /><ComponentRef Id="Probe" />
       <ComponentRef Id="Snowflake" /><ComponentRef Id="Eula" />
@@ -84,6 +87,16 @@
     </Component>
     <Component Id="Gateway" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100002">
       <File Id="GatewayExe" Source="$(var.StagingDirectory)syntaur.exe" KeyPath="yes" />
+    </Component>
+    <Component Id="Mace" Directory="INSTALLFOLDER" Guid="A74B28D4-427C-4DF5-B818-7AA982F1887C">
+      <File Id="MaceExe" Source="$(var.StagingDirectory)mace.exe" KeyPath="yes" />
+    </Component>
+    <Component Id="MaceShortcuts" Directory="INSTALLFOLDER" Guid="1A18C1F6-66E6-4EC7-BD2B-E304E0F2AA15">
+      <Shortcut Id="MaceStart" Directory="ProgramMenuFolder" Name="MACE" Target="[#MaceExe]"
+                Arguments="code" WorkingDirectory="INSTALLFOLDER" Icon="MaceIcon" />
+      <Shortcut Id="MaceDesktop" Directory="DesktopFolder" Name="MACE" Target="[#MaceExe]"
+                Arguments="code" WorkingDirectory="INSTALLFOLDER" Icon="MaceIcon" />
+      <RegistryValue Root="HKLM" Key="Software\Syntaur\Server" Name="MaceShortcuts" Type="integer" Value="1" KeyPath="yes" />
     </Component>
     <Component Id="Viewer" Directory="INSTALLFOLDER" Guid="9CD24BBC-516C-41EA-BEE4-3C1610100003">
       <File Id="ViewerExe" Source="$(var.StagingDirectory)syntaur-viewer.exe" KeyPath="yes" />

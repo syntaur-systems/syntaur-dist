@@ -24,7 +24,7 @@ internal static class InstallerProvisioner
     private static readonly SecurityIdentifier InstallerSid = new SecurityIdentifier(
         "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
     private static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = MaximumRecord };
-    private static readonly string[] ProgramFiles = { "ServerLauncher.exe", "syntaur.exe", "syntaur-viewer.exe",
+    private static readonly string[] ProgramFiles = { "ServerLauncher.exe", "syntaur.exe", "syntaur-viewer.exe", "mace.exe",
         "syntaur-link-tor.exe", "syntaur-link-client-tor.exe", "syntaur-link-probe.exe",
         "syntaur-snowflake-client.exe", "EULA.md", "concrt140.dll", "msvcp140.dll",
         "msvcp140_1.dll", "msvcp140_2.dll", "msvcp140_atomic_wait.dll", "msvcp140_codecvt_ids.dll",

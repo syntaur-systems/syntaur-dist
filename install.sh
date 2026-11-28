@@ -235,6 +235,32 @@ download_optional_verified() {
   exit 1
 }
 
+install_mace_cli() (
+  case "$PLATFORM-$ARCH" in
+    linux-x86_64|macos-arm64) ;;
+    *) return 0 ;;
+  esac
+  MACE_DIR="$HOME/.local/libexec/syntaur"
+  MACE_PATH="$MACE_DIR/mace"
+  MACE_COMMAND="$INSTALL_DIR/mace"
+  if [ -L "$MACE_DIR" ] || { [ -e "$MACE_DIR" ] && [ ! -d "$MACE_DIR" ]; } ||
+     [ -L "$MACE_PATH" ] || { [ -e "$MACE_PATH" ] && [ ! -f "$MACE_PATH" ]; }; then
+    echo "  Preserved the existing path to $MACE_PATH. Standalone MACE is available in the release downloads."
+  else
+    mkdir -p "$MACE_DIR" || exit 1
+    ( VERIFY=1; download_verified "${REPO_URL}/releases/download/v${VERSION}/syntaur-mace-${PLATFORM}-${ARCH}" "$MACE_PATH" ) || exit 1
+    if [ ! -e "$MACE_COMMAND" ] && [ ! -L "$MACE_COMMAND" ]; then
+      ( cd "$INSTALL_DIR" && ln -s "$MACE_PATH" ) ||
+        echo "  Could not add $MACE_COMMAND. Start MACE with \"$MACE_PATH\" code."
+    elif [ "$(readlink "$MACE_COMMAND" 2>/dev/null)" != "$MACE_PATH" ]; then
+      echo "  Kept your existing $MACE_COMMAND. Start the updated MACE with \"$MACE_PATH\" code."
+    fi
+    if [ "$PLATFORM" = macos ] || [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || [ -d "$HOME/Desktop" ]; then
+      "$MACE_PATH" desktop install || echo "  Run \"$MACE_PATH\" desktop install to see the shortcut details."
+    fi
+  fi
+)
+
 # Explicitly selected optional helper, shared by managed and direct installs.
 # Configuration, model runtimes/weights and service activation remain deliberate.
 install_image_worker() (
@@ -1879,6 +1905,8 @@ else
 
   write_app_launcher || exit 1
 fi
+
+install_mace_cli || exit 1
 
 if [ "$PLATFORM" = macos ] && [ "$MODE" = server ]; then
   echo "  Installing the isolated Syntaur Link server service (administrator consent required)..."

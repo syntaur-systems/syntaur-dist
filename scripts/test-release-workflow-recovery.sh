@@ -281,9 +281,10 @@ git clone --quiet --no-hardlinks "$repository" "$stage_case"
 mkdir -p "$stage_case/dist"
 cp "$repository/install.sh" "$repository/install.ps1" "$stage_case/"
 cp "$repository/EULA.md" "$stage_case/EULA.md"
+cp "$repository/assets/mace.ico" "$stage_case/assets/mace.ico"
 printf 'runtime payload\n' >"$stage_case/dist/syntaur-runtime-linux-x86_64"
 printf 'process inspector payload\n' >"$stage_case/dist/syntaur-process-inspector-linux-x86_64"
-for asset in syntaur-gateway syntaur-viewer syntaur-link-tor syntaur-link-client-tor syntaur-link-probe syntaur-snowflake-client; do
+for asset in syntaur-gateway syntaur-viewer syntaur-mace syntaur-link-tor syntaur-link-client-tor syntaur-link-probe syntaur-snowflake-client; do
   printf '%s fixture payload\n' "$asset" >"$stage_case/dist/$asset-windows-x86_64.exe"
 done
 printf 'standalone MSI fixture\n' >"$stage_case/dist/syntaur-server-windows-x86_64.msi"
@@ -292,12 +293,13 @@ import hashlib, json, pathlib, sys
 root=pathlib.Path(sys.argv[1])
 version,source,engine,dist,correlation=sys.argv[2:]
 def digest(path): return hashlib.sha256(path.read_bytes()).hexdigest()
-names={'syntaur-gateway':'syntaur', 'syntaur-viewer':'syntaur-viewer', 'syntaur-link-tor':'syntaur-link-tor',
+names={'syntaur-gateway':'syntaur', 'syntaur-viewer':'syntaur-viewer', 'syntaur-mace':'mace', 'syntaur-link-tor':'syntaur-link-tor',
        'syntaur-link-client-tor':'syntaur-link-client-tor', 'syntaur-link-probe':'syntaur-link-probe',
        'syntaur-snowflake-client':'syntaur-snowflake-client'}
 inputs={f'{target}.exe':digest(root/'dist'/f'{name}-windows-x86_64.exe') for name,target in names.items()}
 inputs.update({'ServerLauncher.exe':'a'*64,'InstallerProvisioner.exe':'b'*64,
-               'EULA.md':digest(root/'EULA.md'), 'assets\\syntaur-icon.ico':digest(root/'assets/syntaur-icon.ico')})
+               'EULA.md':digest(root/'EULA.md'), 'assets\\syntaur-icon.ico':digest(root/'assets/syntaur-icon.ico'),
+               'assets\\mace.ico':digest(root/'assets/mace.ico')})
 for name in ('concrt140.dll','msvcp140.dll','msvcp140_1.dll','msvcp140_2.dll',
              'msvcp140_atomic_wait.dll','msvcp140_codecvt_ids.dll','vccorlib140.dll',
              'vcruntime140.dll','vcruntime140_1.dll','vcruntime140_threads.dll'):
@@ -342,6 +344,7 @@ while read -r variable asset; do
 done <<'WINDOWS_PINS'
 GatewaySha256 syntaur-gateway
 ViewerSha256 syntaur-viewer
+MaceSha256 syntaur-mace
 LinkClientTorSha256 syntaur-link-client-tor
 LinkProbeSha256 syntaur-link-probe
 SnowflakeClientSha256 syntaur-snowflake-client
@@ -1102,6 +1105,42 @@ run_publish "$large_state" >/dev/null
 test "$(cat "$large_state/create-count")" = "$create_count"
 test "$(cat "$large_state/upload-count")" = "$upload_count"
 
+
+# MACE upgrades its own program while respecting an occupied shell command.
+(
+  set --
+  export HOME="$temporary/mace user" SYNTAUR_INSTALL_TEST_LIBRARY_ONLY=1
+  unset DISPLAY WAYLAND_DISPLAY
+  # shellcheck disable=SC1091
+  source "$repository/install.sh"
+  mkdir -p "$INSTALL_DIR"
+  PLATFORM=linux; ARCH=x86_64
+  short="$INSTALL_DIR/mace"
+  managed="$HOME/.local/libexec/syntaur/mace"
+  payload=first
+  download_verified() {
+    test "$VERIFY" = 1 && test "$1" = "${REPO_URL}/releases/download/v${VERSION}/syntaur-mace-linux-x86_64" || return 1
+    printf '%s\n' "$payload" >"$2.next" && mv "$2.next" "$2"
+  }
+  install_mace_cli
+  test -L "$short"
+  test "$(cat "$short")" = first
+  payload=second
+  install_mace_cli
+  test -L "$short"
+  test "$(cat "$short")" = second
+  rm "$short"
+  printf 'custom command\n' >"$short"
+  payload=third
+  install_mace_cli
+  test "$(cat "$short")" = 'custom command'
+  test "$(cat "$managed")" = third
+  rm "$short"
+  ln -s "$HOME/other command" "$short"
+  install_mace_cli
+  test "$(readlink "$short")" = "$HOME/other command"
+  test ! -e "$HOME/other command"
+)
 
 # Exercise the actual optional helper function used after both installer branches.
 (

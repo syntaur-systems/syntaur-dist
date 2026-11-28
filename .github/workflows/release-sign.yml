@@ -1086,9 +1086,8 @@ jobs:
       - name: Download same-run Windows binaries
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          # These four build groups supply the six MSI inputs. The standalone
-          # MACE download is published separately in the signed release.
-          pattern: 'syntaur-{gateway-windows-x86_64.exe,viewer-windows-x86_64.exe,link-transport-x86_64-pc-windows-msvc,snowflake-windows-amd64}'
+          # Package exactly the same MACE revision as the standalone download.
+          pattern: 'syntaur-{gateway-windows-x86_64.exe,viewer-windows-x86_64.exe,mace-windows-x86_64.exe,link-transport-x86_64-pc-windows-msvc,snowflake-windows-amd64}'
           path: ${{ runner.temp }}/syntaur-windows-inputs
           merge-multiple: true
 
@@ -1102,6 +1101,7 @@ jobs:
           $mapping = [ordered]@{
             'syntaur-gateway-windows-x86_64.exe' = 'syntaur.exe'
             'syntaur-viewer-windows-x86_64.exe' = 'syntaur-viewer.exe'
+            'syntaur-mace-windows-x86_64.exe' = 'mace.exe'
             'syntaur-link-tor-windows-x86_64.exe' = 'syntaur-link-tor.exe'
             'syntaur-link-client-tor-windows-x86_64.exe' = 'syntaur-link-client-tor.exe'
             'syntaur-link-probe-windows-x86_64.exe' = 'syntaur-link-probe.exe'
@@ -1121,6 +1121,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Installer provisioner compilation failed.' }
           Copy-Item -LiteralPath EULA.md -Destination $stage
           Copy-Item -LiteralPath assets\syntaur-icon.ico -Destination (Join-Path $stage 'assets')
+          Copy-Item -LiteralPath assets\mace.ico -Destination (Join-Path $stage 'assets')
           # Distribute licensed app-local CRT files, not a second installer or
           # dependency download. Preserve and verify Microsoft's own signatures.
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
@@ -1138,7 +1139,7 @@ jobs:
             'vcruntime140.dll', 'vcruntime140_1.dll', 'vcruntime140_threads.dll')
           foreach ($name in $runtimeNames) { Copy-Item -LiteralPath (Join-Path $crt $name) -Destination $stage }
           $hashes = [ordered]@{}
-          foreach ($name in @('ServerLauncher.exe', 'InstallerProvisioner.exe') + @($mapping.Values) + @('EULA.md', 'assets\syntaur-icon.ico') + $runtimeNames) {
+          foreach ($name in @('ServerLauncher.exe', 'InstallerProvisioner.exe') + @($mapping.Values) + @('EULA.md', 'assets\syntaur-icon.ico', 'assets\mace.ico') + $runtimeNames) {
             $hashes[$name] = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $stage $name)).Hash.ToLowerInvariant()
           }
           $hashes | ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $env:RUNNER_TEMP 'syntaur-server-input-hashes.json')
@@ -1245,7 +1246,8 @@ jobs:
             .msi_sha256 == $msi and
             .release_identity == {source_commit:$src, engine_commit:$engine, dist_commit:$dist,
               correlation:$correlation, run_id:$run, run_attempt:$attempt} and
-            (.input_sha256 | length) == 20 and (.signed_input_sha256 | length) == 8 and
+            (.input_sha256 | length) == 22 and (.signed_input_sha256 | length) == 9 and
+            (.signed_input_sha256["mace.exe"] | type) == "string" and
             all(.signed_input_sha256[]; type == "string" and test("^[0-9a-f]{64}$"))
           ' "$receipt" >/dev/null
           while read -r asset input; do
@@ -1254,6 +1256,7 @@ jobs:
           done <<'INPUTS'
           syntaur-gateway-windows-x86_64.exe syntaur.exe
           syntaur-viewer-windows-x86_64.exe syntaur-viewer.exe
+          syntaur-mace-windows-x86_64.exe mace.exe
           syntaur-link-tor-windows-x86_64.exe syntaur-link-tor.exe
           syntaur-link-client-tor-windows-x86_64.exe syntaur-link-client-tor.exe
           syntaur-link-probe-windows-x86_64.exe syntaur-link-probe.exe
@@ -1261,8 +1264,9 @@ jobs:
           INPUTS
           eula_input_sha256=$(sha256sum EULA.md | awk '{print $1}')
           icon_input_sha256=$(sha256sum assets/syntaur-icon.ico | awk '{print $1}')
-          jq -e --arg eula "$eula_input_sha256" --arg icon "$icon_input_sha256" \
-            '.input_sha256["EULA.md"] == $eula and .input_sha256["assets\\syntaur-icon.ico"] == $icon' "$receipt" >/dev/null
+          mace_icon_sha256=$(sha256sum assets/mace.ico | awk '{print $1}')
+          jq -e --arg eula "$eula_input_sha256" --arg icon "$icon_input_sha256" --arg mace_icon "$mace_icon_sha256" \
+            '.input_sha256["EULA.md"] == $eula and .input_sha256["assets\\syntaur-icon.ico"] == $icon and .input_sha256["assets\\mace.ico"] == $mace_icon' "$receipt" >/dev/null
           # issue #27: stamp install scripts with the release version BEFORE
           # staging+signing, so published installers never advertise a stale
           # hardcoded VERSION (and the signed bundle matches the shipped file).
@@ -1275,7 +1279,9 @@ jobs:
           windows_gateway_sha256=$(sha256sum dist/syntaur-gateway-windows-x86_64.exe | awk '{print $1}')
           sed -i -E "s/^(\\\$GatewaySha256[[:space:]]*=[[:space:]]*\")[^\"]*(\")/\1${windows_gateway_sha256}\2/" install.ps1
           windows_viewer_sha256=$(sha256sum dist/syntaur-viewer-windows-x86_64.exe | awk '{print $1}')
+          windows_mace_sha256=$(sha256sum dist/syntaur-mace-windows-x86_64.exe | awk '{print $1}')
           sed -i -E "s/^(\\\$ViewerSha256[[:space:]]*=[[:space:]]*\")[^\"]*(\")/\1${windows_viewer_sha256}\2/" install.ps1
+          sed -i -E "s/^(\\\$MaceSha256[[:space:]]*=[[:space:]]*\")[^\"]*(\")/\1${windows_mace_sha256}\2/" install.ps1
           windows_link_tor_sha256=$(sha256sum dist/syntaur-link-client-tor-windows-x86_64.exe | awk '{print $1}')
           sed -i -E "s/^(\\\$LinkClientTorSha256[[:space:]]*=[[:space:]]*\")[^\"]*(\")/\1${windows_link_tor_sha256}\2/" install.ps1
           windows_snowflake_sha256=$(sha256sum dist/syntaur-snowflake-client-windows-x86_64.exe | awk '{print $1}')
@@ -1299,6 +1305,7 @@ jobs:
           grep -qE "^DIST_WORKFLOW_COMMIT=\"${DIST_COMMIT}\"$" install.sh || { echo "::error::install.sh workflow commit was not stamped"; exit 1; }
           grep -qE "^\\\$GatewaySha256[[:space:]]*=[[:space:]]*\"${windows_gateway_sha256}\"$" install.ps1 || { echo "::error::install.ps1 gateway hash was not stamped"; exit 1; }
           grep -qE "^\\\$ViewerSha256[[:space:]]*=[[:space:]]*\"${windows_viewer_sha256}\"$" install.ps1 || { echo "::error::install.ps1 viewer hash was not stamped"; exit 1; }
+          grep -qE "^\\\$MaceSha256[[:space:]]*=[[:space:]]*\"${windows_mace_sha256}\"$" install.ps1 || { echo "::error::install.ps1 mace hash was not stamped"; exit 1; }
           grep -qE "^\\\$LinkClientTorSha256[[:space:]]*=[[:space:]]*\"${windows_link_tor_sha256}\"$" install.ps1 || { echo "::error::install.ps1 Link Tor hash was not stamped"; exit 1; }
           grep -qE "^\\\$SnowflakeClientSha256[[:space:]]*=[[:space:]]*\"${windows_snowflake_sha256}\"$" install.ps1 || { echo "::error::install.ps1 Snowflake hash was not stamped"; exit 1; }
           grep -qE "^\\\$LinkProbeSha256[[:space:]]*=[[:space:]]*\"${windows_link_probe_sha256}\"$" install.ps1 || { echo "::error::install.ps1 Link Tor hash was not stamped"; exit 1; }

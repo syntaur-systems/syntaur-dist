@@ -117,9 +117,9 @@ if ($trustedSigning) {
 }
 if ((Get-Item -LiteralPath $InputHashes).Length -gt 16384) { throw 'Input hash list exceeds its bound.' }
 $hashes = Get-Content -Raw -LiteralPath $InputHashes | ConvertFrom-Json
-$expected = @('ServerLauncher.exe', 'InstallerProvisioner.exe', 'syntaur.exe', 'syntaur-viewer.exe',
+$expected = @('ServerLauncher.exe', 'InstallerProvisioner.exe', 'syntaur.exe', 'syntaur-viewer.exe', 'mace.exe',
     'syntaur-link-tor.exe', 'syntaur-link-client-tor.exe', 'syntaur-link-probe.exe',
-    'syntaur-snowflake-client.exe', 'EULA.md', 'assets\syntaur-icon.ico')
+    'syntaur-snowflake-client.exe', 'EULA.md', 'assets\syntaur-icon.ico', 'assets\mace.ico')
 $microsoftRuntime = @('concrt140.dll', 'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll',
     'msvcp140_atomic_wait.dll', 'msvcp140_codecvt_ids.dll', 'vccorlib140.dll',
     'vcruntime140.dll', 'vcruntime140_1.dll', 'vcruntime140_threads.dll')
