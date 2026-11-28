@@ -44,8 +44,9 @@ the selected owner's user-session process. The development MSI compiled with WiX
 warnings treated as errors. Its actual File table contains eight runtime and
 support files, with no live configuration, keys or user profiles.
 
-`scripts/build-windows-server-msi.ps1` requires an exact captured twenty-file input
-set and an explicit development, signed-candidate, or public-release mode.
+`scripts/build-windows-server-msi.ps1` requires captured hashes for all 22 inputs, including
+`mace.exe` and its desktop icon. Choose the development, signed-candidate, or
+public-release mode explicitly.
 WiX 7 terms are approved under the revenue < $10k commercial exemption (no support
 plan purchase). Cached WiX 5.0.2 remains supported for unsigned development only.
 Supported tooling/licensing, existing signed-release asset verification, actual Authenticode,
